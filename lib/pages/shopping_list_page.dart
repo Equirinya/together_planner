@@ -24,6 +24,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
   @override
   Widget build(BuildContext context) {
     //for every doc get the igrendients document by its id
+    return Placeholder();
     var stream = db
         .collection('groups')
         .doc(widget.groupId)

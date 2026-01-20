@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
+
 class LoadDocumentBuilder extends StatelessWidget {
   final DocumentReference<Map<String, dynamic>> docRef;
   final Widget Function(Map<String,dynamic> data) builder;
@@ -31,6 +32,28 @@ class LoadDocumentBuilder extends StatelessWidget {
   }
 }
 
+class LoadCollectionBuilder extends StatelessWidget {
+  final Query<Map<String, dynamic>> collRef;
+  final Widget Function(List<QueryDocumentSnapshot<Map<String, dynamic>>>) builder;
+  const LoadCollectionBuilder({super.key, required this.collRef, required this.builder});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder(future: collRef.get(), builder: (context, snapshot) {
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        return const CupertinoActivityIndicator();
+      }
+      if (snapshot.hasError) {
+        return const Icon(Icons.warning_rounded);
+      }
+      if (!snapshot.hasData || snapshot.data == null) {
+        return const Icon(Icons.error_outline_rounded);
+      }
+      final docsData = snapshot.data!.docs;
+      return builder(docsData);
+    },);
+  }
+}
 
 class StorageImage extends StatefulWidget {
   /// The Firebase Storage path (e.g. "images/users/abc.jpg" or "folder/pic.png")

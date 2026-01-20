@@ -17,6 +17,7 @@ import 'pages/login_page.dart';
 import 'pages/shopping_list_page.dart';
 
 void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const MyApp());
 }
@@ -60,6 +61,7 @@ class _MyHomePageState extends State<MyHomePage> {
     final currentUser = FirebaseAuth.instance.currentUser;
     final DocumentSnapshot? userDoc = currentUser == null ? null : await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
     if (currentUser == null || !userDoc!.exists) {
+      await Future.delayed(Duration(milliseconds: 100));
       await Navigator.of(
         context,
       ).push(MaterialPageRoute(builder: (context) => const LoginPage()));
@@ -132,9 +134,10 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
       bottomNavigationBar: NavigationBar(
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.home), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-          NavigationDestination(icon: Icon(Icons.person), label: 'Profile'),
+          NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Calendar'),
+          NavigationDestination(icon: Icon(Icons.list), label: 'ToDo\'s'),
+          NavigationDestination(icon: Icon(Icons.shopping_bag), label: 'Shopping List'),
+          NavigationDestination(icon: Icon(Icons.restaurant_menu), label: 'Recipes'),
         ],
         onDestinationSelected: (int index) {
           setState(() {
