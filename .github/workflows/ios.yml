@@ -117,6 +117,17 @@ jobs:
         run: |
           envsubst < ios/Runner/ExportOptions-Template.plist > ios/Runner/ExportOptions.plist
 
+      # Step 8.5: Update iOS Deployment Target in Project Files
+      - name: Update iOS Deployment Target
+        env:
+          DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
+        run: |
+          # Update project.pbxproj
+          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = $DEPLOYMENT_TARGET/g" ios/Runner.xcodeproj/project.pbxproj
+          
+          # Update Podfile platform
+          sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '$DEPLOYMENT_TARGET'/g" ios/Podfile
+
       # Step 9: Build IPA
       - name: Build IPA
         env:
