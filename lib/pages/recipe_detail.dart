@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:couple_planner/utils.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -12,10 +13,11 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class RecipeDetailPage extends StatefulWidget {
-  const RecipeDetailPage({super.key, required this.groupId, required this.recipeId});
+  const RecipeDetailPage({super.key, required this.groupId, required this.recipeId, this.editMode = false});
 
   final String groupId;
   final String recipeId;
+  final bool editMode;
 
   @override
   State<RecipeDetailPage> createState() => _RecipeDetailPageState();
@@ -29,232 +31,302 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   List<TextEditingController>? stepsControllers;
   TextEditingController? tagsController;
 
+  Map<String, dynamic>? recipeData;
+  late DocumentReference<Map<String, dynamic>> docRef;
+
+  late List<String> images;
+  late List<String> steps;
+  late List<String> tags;
+  late int totalHour;
+  late int totalMinute;
+  late int prepHour;
+  late int prepMinute;
+
   @override
-  Widget build(BuildContext context) {
+  void initState() {
+    edit = widget.editMode;
     final db = FirebaseFirestore.instance;
     final groupCollection = db.collection('groups').doc(widget.groupId);
-    final docRef = groupCollection.collection('recipes').doc(widget.recipeId);
+    docRef = groupCollection.collection('recipes').doc(widget.recipeId);
+    loadData();
+    super.initState();
+  }
 
-    return Material(
-      child: LoadDocumentBuilder(
-        docRef: docRef,
-        builder: (data) {
-          List<String> images = List<String>.from(data['images'] ?? []);
-          List<String> steps = List<String>.from(data['steps'] ?? []);
-          if (steps.isEmpty) steps = [''];
-          List<String> tags = List<String>.from(data['tags'] ?? []);
-          int totalHour = ((data['time'] ?? 0) / 60).floor();
-          int totalMinute = (data['time'] ?? 0) % 60;
-          int prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
-          int prepMinute = (data['preparationTime'] ?? 0) % 60;
+  Future<void> loadData() async {
+    final doc = await docRef.get();
+    if (doc.exists) {
+      recipeData = doc.data();
 
-          if (edit) {
-            nameController ??= TextEditingController(text: data['name']);
-            descriptionController ??= TextEditingController(text: data['description']);
-            stepsControllers ??= steps.map((step) => TextEditingController(text: step)).toList();
-            tagsController ??= TextEditingController(text: (tags.map((e) => "#$e ")).join(''));
-          }
+      images = List<String>.from(recipeData?['images'] ?? []);
+      steps = List<String>.from(recipeData?['steps'] ?? []);
+      if (steps.isEmpty) steps = [''];
+      tags = List<String>.from(recipeData?['tags'] ?? []);
+      totalHour = ((recipeData?['time'] ?? 0) / 60).floor();
+      totalMinute = (recipeData?['time'] ?? 0) % 60;
+      prepHour = ((recipeData?['preparationTime'] ?? 0) / 60).floor();
+      prepMinute = (recipeData?['preparationTime'] ?? 0) % 60;
 
-          return Scaffold(
-            appBar: AppBar(
-              title: Text(data['name'] ?? 'Unnamed Recipe'),
-              actions: [
-                IconButton(
-                  icon: Icon(edit ? Icons.check : Icons.edit),
-                  onPressed: () {
-                    if (edit) {
-                      docRef.update({
-                        'name': nameController!.text,
-                        'description': descriptionController!.text,
-                        'steps': stepsControllers!.map((c) => c.text.trim()).where((element) => element.isNotEmpty).toList(),
-                        'tags': tagsController!.text.split('#').map((tag) => tag.trim()).where((tag) => tag.isNotEmpty).toList(),
-                      });
-                    }
+      nameController ??= TextEditingController(text: recipeData?['name']);
+      descriptionController ??= TextEditingController(text: recipeData?['description']);
+      stepsControllers ??= steps.map((step) => TextEditingController(text: step)).toList();
+      tagsController ??= TextEditingController(text: (tags.map((e) => "#$e ")).join(''));
+      setState(() {});
+    }
+  }
 
-                    setState(() {
-                      edit = !edit;
-                    });
-                  },
-                ),
-              ],
-            ),
-            body: SingleChildScrollView(
-              child: Column(
-                children: [
-                  CarouselView.weighted(
-                    flexWeights: const <int>[1, 7, 1],
-                    children: edit
-                        ? (images
-                              .map<Widget>(
-                                (imgPath) => Stack(
-                                  children: [
-                                    Align(
-                                      alignment: Alignment.topRight,
-                                      child: IconButton(
-                                        icon: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
-                                        onPressed: () {
-                                          //remove image from firestore
-                                          docRef.update({
-                                            'images': FieldValue.arrayRemove([imgPath]),
-                                          });
-                                        },
-                                      ),
-                                    ),
-                                    StorageImage(storagePath: imgPath),
-                                  ],
-                                ),
-                              )
-                              .toList()
-                            ..add(
-                              GestureDetector(
-                                onTap: () async {
-                                  final ImagePicker picker = ImagePicker();
-                                  var image = await picker.pickImage(source: ImageSource.gallery);
-                                  if (image != null) {
-                                    //upload to firebase storage
-                                    final storageRef = FirebaseStorage.instance.ref().child(
-                                      'group/${widget.groupId}/recipes/${widget.recipeId}/${DateTime.now().millisecondsSinceEpoch}',
-                                    );
-                                    await storageRef.putFile(File(image.path));
-                                    await docRef.update({
-                                      'images': FieldValue.arrayUnion([storageRef.fullPath]),
-                                    });
-                                    setState(() {});
-                                  }
-                                },
-                                child: Container(color: Theme.of(context).colorScheme.primaryContainer, child: const Icon(Icons.add_a_photo)),
-                              ),
-                            ))
-                        : images.map((imgPath) => StorageImage(storagePath: imgPath)).toList(),
-                  ),
+  @override
+  Widget build(BuildContext context) {
+    if (recipeData == null) {
+      return const Scaffold(body: Center(child: CupertinoActivityIndicator()));
+    }
 
-                  //Title
-                  edit
-                      ? TextField(
-                          controller: TextEditingController(text: data['name']),
-                          decoration: const InputDecoration(labelText: 'Recipe Name'),
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        )
-                      : Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Text(data['name'] ?? 'Unnamed Recipe', style: Theme.of(context).textTheme.headlineMedium),
-                        ),
-
-                  Row(
-                    children: [
-                      //Tags
-                      Expanded(
-                        child: edit
-                            ? TextField(
-                                controller: tagsController,
-                                decoration: const InputDecoration(contentPadding: EdgeInsets.all(8.0)),
-                                style: Theme.of(context).textTheme.bodyMedium,
-                              )
-                            : Padding(
-                                padding: const EdgeInsets.all(8.0),
-                                child: Wrap(spacing: 8.0, children: tags.map((tag) => Chip(label: Text(tag))).toList()),
-                              ),
-                      ),
-
-                      //Times
-                      GestureDetector(
-                        onTap: edit
-                            ? () async {
-                              var time = await showTimePicker(
-                                context: context,
-                                initialTime: TimeOfDay(hour: totalHour, minute: totalMinute),
-                                builder: (BuildContext context, Widget? child) {
-                                  return MediaQuery(data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true), child: child!);
-                                },
-                                initialEntryMode: TimePickerEntryMode.inputOnly,
+    return Scaffold(
+      appBar: AppBar(
+        // title: Text(data['name'] ?? 'Unnamed Recipe'),
+        actions: [
+          IconButton(
+            icon: Icon(edit ? Icons.check : Icons.edit),
+            onPressed: () {
+              if (edit) {
+                var name = nameController!.text.trim();
+                if (name.isEmpty) name = 'New Recipe';
+                docRef.update({
+                  'name': name,
+                  'description': descriptionController!.text,
+                  'steps': stepsControllers!.map((c) => c.text.trim()).where((element) => element.isNotEmpty).toList(),
+                  'tags': tagsController!.text.split('#').map((tag) => tag.trim()).where((tag) => tag.isNotEmpty).toList(),
+                });
+                edit = !edit;
+                loadData();
+              } else {
+                setState(() {
+                  edit = !edit;
+                });
+              }
+            },
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (edit || images.isNotEmpty)
+              SizedBox(
+                height: MediaQuery.of(context).size.height * 0.3,
+                child: edit
+                    ? ReorderableListView(
+                        scrollDirection: Axis.horizontal,
+                        onReorder: (oldIndex, newIndex) {
+                          images.insert(newIndex > oldIndex ? newIndex - 1 : newIndex, images.removeAt(oldIndex));
+                          docRef.update({'images': images});
+                          setState(() {});
+                        },
+                        padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 4),
+                        footer: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            fixedSize: Size(MediaQuery.of(context).size.width * 0.4, double.infinity),
+                            elevation: 0,
+                            backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8.0)),
+                          ),
+                          onPressed: () async {
+                            final ImagePicker picker = ImagePicker();
+                            var image = await picker.pickImage(source: ImageSource.gallery);
+                            if (image != null) {
+                              //upload to firebase storage
+                              final storageRef = FirebaseStorage.instance.ref().child(
+                                'groups/${widget.groupId}/recipes/${widget.recipeId}/${DateTime.now().millisecondsSinceEpoch}',
                               );
-                              if (time != null) {
-                                docRef.update({
-                                  'time': time.hour * 60 + time.minute,
-                                });
-                                setState(() {});
-                              }
+                              await storageRef.putFile(File(image.path));
+                              await docRef.update({
+                                'images': FieldValue.arrayUnion([storageRef.fullPath]),
+                              });
+                              loadData();
                             }
-                            : null,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.schedule),
-                              Text(" ${totalHour}h ${totalMinute}m", style: Theme.of(context).textTheme.bodyMedium),
-                            ],
-                          ),
+                          },
+                          child: const Icon(Icons.add_a_photo),
                         ),
+                        children: images
+                            .map<Widget>(
+                              (imgPath) => SizedBox(
+                                key: ValueKey(imgPath),
+                                width: MediaQuery.of(context).size.width * 0.4,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 4),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(8.0),
+                                    child: Stack(
+                                      children: [
+                                        SizedBox.expand(
+                                          child: StorageImage(storagePath: imgPath, fit: BoxFit.cover),
+                                        ),
+                                        Align(
+                                          alignment: Alignment.topRight,
+                                          child: IconButton(
+                                            icon: Icon(Icons.cancel, color: Theme.of(context).colorScheme.error),
+                                            onPressed: () {
+                                              docRef.update({
+                                                'images': FieldValue.arrayRemove([imgPath]),
+                                              });
+                                              FirebaseStorage.instance.ref().child(imgPath).delete();
+                                              loadData();
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      )
+                    : CarouselView.weighted(
+                        flexWeights: const <int>[1, 7, 1],
+                        enableSplash: false,
+                        children: images.map((imgPath) => StorageImage(storagePath: imgPath, fit: BoxFit.cover)).toList(),
                       ),
-                      GestureDetector(
-                        onTap: edit
-                            ? () async {
-                          var time = await showTimePicker(
-                            context: context,
-                            initialTime: TimeOfDay(hour: prepHour, minute: prepMinute),
-                            builder: (BuildContext context, Widget? child) {
-                              return MediaQuery(data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true), child: child!);
-                            },
-                            initialEntryMode: TimePickerEntryMode.inputOnly,
-                          );
-                          if (time != null) {
-                            docRef.update({
-                              'preparationTime': time.hour * 60 + time.minute,
-                            });
-                            setState(() {});
-                          }
-                        }
-                            : null,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          child: Row(
-                            children: [
-                              Icon(Icons.blender),
-                              Text(" ${prepHour}h ${prepMinute}m", style: Theme.of(context).textTheme.bodyMedium),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+              ),
+
+            SizedBox(height: 16),
+            //Title
+            edit
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    child: TextField(controller: nameController, style: Theme.of(context).textTheme.headlineMedium),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+                    child: Text(recipeData?['name'] ?? 'Unnamed Recipe', style: Theme.of(context).textTheme.headlineMedium),
                   ),
 
-                  //Steps
-                  Text("Steps:", style: Theme.of(context).textTheme.headlineSmall),
-                  for (var (index, step) in steps.indexed)
-                    Card(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  //Tags
+                  Expanded(
+                    child: edit
+                        ? TextField(controller: tagsController, style: Theme.of(context).textTheme.bodyMedium)
+                        : Wrap(
+                            spacing: 8.0,
+                            children: tags
+                                .map((tag) => Chip(label: Text(tag, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)
+                              ,), backgroundColor: Theme.of(context).colorScheme.primaryContainer, side: BorderSide.none,))
+                                .toList(),
+                          ),
+                  ),
+
+                  //Times
+                  GestureDetector(
+                    onTap: edit
+                        ? () async {
+                            var time = await showTimePicker(
+                              context: context,
+                              initialTime: TimeOfDay(hour: totalHour, minute: totalMinute),
+                              builder: (BuildContext context, Widget? child) {
+                                return MediaQuery(data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true), child: child!);
+                              },
+                              initialEntryMode: TimePickerEntryMode.inputOnly,
+                            );
+                            if (time != null) {
+                              docRef.update({'time': time.hour * 60 + time.minute});
+                              loadData();
+                            }
+                          }
+                        : null,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                       child: Row(
                         children: [
-                          Text("${index + 1}:", style: Theme.of(context).textTheme.titleMedium),
-                          Expanded(
-                            child: edit
-                                ? TextField(
-                                    controller: stepsControllers![index],
-                                    maxLines: null,
-                                    style: Theme.of(context).textTheme.bodyMedium,
-                                    decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.all(8.0)),
-                                  )
-                                : Padding(
-                                    padding: const EdgeInsets.all(8.0),
-                                    child: Text(step, style: Theme.of(context).textTheme.bodyMedium),
-                                  ),
-                          ),
+                          const Icon(Icons.schedule),
+                          Text(" ${totalHour}h ${totalMinute}m", style: Theme.of(context).textTheme.bodyMedium),
                         ],
                       ),
                     ),
-                  if (edit)
-                    ElevatedButton(
-                      onPressed: () {
-                        setState(() {
-                          stepsControllers!.add(TextEditingController());
-                        });
-                      },
-                      child: const Text("Add Step"),
+                  ),
+                  GestureDetector(
+                    onTap: edit
+                        ? () async {
+                            var time = await showTimePicker(
+                              context: context,
+                              initialTime: TimeOfDay(hour: prepHour, minute: prepMinute),
+                              builder: (BuildContext context, Widget? child) {
+                                return MediaQuery(data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true), child: child!);
+                              },
+                              initialEntryMode: TimePickerEntryMode.inputOnly,
+                            );
+                            if (time != null) {
+                              docRef.update({'preparationTime': time.hour * 60 + time.minute});
+                              loadData();
+                            }
+                          }
+                        : null,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      child: Row(
+                        children: [
+                          Icon(Icons.blender),
+                          Text(" ${prepHour}h ${prepMinute}m", style: Theme.of(context).textTheme.bodyMedium),
+                        ],
+                      ),
                     ),
+                  ),
                 ],
               ),
             ),
-          );
-        },
+
+            SizedBox(height: 16),
+            //Steps
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text("Steps:", style: Theme.of(context).textTheme.headlineSmall),
+            ),
+            for (var (index, step) in steps.indexed)
+              Card(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                elevation: 0,
+                child: Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8.0),
+                      child: Text("${index + 1}:", style: Theme.of(context).textTheme.titleMedium),
+                    ),
+                    Expanded(
+                      child: edit
+                          ? TextField(
+                              controller: stepsControllers![index],
+                              maxLines: null,
+                              style: Theme.of(context).textTheme.bodyMedium,
+                              decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.all(8.0)),
+                            )
+                          : Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 16),
+                              child: Text(step, style: Theme.of(context).textTheme.bodyMedium),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            if (edit)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      setState(() {
+                        steps.add('');
+                        stepsControllers!.add(TextEditingController());
+                      });
+                    },
+                    child: const Text("Add Step"),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

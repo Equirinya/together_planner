@@ -31,20 +31,20 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(),
+      home: const HomePage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _selectedIndex = 0;
+class _HomePageState extends State<HomePage> {
+  int _selectedIndex = 3;
   String? _selectedGroup;
 
   final db = FirebaseFirestore.instance;
@@ -53,6 +53,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void initState() {
+    String uid = FirebaseAuth.instance.currentUser!.uid;
+    groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
     _testUserLoggedIn();
     super.initState();
   }
@@ -64,8 +66,7 @@ class _MyHomePageState extends State<MyHomePage> {
       await Future.delayed(Duration(milliseconds: 100));
       await Navigator.of(
         context,
-      ).push(MaterialPageRoute(builder: (context) => const LoginPage()));
-      _testUserLoggedIn();
+      ).push(MaterialPageRoute(builder: (context) => WelcomePage(onFinished: () => _testUserLoggedIn(), infoText: "")));
     } else {
       if (Platform.isAndroid || Platform.isIOS) {
         final fcmToken = await FirebaseMessaging.instance.getToken();
@@ -82,7 +83,7 @@ class _MyHomePageState extends State<MyHomePage> {
         PackageInfo packageInfo = await PackageInfo.fromPlatform();
 
         String uid = FirebaseAuth.instance.currentUser!.uid;
-        groupsStream = db.collection('users').doc(uid).collection("invites").where("status", isEqualTo: "pending").snapshots();
+        groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
         // Update user document in Firebase
         await db.collection('users').doc(uid).update({
           'fcmToken': fcmToken,
@@ -102,6 +103,7 @@ class _MyHomePageState extends State<MyHomePage> {
     return Scaffold(
       appBar: AppBar(
         //dropdown to select group
+        //TODO move stream to initstate
         title: StreamBuilder(stream: groupsStream, builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const CupertinoActivityIndicator();
@@ -110,17 +112,23 @@ class _MyHomePageState extends State<MyHomePage> {
             return const Text("Error loading groups");
           }
           if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            print(snapshot.data?.docs);
             return const Text("No groups"); //TODO show dialog to create or join group
           }
           var groups = snapshot.data!.docs;
-          if (_selectedGroup == null || !groups.any((element) => element.id == _selectedGroup)) {
+          var acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
+          var pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
+          if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
+            Future.delayed(Duration(seconds: 2), () {
             setState(() {
-              _selectedGroup = groups.first.id;
+              _selectedGroup = acceptedGroups.first.id;
+            });
             });
           }
+          return SizedBox();
           return DropdownButton<String>(
             value: _selectedGroup,
-            items: groups.map((inviteDoc) => DropdownMenuItem<String>(
+            items: acceptedGroups.map((inviteDoc) => DropdownMenuItem<String>(
               value: inviteDoc.id,
               child: LoadDocumentBuilder(docRef: db.collection("groups").doc(inviteDoc.id), builder: (data) => Text(data['name'])),
             )).toList(),
@@ -132,20 +140,20 @@ class _MyHomePageState extends State<MyHomePage> {
           );
         },)
       ),
-      bottomNavigationBar: NavigationBar(
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Calendar'),
-          NavigationDestination(icon: Icon(Icons.list), label: 'ToDo\'s'),
-          NavigationDestination(icon: Icon(Icons.shopping_bag), label: 'Shopping List'),
-          NavigationDestination(icon: Icon(Icons.restaurant_menu), label: 'Recipes'),
-        ],
-        onDestinationSelected: (int index) {
-          setState(() {
-            _selectedIndex = index;
-          });
-        },
-        selectedIndex: _selectedIndex,
-      ),
+      // bottomNavigationBar: NavigationBar(
+      //   destinations: const [
+      //     NavigationDestination(icon: Icon(Icons.calendar_month), label: 'Calendar'),
+      //     NavigationDestination(icon: Icon(Icons.list), label: 'ToDo\'s'),
+      //     NavigationDestination(icon: Icon(Icons.shopping_bag), label: 'Shopping List'),
+      //     NavigationDestination(icon: Icon(Icons.restaurant_menu), label: 'Recipes'),
+      //   ],
+      //   onDestinationSelected: (int index) {
+      //     setState(() {
+      //       _selectedIndex = index;
+      //     });
+      //   },
+      //   selectedIndex: _selectedIndex,
+      // ),
       body: _selectedGroup != null && _selectedGroup!.isNotEmpty ? IndexedStack(
         index: _selectedIndex,
         children: [
