@@ -117,27 +117,27 @@ jobs:
         run: |
           envsubst < ios/Runner/ExportOptions-Template.plist > ios/Runner/ExportOptions.plist
 
-      # Step 8.5: Update iOS Deployment Target in Project Files
-      - name: Update iOS Deployment Target
-        env:
-          DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
-        run: |
-          # Update project.pbxproj
-          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = $DEPLOYMENT_TARGET/g" ios/Runner.xcodeproj/project.pbxproj
-          
-          # Update Podfile platform
-          sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '$DEPLOYMENT_TARGET'/g" ios/Podfile
+#      # Step 8.5: Update iOS Deployment Target in Project Files
+#      - name: Update iOS Deployment Target
+#        env:
+#          DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
+#        run: |
+#          # Update project.pbxproj
+#          sed -i '' "s/IPHONEOS_DEPLOYMENT_TARGET = [0-9]*\.[0-9]*/IPHONEOS_DEPLOYMENT_TARGET = $DEPLOYMENT_TARGET/g" ios/Runner.xcodeproj/project.pbxproj
+#
+#          # Update Podfile platform
+#          sed -i '' "s/platform :ios, '[0-9]*\.[0-9]*'/platform :ios, '$DEPLOYMENT_TARGET'/g" ios/Podfile
 
       # Step 9: Build IPA
       - name: Build IPA
         env:
           # These are forwarded by flutter -> xcodebuild
           #but apparently applies to ALL targets including the Pod libraries. But Pod libraries (frameworks) should use automatic signing
-          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
-#          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
+#          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
+##          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
 #          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
-          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
-          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
+#          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
+#          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
           # optional if you want to pin the code sign identity:
 #          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
         run: |
