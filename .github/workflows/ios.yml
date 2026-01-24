@@ -80,9 +80,10 @@ jobs:
       - name: Configure Provisioning Profile
         env:
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          PROVISIONING_PROFILE_NAME: ${{ vars.PROVISIONING_PROFILE_NAME }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/QuizStudio.mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_NAME.mobileprovision
 
       # Step 6: Configure Distribution Certificate
       - name: Configure Distribution Certificate
