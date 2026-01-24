@@ -18,7 +18,7 @@
 #from: https://appstoreconnect.apple.com/access/integrations/api:
 #APPSTORE_ISSUER_ID
 #APPSTORE_API_KEY_ID
-#APPSTORE_API_PRIVATE_KEY: open p8 File with text editor and copy content //TODO with or without line breaks and start/end?
+#APPSTORE_API_PRIVATE_KEY: open p8 File with text editor and copy content (with start and end lines)
 
 #BUILD_CERTIFICATE_BASE64 #distribution certificate in base64 format (can be the same for many apps)
 #P12_PASSWORD #password for distribution certificate
@@ -34,8 +34,22 @@
 #FLUTTER_VERSION
 
 ###make sure ios/Runner/ExportOptions-Template.plist exists
-###make sure the bundle id in ios/Runner.xcodeproj/project.pbxproj is right and that the signing settings are set to manual and the correct provisioning profile is selected
-#most of that should be set by the ExportOption.plist but are currently not, see https://github.com/flutter/flutter/issues/113977
+
+##make sure ios/Runner.xcodeproj/project.pbxproj is configured correctly, that should be set by the ExportOption.plist but are currently not, see https://github.com/flutter/flutter/issues/113977
+#for all configurations where the bundleIdentifier does not end in RunnerTests these should be set:
+
+#CODE_SIGN_IDENTITY = "Apple Development";
+#"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";  #or IOS Distribution or Iphone Distribution
+#CODE_SIGN_STYLE = Manual;
+#PRODUCT_BUNDLE_IDENTIFIER = ; #set
+#DEVELOPMENT_TEAM = "";
+#"DEVELOPMENT_TEAM[sdk=iphoneos*]" = ; #set
+#IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+#PROVISIONING_PROFILE_SPECIFIER = "";
+#"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = ""; #set
+
+
+### if youre using FirebaseFirestore including the precombiled binaries in the Podfile speeds up the build a lot: https://github.com/invertase/firestore-ios-sdk-frameworks
 
 name: iOS Build and Deploy
 
@@ -45,6 +59,8 @@ on:
 jobs:
   ios_deployment:
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       # Step 1: Checkout Code
@@ -80,9 +96,10 @@ jobs:
       - name: Configure Provisioning Profile
         env:
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          PROVISIONING_PROFILE_NAME: ${{ vars.PROVISIONING_PROFILE_NAME }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/QuizStudio.mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_NAME.mobileprovision
 
       # Step 6: Configure Distribution Certificate
       - name: Configure Distribution Certificate
@@ -94,6 +111,8 @@ jobs:
           echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > /tmp/certificate.p12
           security import /tmp/certificate.p12 -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $RUNNER_TEMP/app-signing.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $RUNNER_TEMP/app-signing.keychain-db
+          # List the certificate to verify it's there
+          security find-identity -v -p codesigning $RUNNER_TEMP/app-signing.keychain-db
 
       # Step 7: Parse Build Number and Name from pubspec.yaml
       - name: Parse Build Number and Name
@@ -104,36 +123,29 @@ jobs:
           BUILD_NUMBER=$(echo $VERSION_LINE | cut -d'+' -f2)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
       # Step 8: Generate ExportOptions.plist from Template
       - name: Generate ExportOptions.plist
         env:
-          EXPORT_METHOD: "app-store"
+          EXPORT_METHOD: "app-store-connect"
           EXPORT_DESTINATION: "export"
-          BUNDLE_ID: ${{ vars.BUNDLE_ID }} # Change this when adapting to another app
+          BUNDLE_ID: ${{ vars.BUNDLE_ID }}
           PROVISIONING_PROFILE: ${{ vars.PROVISIONING_PROFILE_NAME }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
           envsubst < ios/Runner/ExportOptions-Template.plist > ios/Runner/ExportOptions.plist
 
-      # Step 9: Build IPA
+      # Step 9: Build IPA (can add --verbose for more logging)
       - name: Build IPA
-        env:
-          # These are forwarded by flutter -> xcodebuild
-          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
-          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
-          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
-          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
-          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
-          # optional if you want to pin the code sign identity:
-          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
         run: |
           flutter build ipa \
             --release \
-            --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
+        timeout-minutes: 30
 
       # Step 10: Create API Key File
       - name: Create API Key File
@@ -152,40 +164,29 @@ jobs:
         run: |
           xcrun altool --upload-app -f build/ios/ipa/*.ipa -t ios --apiKey "$API_KEY_ID" --apiIssuer "$API_ISSUER_ID"
 
-      # Check if release exists
-      - name: Check Release
-        id: check_release
+
+      - name: Create Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "v$VERSION" 2>/dev/null; then
-            echo "release_exists=true" >> $GITHUB_OUTPUT
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG_NAME="v$VERSION"
+          IPA_PATH=$(find build/ios/ipa -name "*.ipa" | head -n 1)
+          
+          # 1. Check if release already exists.
+          # If it does, just upload the asset to the existing release.
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Release $TAG_NAME exists. Uploading asset..."
+            gh release upload "$TAG_NAME" "$IPA_PATH" --clobber
           else
-            echo "release_exists=false" >> $GITHUB_OUTPUT
+            # 2. Create new release and attach asset in one step
+            echo "Creating release $TAG_NAME..."
+            gh release create "$TAG_NAME" "$IPA_PATH" \
+              --title "Release $TAG_NAME" \
+              --draft=true \
+              --prerelease=false \
+              --generate-notes
           fi
-
-      # Create release if it doesn't exist
-      - name: Create Release if Not Exists
-        id: create_release
-        if: steps.check_release.outputs.release_exists == 'false'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v$VERSION
-          release_name: "Release v$VERSION"
-          draft: true
-          prerelease: false
-
-      - name: Upload IPA to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: $(find $(pwd) -name "*.ipa")
-          asset_name: PiusApp-v$VERSION.ipa
-          asset_content_type: application/octet-stream
 
       # Step 13: Cleanup Keychain and Profiles
       - name: Cleanup
