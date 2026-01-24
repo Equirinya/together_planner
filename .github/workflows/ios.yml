@@ -130,7 +130,7 @@ jobs:
 
       # Step 9: Build IPA
       - name: Build IPA
-        env:
+#        env:
           # These are forwarded by flutter -> xcodebuild
           #but apparently applies to ALL targets including the Pod libraries. But Pod libraries (frameworks) should use automatic signing
 #          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
