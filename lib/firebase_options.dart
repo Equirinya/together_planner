@@ -63,6 +63,6 @@ class DefaultFirebaseOptions {
     messagingSenderId: '384756239580',
     projectId: 'couple-planner-99826',
     storageBucket: 'couple-planner-99826.firebasestorage.app',
-    iosBundleId: 'de.equirinya.couplePlanner',
+    iosBundleId: 'de.equirinya.coupleplanner',
   );
 }
