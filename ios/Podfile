@@ -1,0 +1,24 @@
+# 1. Define the platform (Adjust '12.0' if your app requires a higher version)
+platform :ios, '15.0'
+
+# 2. Import Flutter's podhelper script
+# This is the missing part that caused your error.
+require File.expand_path(File.join('..', 'Flutter', 'flutter_export_environment.sh'), __FILE__)
+load File.join(FLUTTER_ROOT, 'packages', 'flutter_tools', 'bin', 'podhelper.rb')
+
+target 'Runner' do
+ use_frameworks!
+ use_modular_headers!
+
+ # 3. Precompiled Firestore SDK (Your Optimization)
+ # IMPORTANT: The :tag version MUST match the Firebase version your flutter plugins are using.
+ # If 11.15.0 causes conflicts, you may need to adjust this number.
+ pod 'FirebaseFirestore', :git => 'https://github.com/invertase/firestore-ios-sdk-frameworks.git', :tag => '12.8.0'
+
+ # 4. Install all other Flutter plugins
+ flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+ target 'RunnerTests' do
+   inherit! :search_paths
+ end
+end

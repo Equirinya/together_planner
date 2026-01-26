@@ -153,20 +153,8 @@ jobs:
           
           # Get Flutter dependencies
           flutter pub get
-    
-          # Generate Podfile by running pod install with --no-integrate first
+          
           cd ios
-          pod install --no-integrate || true
-          
-          # Now modify the generated Podfile to add the Firebase optimization
-          if grep -q "target 'Runner' do" Podfile; then
-          # Add the Firebase precompiled framework after the Runner target line
-          sed -i '' "/target 'Runner' do/a\\
-          pod 'FirebaseFirestore', :git => 'https://github.com/invertase/firestore-ios-sdk-frameworks.git', :tag => '10.29.0'
-          " Podfile
-          fi
-          
-          # Now run pod install properly
           pod install || exit 1
           cd ..
           
