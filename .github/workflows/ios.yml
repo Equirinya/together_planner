@@ -34,8 +34,19 @@
 #FLUTTER_VERSION
 
 ###make sure ios/Runner/ExportOptions-Template.plist exists
-###make sure the bundle id in ios/Runner.xcodeproj/project.pbxproj is right and that the signing settings are set to manual and the correct provisioning profile is selected
-#most of that should be set by the ExportOption.plist but are currently not, see https://github.com/flutter/flutter/issues/113977
+
+##make sure ios/Runner.xcodeproj/project.pbxproj is configured correctly, that should be set by the ExportOption.plist but are currently not, see https://github.com/flutter/flutter/issues/113977
+#for all configurations where the bundleIdentifier does not end in RunnerTests these should be set:
+
+#CODE_SIGN_IDENTITY = "Apple Development";
+#"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";  #or IOS Distribution or Iphone Distribution
+#CODE_SIGN_STYLE = Manual;
+#PRODUCT_BUNDLE_IDENTIFIER = ; #set
+#DEVELOPMENT_TEAM = "";
+#"DEVELOPMENT_TEAM[sdk=iphoneos*]" = ; #set
+#IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+#PROVISIONING_PROFILE_SPECIFIER = "";
+#"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = ""; #set
 
 name: iOS Build and Deploy
 
@@ -141,12 +152,23 @@ jobs:
           # optional if you want to pin the code sign identity:
 #          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
         run: |
+          # Update pod repos
+          pod repo update --silent
+          
+          # Get Flutter dependencies
+          flutter pub get
+          
+          # Install pods with timeout protection
+          cd ios
+          timeout 20m pod install || exit 1
+          cd ..
           flutter build ipa \
             --release \
             --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
+        timeout-minutes: 60
 
       # Step 10: Create API Key File
       - name: Create API Key File
