@@ -1,12 +1,21 @@
+# ios/Podfile
+platform :ios, '15.0'
+
+# Prevent Cocoapods from embedding a second Flutter framework
+install! 'cocoapods', :deterministic_uuids => false
+
 target 'Runner' do
   use_frameworks!
   use_modular_headers!
 
-  # Precompiled Firestore SDK:
-  pod 'FirebaseFirestore', :git => 'https://github.com/invertase/firestore-ios-sdk-frameworks.git', :tag => '12.8.0'
+  # Use precompiled Firebase frameworks for faster builds
+  pod 'FirebaseFirestore', :git => 'https://github.com/invertase/firestore-ios-sdk-frameworks.git', :tag => '10.29.0'
 
-  flutter_install_all_pods  File.dirname(File.realpath(__FILE__))
-  target 'RunnerTests' do
-    inherit! :search_paths
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
   end
 end
