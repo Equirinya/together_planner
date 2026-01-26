@@ -165,7 +165,7 @@ jobs:
           
           flutter build ipa \
             --release \
-            --verbose \
+#            --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
