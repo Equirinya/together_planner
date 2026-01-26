@@ -110,7 +110,7 @@ jobs:
           security import /tmp/certificate.p12 -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $RUNNER_TEMP/app-signing.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $RUNNER_TEMP/app-signing.keychain-db
           # List the certificate to verify it's there
-          security find-identity -v -p codesigning $KEYCHAIN_PATH
+          security find-identity -v -p codesigning $RUNNER_TEMP/app-signing.keychain-db
 
       # Step 7: Parse Build Number and Name from pubspec.yaml
       - name: Parse Build Number and Name
@@ -121,6 +121,8 @@ jobs:
           BUILD_NUMBER=$(echo $VERSION_LINE | cut -d'+' -f2)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
       # Step 8: Generate ExportOptions.plist from Template
       - name: Generate ExportOptions.plist
@@ -143,7 +145,7 @@ jobs:
           #          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
           #          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
           #          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
-        # optional if you want to pin the code sign identity:
+          # optional if you want to pin the code sign identity:
         #          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
         run: |
           # Update pod repos
@@ -189,7 +191,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "v$VERSION" 2>/dev/null; then
+          if gh release view "v${{ steps.version.outputs.version }}" 2>/dev/null; then
             echo "release_exists=true" >> $GITHUB_OUTPUT
           else
             echo "release_exists=false" >> $GITHUB_OUTPUT
@@ -203,8 +205,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v$VERSION
-          release_name: "Release v$VERSION"
+          tag_name: v${{ steps.version.outputs.version }}
+          release_name: "Release v${{ steps.version.outputs.version }}"
           draft: true
           prerelease: false
 
@@ -221,7 +223,7 @@ jobs:
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ${{ steps.locate_ipa.outputs.path }}
-          asset_name: App-v$VERSION.ipa
+          asset_name: App-v${{ steps.version.outputs.version }}.ipa
           asset_content_type: application/octet-stream
 
       # Step 13: Cleanup Keychain and Profiles
