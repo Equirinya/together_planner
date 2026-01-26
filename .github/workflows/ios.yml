@@ -106,6 +106,8 @@ jobs:
           echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > /tmp/certificate.p12
           security import /tmp/certificate.p12 -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $RUNNER_TEMP/app-signing.keychain-db
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $RUNNER_TEMP/app-signing.keychain-db
+          # List the certificate to verify it's there
+          security find-identity -v -p codesigning $KEYCHAIN_PATH
 
       # Step 7: Parse Build Number and Name from pubspec.yaml
       - name: Parse Build Number and Name
@@ -163,8 +165,10 @@ jobs:
           pod install || exit 1
           cd ..
           
+          # Build the IPA (can add --verbose for more logging)
           flutter build ipa \
             --release \
+            --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
