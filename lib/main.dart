@@ -1,10 +1,10 @@
 import 'dart:io';
 
-// import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_planner/pages/recipe_page.dart';
 import 'package:couple_planner/utils.dart';
-// import 'package:firebase_auth/firebase_auth.dart';
-// import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -47,56 +47,56 @@ class _HomePageState extends State<HomePage> {
   int _selectedIndex = 3;
   String? _selectedGroup;
 
-  // final db = FirebaseFirestore.instance;
+  final db = FirebaseFirestore.instance;
   //groups where the user is a member of
-  // Stream<QuerySnapshot<Map<String, dynamic>>>? groupsStream;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? groupsStream;
 
   @override
   void initState() {
-    // String uid = FirebaseAuth.instance.currentUser!.uid;
-    // groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
-    // _testUserLoggedIn();
+    String uid = FirebaseAuth.instance.currentUser!.uid;
+    groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
+    _testUserLoggedIn();
     super.initState();
   }
 
-  // Future<void> _testUserLoggedIn() async {
-  //   final currentUser = FirebaseAuth.instance.currentUser;
-  //   final DocumentSnapshot? userDoc = currentUser == null ? null : await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
-  //   if (currentUser == null || !userDoc!.exists) {
-  //     await Future.delayed(Duration(milliseconds: 100));
-  //     await Navigator.of(
-  //       context,
-  //     ).push(MaterialPageRoute(builder: (context) => WelcomePage(onFinished: () => _testUserLoggedIn(), infoText: "")));
-  //   } else {
-  //     if (Platform.isAndroid || Platform.isIOS) {
-  //       final fcmToken = await FirebaseMessaging.instance.getToken();
-  //       final notificationSettings = await FirebaseMessaging.instance
-  //           .requestPermission(provisional: true); //TODO ask on a better moment
-  //       if (kDebugMode) {
-  //         print("FCM Token: $fcmToken");
-  //       }
-  //
-  //       // Save FCM token to SharedPreferences
-  //       final prefs = await SharedPreferences.getInstance();
-  //       await prefs.setString('fcmToken', fcmToken!);
-  //
-  //       PackageInfo packageInfo = await PackageInfo.fromPlatform();
-  //
-  //       String uid = FirebaseAuth.instance.currentUser!.uid;
-  //       groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
-  //       // Update user document in Firebase
-  //       await db.collection('users').doc(uid).update({
-  //         'fcmToken': fcmToken,
-  //         'lastLogin': FieldValue.serverTimestamp(),
-  //         'appVersion': packageInfo.version,
-  //       }).catchError((error) {
-  //         if (kDebugMode) {
-  //           print("Failed to update user: $error");
-  //         }
-  //       });
-  //     }
-  //   }
-  // }
+  Future<void> _testUserLoggedIn() async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    final DocumentSnapshot? userDoc = currentUser == null ? null : await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+    if (currentUser == null || !userDoc!.exists) {
+      await Future.delayed(Duration(milliseconds: 100));
+      await Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (context) => WelcomePage(onFinished: () => _testUserLoggedIn(), infoText: "")));
+    } else {
+      if (Platform.isAndroid || Platform.isIOS) {
+        final fcmToken = await FirebaseMessaging.instance.getToken();
+        final notificationSettings = await FirebaseMessaging.instance
+            .requestPermission(provisional: true); //TODO ask on a better moment
+        if (kDebugMode) {
+          print("FCM Token: $fcmToken");
+        }
+
+        // Save FCM token to SharedPreferences
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('fcmToken', fcmToken!);
+
+        PackageInfo packageInfo = await PackageInfo.fromPlatform();
+
+        String uid = FirebaseAuth.instance.currentUser!.uid;
+        groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
+        // Update user document in Firebase
+        await db.collection('users').doc(uid).update({
+          'fcmToken': fcmToken,
+          'lastLogin': FieldValue.serverTimestamp(),
+          'appVersion': packageInfo.version,
+        }).catchError((error) {
+          if (kDebugMode) {
+            print("Failed to update user: $error");
+          }
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -104,41 +104,41 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         //dropdown to select group
         //TODO move stream to initstate
-        // title: StreamBuilder(stream: groupsStream, builder: (context, snapshot) {
-        //   if (snapshot.connectionState == ConnectionState.waiting) {
-        //     return const CupertinoActivityIndicator();
-        //   }
-        //   if (snapshot.hasError) {
-        //     return const Text("Error loading groups");
-        //   }
-        //   if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-        //     print(snapshot.data?.docs);
-        //     return const Text("No groups"); //TODO show dialog to create or join group
-        //   }
-        //   var groups = snapshot.data!.docs;
-        //   var acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
-        //   var pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
-        //   if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
-        //     Future.delayed(Duration(seconds: 2), () {
-        //     setState(() {
-        //       _selectedGroup = acceptedGroups.first.id;
-        //     });
-        //     });
-        //   }
-        //   return SizedBox();
-        //   return DropdownButton<String>(
-        //     value: _selectedGroup,
-        //     items: acceptedGroups.map((inviteDoc) => DropdownMenuItem<String>(
-        //       value: inviteDoc.id,
-        //       child: LoadDocumentBuilder(docRef: db.collection("groups").doc(inviteDoc.id), builder: (data) => Text(data['name'])),
-        //     )).toList(),
-        //     onChanged: (String? newValue) {
-        //       setState(() {
-        //         _selectedGroup = newValue!;
-        //       });
-        //     },
-        //   );
-        // },)
+        title: StreamBuilder(stream: groupsStream, builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const CupertinoActivityIndicator();
+          }
+          if (snapshot.hasError) {
+            return const Text("Error loading groups");
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            print(snapshot.data?.docs);
+            return const Text("No groups"); //TODO show dialog to create or join group
+          }
+          var groups = snapshot.data!.docs;
+          var acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
+          var pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
+          if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
+            Future.delayed(Duration(seconds: 2), () {
+            setState(() {
+              _selectedGroup = acceptedGroups.first.id;
+            });
+            });
+          }
+          return SizedBox();
+          return DropdownButton<String>(
+            value: _selectedGroup,
+            items: acceptedGroups.map((inviteDoc) => DropdownMenuItem<String>(
+              value: inviteDoc.id,
+              child: LoadDocumentBuilder(docRef: db.collection("groups").doc(inviteDoc.id), builder: (data) => Text(data['name'])),
+            )).toList(),
+            onChanged: (String? newValue) {
+              setState(() {
+                _selectedGroup = newValue!;
+              });
+            },
+          );
+        },)
       ),
       // bottomNavigationBar: NavigationBar(
       //   destinations: const [
