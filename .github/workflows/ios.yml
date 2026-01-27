@@ -18,7 +18,7 @@
 #from: https://appstoreconnect.apple.com/access/integrations/api:
 #APPSTORE_ISSUER_ID
 #APPSTORE_API_KEY_ID
-#APPSTORE_API_PRIVATE_KEY: open p8 File with text editor and copy content //TODO with or without line breaks and start/end?
+#APPSTORE_API_PRIVATE_KEY: open p8 File with text editor and copy content (with start and end lines)
 
 #BUILD_CERTIFICATE_BASE64 #distribution certificate in base64 format (can be the same for many apps)
 #P12_PASSWORD #password for distribution certificate

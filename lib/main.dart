@@ -4,7 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_planner/pages/recipe_page.dart';
 import 'package:couple_planner/utils.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
+// import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -69,16 +69,16 @@ class _HomePageState extends State<HomePage> {
       ).push(MaterialPageRoute(builder: (context) => WelcomePage(onFinished: () => _testUserLoggedIn(), infoText: "")));
     } else {
       if (Platform.isAndroid || Platform.isIOS) {
-        final fcmToken = await FirebaseMessaging.instance.getToken();
-        final notificationSettings = await FirebaseMessaging.instance
-            .requestPermission(provisional: true); //TODO ask on a better moment
-        if (kDebugMode) {
-          print("FCM Token: $fcmToken");
-        }
-
-        // Save FCM token to SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('fcmToken', fcmToken!);
+        // final fcmToken = await FirebaseMessaging.instance.getToken();
+        // final notificationSettings = await FirebaseMessaging.instance
+        //     .requestPermission(provisional: true); //TODO ask on a better moment
+        // if (kDebugMode) {
+        //   print("FCM Token: $fcmToken");
+        // }
+        //
+        // // Save FCM token to SharedPreferences
+        // final prefs = await SharedPreferences.getInstance();
+        // await prefs.setString('fcmToken', fcmToken!);
 
         PackageInfo packageInfo = await PackageInfo.fromPlatform();
 
@@ -86,7 +86,7 @@ class _HomePageState extends State<HomePage> {
         groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
         // Update user document in Firebase
         await db.collection('users').doc(uid).update({
-          'fcmToken': fcmToken,
+          // 'fcmToken': fcmToken,
           'lastLogin': FieldValue.serverTimestamp(),
           'appVersion': packageInfo.version,
         }).catchError((error) {
