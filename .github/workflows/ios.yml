@@ -165,7 +165,7 @@ jobs:
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 60
+        timeout-minutes: 180
 
 
 
