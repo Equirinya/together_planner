@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -132,15 +131,15 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                 String? ingredientId;
 
                 //call cloud function to get ingredientId (if it doesnt exist yet it is created)
-                try {
-                  final ingredientIdResult =
-                  await FirebaseFunctions.instance.httpsCallable('addMessage').call();
-                  ingredientId = ingredientIdResult.data as String;
-                } on FirebaseFunctionsException catch (error) {
-                  print(error.code);
-                  print(error.details);
-                  print(error.message);
-                }
+                // try {
+                //   final ingredientIdResult =
+                //   await FirebaseFunctions.instance.httpsCallable('addMessage').call();
+                //   ingredientId = ingredientIdResult.data as String;
+                // } on FirebaseFunctionsException catch (error) {
+                //   print(error.code);
+                //   print(error.details);
+                //   print(error.message);
+                // }
 
                 if(ingredientId == null) return;
 
