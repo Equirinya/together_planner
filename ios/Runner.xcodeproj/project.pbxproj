@@ -346,7 +346,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -368,15 +368,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
-				CODE_SIGN_STYLE = Manual;
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
-				DEVELOPMENT_TEAM = "";
-				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-				PROVISIONING_PROFILE_SPECIFIER = "";
-				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -480,7 +472,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -531,7 +523,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -555,15 +547,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				CODE_SIGN_IDENTITY = "Apple Development";
-                "CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
-                CODE_SIGN_STYLE = Manual;
-                PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
-                DEVELOPMENT_TEAM = "";
-                "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-                IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-                PROVISIONING_PROFILE_SPECIFIER = "";
-                "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
+				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -585,15 +569,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				CODE_SIGN_IDENTITY = "Apple Development";
-                "CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
-                CODE_SIGN_STYLE = Manual;
-                PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
-                DEVELOPMENT_TEAM = "";
-                "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-                IPHONEOS_DEPLOYMENT_TARGET = 15.0;
-                PROVISIONING_PROFILE_SPECIFIER = "";
-                "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
+				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;

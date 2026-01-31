@@ -59,6 +59,8 @@ on:
 jobs:
   ios_deployment:
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       # Step 1: Checkout Code
@@ -146,8 +148,6 @@ jobs:
             --export-options-plist=ios/Runner/ExportOptions.plist
         timeout-minutes: 10
 
-
-
       # Step 10: Create API Key File
       - name: Create API Key File
         env:
@@ -165,46 +165,29 @@ jobs:
         run: |
           xcrun altool --upload-app -f build/ios/ipa/*.ipa -t ios --apiKey "$API_KEY_ID" --apiIssuer "$API_ISSUER_ID"
 
-      # Check if release exists
-      - name: Check Release
-        id: check_release
+
+      - name: Create Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "v${{ steps.version.outputs.version }}" 2>/dev/null; then
-            echo "release_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "release_exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      # Create release if it doesn't exist
-      - name: Create Release if Not Exists
-        id: create_release
-        if: steps.check_release.outputs.release_exists == 'false'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          release_name: "Release v${{ steps.version.outputs.version }}"
-          draft: true
-          prerelease: false
-
-      - name: Locate IPA
-        id: locate_ipa
-        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG_NAME="v$VERSION"
           IPA_PATH=$(find build/ios/ipa -name "*.ipa" | head -n 1)
-          echo "path=$IPA_PATH" >> $GITHUB_OUTPUT
-
-      - name: Upload IPA to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ${{ steps.locate_ipa.outputs.path }}
-          asset_name: App-v${{ steps.version.outputs.version }}.ipa
-          asset_content_type: application/octet-stream
+          
+          # 1. Check if release already exists.
+          # If it does, just upload the asset to the existing release.
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Release $TAG_NAME exists. Uploading asset..."
+            gh release upload "$TAG_NAME" "$IPA_PATH" --clobber
+          else
+            # 2. Create new release and attach asset in one step
+            echo "Creating release $TAG_NAME..."
+            gh release create "$TAG_NAME" "$IPA_PATH" \
+              --title "Release $TAG_NAME" \
+              --draft=true \
+              --prerelease=false \
+              --generate-notes
+          fi
 
       # Step 13: Cleanup Keychain and Profiles
       - name: Cleanup
