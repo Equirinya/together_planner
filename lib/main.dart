@@ -53,8 +53,6 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void initState() {
-    String uid = FirebaseAuth.instance.currentUser!.uid;
-    groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
     _testUserLoggedIn();
     super.initState();
   }
@@ -84,6 +82,7 @@ class _HomePageState extends State<HomePage> {
 
         String uid = FirebaseAuth.instance.currentUser!.uid;
         groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
+        setState(() {});
         // Update user document in Firebase
         await db.collection('users').doc(uid).update({
           // 'fcmToken': fcmToken,
