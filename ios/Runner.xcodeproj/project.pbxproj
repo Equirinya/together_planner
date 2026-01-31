@@ -370,6 +370,8 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -553,6 +555,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				CODE_SIGN_STYLE = Manual;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -577,6 +581,8 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
 				PRODUCT_NAME = "$(TARGET_NAME)";
