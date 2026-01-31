@@ -129,7 +129,7 @@ jobs:
         env:
           EXPORT_METHOD: "app-store"
           EXPORT_DESTINATION: "export"
-          BUNDLE_ID: ${{ vars.BUNDLE_ID }} # Change this when adapting to another app
+          BUNDLE_ID: ${{ vars.BUNDLE_ID }}
           PROVISIONING_PROFILE: ${{ vars.PROVISIONING_PROFILE_NAME }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
@@ -137,34 +137,14 @@ jobs:
 
       # Step 9: Build IPA
       - name: Build IPA
-          #        env:
-          # These are forwarded by flutter -> xcodebuild
-          #but apparently applies to ALL targets including the Pod libraries. But Pod libraries (frameworks) should use automatic signing
-          #          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
-          ##          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
-          #          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
-          #          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
-          #          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
-          # optional if you want to pin the code sign identity:
-        #          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
-        run: |
-          # Update pod repos
-          pod repo update --silent
-          
-          # Get Flutter dependencies
-          flutter pub get
-          
-          cd ios
-          pod install || exit 1
-          cd ..
-          
+        run: |          
           # Build the IPA (can add --verbose for more logging)
           flutter build ipa \
             --release \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 7
+        timeout-minutes: 10
 
 
 
