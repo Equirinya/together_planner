@@ -161,11 +161,10 @@ jobs:
           # Build the IPA (can add --verbose for more logging)
           flutter build ipa \
             --release \
-            --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 180
+        timeout-minutes: 7
 
 
 

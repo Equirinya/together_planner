@@ -159,8 +159,8 @@ class _HomePageState extends State<HomePage> {
         children: [
           Placeholder(),
           Placeholder(),
-          // ShoppingListPage(groupId: _selectedGroup!),
-          // RecipePage(groupId: _selectedGroup!),
+          ShoppingListPage(groupId: _selectedGroup!),
+          RecipePage(groupId: _selectedGroup!),
         ],
       ) : const Center(child: CupertinoActivityIndicator())
     );
