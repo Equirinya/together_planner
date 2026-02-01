@@ -373,6 +373,7 @@
 				CODE_SIGN_STYLE = Manual;
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
@@ -559,6 +560,7 @@
                 CODE_SIGN_STYLE = Manual;
                 PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
                 DEVELOPMENT_TEAM = "";
+                "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
                 IPHONEOS_DEPLOYMENT_TARGET = 15.0;
                 PROVISIONING_PROFILE_SPECIFIER = "";
                 "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";
@@ -588,6 +590,7 @@
                 CODE_SIGN_STYLE = Manual;
                 PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
                 DEVELOPMENT_TEAM = "";
+                "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
                 IPHONEOS_DEPLOYMENT_TARGET = 15.0;
                 PROVISIONING_PROFILE_SPECIFIER = "";
                 "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner";

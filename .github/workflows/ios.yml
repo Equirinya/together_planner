@@ -140,15 +140,12 @@ jobs:
       # Step 9: Build IPA (can add --verbose for more logging)
       - name: Build IPA
         run: |
-          flutter build ios --release --no-codesign --build-number=$BUILD_NUMBER --build-name=$VERSION 
-          xcodebuild -workspace ios/Runner.xcworkspace  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO -scheme Runner -configuration Release -destination "generic/platform=iOS" archive -archivePath build/ios/Runner.xcarchive -quiet
-          xcodebuild -exportArchive -archivePath build/ios/Runner.xcarchive -exportOptionsPlist ios/Runner/ExportOptions.plist -exportPath build/ios/ipa/Runner.ipa
-#          flutter build ipa \
-#            --release \
-#            --build-number=$BUILD_NUMBER \
-#            --build-name=$VERSION \
-#            --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 45
+          flutter build ipa \
+            --release \
+            --build-number=$BUILD_NUMBER \
+            --build-name=$VERSION \
+            --export-options-plist=ios/Runner/ExportOptions.plist
+        timeout-minutes: 10
 
       # Step 10: Create API Key File
       - name: Create API Key File
