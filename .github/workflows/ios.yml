@@ -148,7 +148,7 @@ jobs:
           FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
           # optional if you want to pin the code sign identity:
           FLUTTER_XCODE_CODE_SIGN_IDENTITY: "Apple Distribution"
-        run: |          
+        run: |
           flutter build ipa \
             --release \
             --build-number=$BUILD_NUMBER \
