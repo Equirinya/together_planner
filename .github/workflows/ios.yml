@@ -137,31 +137,23 @@ jobs:
         run: |
           envsubst < ios/Runner/ExportOptions-Template.plist > ios/Runner/ExportOptions.plist
 
-      # Step 9: Build IPA
+      # Step 9: Build IPA (can add --verbose for more logging)
       - name: Build IPA
-        #        env:
-        #          # These are forwarded by flutter -> xcodebuild
-        #          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
-        #          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
-        #          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
-        #          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
-        #          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
-        #          # optional if you want to pin the code sign identity:
-        #          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "iPhone Distribution"
-        run: |
+        env:
+          # These are forwarded by flutter -> xcodebuild
+          FLUTTER_XCODE_DEVELOPMENT_TEAM: ${{ secrets.TEAM_ID }}
+          FLUTTER_XCODE_CODE_SIGN_STYLE: "Manual"
+          FLUTTER_XCODE_PROVISIONING_PROFILE_SPECIFIER: ${{ vars.PROVISIONING_PROFILE_NAME }}
+          FLUTTER_XCODE_IPHONEOS_DEPLOYMENT_TARGET: ${{ vars.DEPLOYMENT_TARGET }}
+          FLUTTER_XCODE_PRODUCT_BUNDLE_IDENTIFIER: ${{ vars.BUNDLE_ID }}
+          # optional if you want to pin the code sign identity:
+          FLUTTER_XCODE_CODE_SIGN_IDENTITY: "Apple Distribution"
+        run: |          
           flutter build ipa \
             --release \
-            --verbose \
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
-            --export-options-plist=ios/Runner/ExportOptions.plist \
-          -- \
-          DEVELOPMENT_TEAM=${{ secrets.TEAM_ID }} \
-          CODE_SIGN_STYLE=Manual \
-          PROVISIONING_PROFILE_SPECIFIER="${{ vars.PROVISIONING_PROFILE_NAME }}" \
-          IPHONEOS_DEPLOYMENT_TARGET=${{ vars.DEPLOYMENT_TARGET }} \
-          PRODUCT_BUNDLE_IDENTIFIER=${{ vars.BUNDLE_ID }} \
-          CODE_SIGN_IDENTITY="iPhone Distribution"
+            --export-options-plist=ios/Runner/ExportOptions.plist
         timeout-minutes: 10
 
       # Step 10: Create API Key File
