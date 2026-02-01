@@ -371,7 +371,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
+				PRODUCT_BUNDL E_IDENTIFIER = de.equirinya.coupleplanner;
 				DEVELOPMENT_TEAM = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				PROVISIONING_PROFILE_SPECIFIER = "";
