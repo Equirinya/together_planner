@@ -205,7 +205,7 @@ class RecipePage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => RecipeDetailPage(groupId: groupId, recipeId: newRecipeRef.id),
+                  builder: (context) => RecipeDetailPage(groupId: groupId, recipeId: newRecipeRef.id, editMode: true),
                 ),
               );
             }
@@ -271,15 +271,18 @@ class RecipeCard extends StatelessWidget {
                                 ),
                               ),
                             Align(
-                              alignment: Alignment(-0.6, 0.8),
-                              child: Text(
-                                recipeData['name'] ?? 'Unnamed Recipe',
-                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  // fontWeight: FontWeight.bold,
-                                  color: Theme.of(context).colorScheme.surface,
+                              alignment: Alignment.bottomLeft,
+                              child: Padding(
+                                padding: const EdgeInsets.all(4.0),
+                                child: Text(
+                                  recipeData['name'] ?? 'Unnamed Recipe',
+                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                    color: Theme.of(context).colorScheme.surface,
+                                    height: 1.2,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
                             //more recipe details

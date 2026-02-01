@@ -84,6 +84,40 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         // title: Text(data['name'] ?? 'Unnamed Recipe'),
         actions: [
           IconButton(
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => AlertDialog(
+                  icon: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
+                  title: const Text("Delete Recipe"),
+                  content: const Text("Are you sure you want to delete this recipe? This action cannot be undone."),
+                  actions: [
+                    TextButton(
+                      onPressed: () {
+                        Navigator.of(context).pop();
+                      },
+                      child: const Text("Cancel"),
+                    ),
+                    FilledButton(
+                      onPressed: () async {
+                        //delete images from storage
+                        for (var imgPath in images) {
+                          await FirebaseStorage.instance.ref().child(imgPath).delete();
+                        }
+                        await docRef.delete();
+                        Navigator.of(context).pop(); //close dialog
+                        Navigator.of(context).pop(); //go back
+                      },
+                      child: const Text("Delete"),
+                      style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+                    ),
+                  ],
+                ),
+              );
+            },
+            icon: Icon(Icons.delete),
+          ),
+          IconButton(
             icon: Icon(edit ? Icons.check : Icons.edit),
             onPressed: () {
               if (edit) {
@@ -211,8 +245,18 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         : Wrap(
                             spacing: 8.0,
                             children: tags
-                                .map((tag) => Chip(label: Text(tag, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer)
-                              ,), backgroundColor: Theme.of(context).colorScheme.primaryContainer, side: BorderSide.none,))
+                                .map(
+                                  (tag) => Chip(
+                                    label: Text(
+                                      tag,
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.onPrimaryContainer),
+                                    ),
+                                    backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                                    side: BorderSide.none,
+                                  ),
+                                )
                                 .toList(),
                           ),
                   ),

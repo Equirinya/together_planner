@@ -27,15 +27,32 @@ String getRelativeDateString(DateTime date) {
   }
 }
 
+class _CacheEntry {
+  final Map<String, dynamic> data;
+  final DateTime timestamp;
+
+  _CacheEntry(this.data, this.timestamp);
+
+  bool get isValid => DateTime.now().difference(timestamp).inMinutes < 5;
+}
+
 class LoadDocumentBuilder extends StatelessWidget {
+  const LoadDocumentBuilder({super.key, required this.docRef, required this.builder, this.useCache = true});
+
+
   final DocumentReference<Map<String, dynamic>> docRef;
   final Widget Function(Map<String,dynamic> data) builder;
-  const LoadDocumentBuilder({super.key, required this.docRef, required this.builder});
+  final bool useCache;
+
+  static final Map<String, _CacheEntry> _memoryCache = {};
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder(future: docRef.get(), builder: (context, snapshot) {
       if (snapshot.connectionState == ConnectionState.waiting) {
+        if(useCache && (_memoryCache[docRef.path]?.isValid ?? false)) {
+          return builder(_memoryCache[docRef.path]!.data);
+        }
         return const CupertinoActivityIndicator();
       }
       if (snapshot.hasError) {
@@ -44,6 +61,7 @@ class LoadDocumentBuilder extends StatelessWidget {
       if (!snapshot.hasData || snapshot.data == null) {
         return const Icon(Icons.error_outline_rounded);
       }
+      _memoryCache[docRef.path] = _CacheEntry(snapshot.data!.data()!, DateTime.now());
       return builder(snapshot.data!.data()!);
     },);
   }

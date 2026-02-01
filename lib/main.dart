@@ -101,6 +101,8 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        surfaceTintColor: Colors.transparent,
+        backgroundColor: Colors.transparent,
         //dropdown to select group
         //TODO move stream to initstate
         title: StreamBuilder(stream: groupsStream, builder: (context, snapshot) {
