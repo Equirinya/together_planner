@@ -129,7 +129,7 @@ jobs:
       # Step 8: Generate ExportOptions.plist from Template
       - name: Generate ExportOptions.plist
         env:
-          EXPORT_METHOD: "app-store"
+          EXPORT_METHOD: "app-store-connect"
           EXPORT_DESTINATION: "export"
           BUNDLE_ID: ${{ vars.BUNDLE_ID }}
           PROVISIONING_PROFILE: ${{ vars.PROVISIONING_PROFILE_NAME }}
@@ -148,7 +148,7 @@ jobs:
 #            --build-number=$BUILD_NUMBER \
 #            --build-name=$VERSION \
 #            --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 30
+        timeout-minutes: 45
 
       # Step 10: Create API Key File
       - name: Create API Key File
