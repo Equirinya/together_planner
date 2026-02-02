@@ -9,6 +9,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:system_theme/system_theme.dart';
 import 'firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -18,6 +19,10 @@ import 'pages/shopping_list_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  SystemTheme.fallbackColor = const Color(0xFFB7FF5E);
+  await SystemTheme.accentColor.load();
+
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const MyApp());
 }
@@ -29,7 +34,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: SystemTheme.accentColor.accent),
+      ),
+      darkTheme: ThemeData(
+        brightness: Brightness.dark,
+        colorScheme: ColorScheme.fromSeed(seedColor: SystemTheme.accentColor.dark, brightness: Brightness.dark),
       ),
       home: const HomePage(),
     );

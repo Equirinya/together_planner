@@ -304,8 +304,6 @@ firebase.json
 /test
 /functions
 
-/assets
-
 
 #firebase
 firestore.indexes.json

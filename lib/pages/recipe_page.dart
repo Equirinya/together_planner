@@ -68,14 +68,14 @@ class RecipePage extends StatelessWidget {
                         return DragTarget<DocumentSnapshot<Map<String, dynamic>>>(
                           builder: (context, candidateData, rejectedData) {
                             Color color = candidateData.isNotEmpty
-                                ? Theme.of(context).colorScheme.primaryContainer
-                                : Theme.of(context).colorScheme.surfaceContainerLow;
+                                ? colorScheme.primaryContainer
+                                : colorScheme.surfaceContainerLow;
                             return Container(
                               decoration: BoxDecoration(
                                 color: color,
                                 gradient: isToday
                                     ? LinearGradient(
-                                        colors: [?Color.lerp(color, Theme.of(context).colorScheme.primary, 0.1), color],
+                                        colors: [?Color.lerp(color, colorScheme.primary, 0.1), color],
                                         begin: Alignment.centerLeft,
                                         end: Alignment(-0.7, 0),
                                       )
@@ -168,8 +168,8 @@ class RecipePage extends StatelessWidget {
                     margin: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
                         borderRadius:  BorderRadius.circular(8),
-                        color: Theme.of(context).colorScheme.errorContainer.withAlpha(200)),
-                    child: Center(child: Icon(Icons.delete_outline, size: 128, color: Theme.of(context).colorScheme.onErrorContainer)),
+                        color: colorScheme.errorContainer.withAlpha(200)),
+                    child: Center(child: Icon(Icons.delete_outline, size: 128, color: colorScheme.onErrorContainer)),
                   ),
                 ),
                 onWillAcceptWithDetails: (details) => ['cooking_plan', 'recipes'].contains(details.data.reference.parent.id),
@@ -277,7 +277,7 @@ class RecipeCard extends StatelessWidget {
                                 child: Text(
                                   recipeData['name'] ?? 'Unnamed Recipe',
                                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                    color: Theme.of(context).colorScheme.surface,
+                                    color: Colors.white,
                                     height: 1.2,
                                   ),
                                   maxLines: 2,
