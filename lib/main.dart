@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -33,6 +34,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: SystemTheme.accentColor.accent),
       ),
@@ -59,11 +61,21 @@ class _HomePageState extends State<HomePage> {
   final db = FirebaseFirestore.instance;
   //groups where the user is a member of
   Stream<QuerySnapshot<Map<String, dynamic>>>? groupsStream;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? groupListener;
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> acceptedGroups = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> pendingGroups = [];
 
   @override
   void initState() {
     _testUserLoggedIn();
     super.initState();
+  }
+
+  @override
+  void dispose() {
+    groupListener?.cancel();
+    super.dispose();
   }
 
   Future<void> _testUserLoggedIn() async {
@@ -91,7 +103,28 @@ class _HomePageState extends State<HomePage> {
 
         String uid = FirebaseAuth.instance.currentUser!.uid;
         groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
-        setState(() {});
+        groupListener?.cancel();
+        groupListener = groupsStream!.listen((snapshot) {
+
+          var groups = snapshot.docs;
+          acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
+          pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
+          if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
+            _selectedGroup = acceptedGroups.first.id;
+          }
+          setState(() {});
+
+          //handle new invites
+          // for (var docChange in snapshot.docChanges) {
+          //   if (docChange.type == DocumentChangeType.added) {
+          //     var data = docChange.doc.data();
+          //     if (data != null && data['status'] == 'pending') {
+          //       showInfoDialog(context, "You have been invited to join a new group!");
+          //     }
+          //   }
+          // }
+        });
+
         // Update user document in Firebase
         await db.collection('users').doc(uid).update({
           // 'fcmToken': fcmToken,
@@ -113,42 +146,20 @@ class _HomePageState extends State<HomePage> {
         surfaceTintColor: Colors.transparent,
         backgroundColor: Colors.transparent,
         //dropdown to select group
-        //TODO move stream to initstate
-        title: StreamBuilder(stream: groupsStream, builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const CupertinoActivityIndicator();
-          }
-          if (snapshot.hasError) {
-            return const Text("Error loading groups");
-          }
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            print(snapshot.data?.docs);
-            return const Text("No groups"); //TODO show dialog to create or join group
-          }
-          var groups = snapshot.data!.docs;
-          var acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
-          var pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
-          if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
-            Future.delayed(Duration(seconds: 2), () {
-            setState(() {
-              _selectedGroup = acceptedGroups.first.id;
-            });
-            });
-          }
-          return SizedBox();
-          return DropdownButton<String>(
-            value: _selectedGroup,
-            items: acceptedGroups.map((inviteDoc) => DropdownMenuItem<String>(
-              value: inviteDoc.id,
-              child: LoadDocumentBuilder(docRef: db.collection("groups").doc(inviteDoc.id), builder: (data) => Text(data['name'])),
-            )).toList(),
-            onChanged: (String? newValue) {
-              setState(() {
-                _selectedGroup = newValue!;
-              });
-            },
-          );
-        },)
+
+        title:  SizedBox()
+      //   DropdownButton<String>(
+      //   value: _selectedGroup,
+      //   items: acceptedGroups.map((inviteDoc) => DropdownMenuItem<String>(
+      //     value: inviteDoc.id,
+      //     child: LoadDocumentBuilder(docRef: db.collection("groups").doc(inviteDoc.id), builder: (data) => Text(data['name'])),
+      //   )).toList(),
+      //   onChanged: (String? newValue) {
+      //     setState(() {
+      //       _selectedGroup = newValue!;
+      //     });
+      //   },
+      // );
       ),
       // bottomNavigationBar: NavigationBar(
       //   destinations: const [
