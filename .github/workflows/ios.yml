@@ -145,7 +145,7 @@ jobs:
             --build-number=$BUILD_NUMBER \
             --build-name=$VERSION \
             --export-options-plist=ios/Runner/ExportOptions.plist
-        timeout-minutes: 10
+        timeout-minutes: 30
 
       # Step 10: Create API Key File
       - name: Create API Key File
