@@ -1,13 +1,15 @@
 import 'dart:async';
 
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:couple_planner/utils.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+// import 'package:cloud_functions/cloud_functions.dart';
+
+import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -28,6 +30,8 @@ class _RecipePageState extends State<RecipePage> {
   final int daysToShowPrior = 15; //show plans from the last 15 days
   final int daysToShowFuture = 30; //show plans up to 30 days in the future
 
+  late StreamSubscription<bool> keyboardSubscription;
+  bool keyboardVisible = false;
   final SearchController _searchController = SearchController();
   String searchQuery = '';
   bool aiGenerating = false;
@@ -58,6 +62,12 @@ class _RecipePageState extends State<RecipePage> {
         generateSearchedRecipes();
       });
     });
+    var keyboardVisibilityController = KeyboardVisibilityController();
+    keyboardSubscription = keyboardVisibilityController.onChange.listen((bool visible) {
+      setState(() {
+        keyboardVisible = visible;
+      });
+    });
 
     super.initState();
   }
@@ -66,6 +76,7 @@ class _RecipePageState extends State<RecipePage> {
   void dispose() {
     planListener?.cancel();
     recipesListener?.cancel();
+    keyboardSubscription.cancel();
     super.dispose();
   }
 
@@ -165,83 +176,87 @@ class _RecipePageState extends State<RecipePage> {
       mainAxisSize: MainAxisSize.max,
       children: [
         //Calendar with drop targets for recipes
-        ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: displaySize.height / 3, minHeight: displaySize.height / 4),
-          child: CarouselView.weighted(
-            flexWeights: const <int>[1, 3, 3, 1],
-            enableSplash: false,
-            controller: CarouselController(initialItem: daysToShowPrior),
-            children:
-                List.generate(
-                  daysToShowPrior + daysToShowFuture,
-                  (index) => DateTime.now().subtract(Duration(days: daysToShowPrior)).add(Duration(days: index)),
-                ).map((day) {
-                  {
-                    final dayPlans = cookingPlans.where((plan) {
-                      final plannedFor = (plan['plannedFor'] as Timestamp).toDate();
-                      return plannedFor.year == day.year && plannedFor.month == day.month && plannedFor.day == day.day;
-                    }).toList();
-                    bool isToday = DateTime.now().difference(day).inHours < 1 && DateTime.now().difference(day).inHours > -1;
-                    String dateString = getRelativeDateString(day);
+        AnimatedSize(
+          alignment: Alignment.topCenter,
+          duration: const Duration(milliseconds: 300),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: displaySize.height / (keyboardVisible ? 4 : 3), minHeight: displaySize.height / 4),
+            child: CarouselView.weighted(
+              flexWeights: const <int>[1, 3, 3, 1],
+              enableSplash: false,
+              controller: CarouselController(initialItem: daysToShowPrior),
+              children:
+                  List.generate(
+                    daysToShowPrior + daysToShowFuture,
+                    (index) => DateTime.now().subtract(Duration(days: daysToShowPrior)).add(Duration(days: index)),
+                  ).map((day) {
+                    {
+                      final dayPlans = cookingPlans.where((plan) {
+                        final plannedFor = (plan['plannedFor'] as Timestamp).toDate();
+                        return plannedFor.year == day.year && plannedFor.month == day.month && plannedFor.day == day.day;
+                      }).toList();
+                      bool isToday = DateTime.now().difference(day).inHours < 1 && DateTime.now().difference(day).inHours > -1;
+                      String dateString = getRelativeDateString(day);
 
-                    return DragTarget<DocumentSnapshot<Map<String, dynamic>>>(
-                      builder: (context, candidateData, rejectedData) {
-                        Color color = candidateData.isNotEmpty ? colorScheme.primaryContainer : colorScheme.surfaceContainerLow;
-                        return Container(
-                          decoration: BoxDecoration(
-                            color: color,
-                            gradient: isToday
-                                ? LinearGradient(
-                                    colors: [?Color.lerp(color, colorScheme.primary, 0.1), color],
-                                    begin: Alignment.centerLeft,
-                                    end: Alignment(-0.7, 0),
-                                  )
-                                : null,
-                          ),
-                          child: Column(
-                            children: [
-                              Text(dateString, style: Theme.of(context).textTheme.titleMedium, maxLines: 1),
-                              Expanded(
-                                child: SingleChildScrollView(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: Column(
-                                    children: dayPlans
-                                        .map(
-                                          (plan) => LongPressDraggable(
-                                            data: plan,
-                                            feedback: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
-                                            childWhenDragging: RecipeCard(recipeId: null, groupCollection: null),
-                                            child: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
-                                          ),
-                                        )
-                                        .toList(),
+                      return DragTarget<DocumentSnapshot<Map<String, dynamic>>>(
+                        builder: (context, candidateData, rejectedData) {
+                          Color color = candidateData.isNotEmpty ? colorScheme.primaryContainer : colorScheme.surfaceContainerLow;
+                          return Container(
+                            decoration: BoxDecoration(
+                              color: color,
+                              gradient: isToday
+                                  ? LinearGradient(
+                                      colors: [?Color.lerp(color, colorScheme.primary, 0.1), color],
+                                      begin: Alignment.centerLeft,
+                                      end: Alignment(-0.7, 0),
+                                    )
+                                  : null,
+                            ),
+                            child: Column(
+                              children: [
+                                Text(dateString, style: Theme.of(context).textTheme.titleMedium, maxLines: 1),
+                                Expanded(
+                                  child: SingleChildScrollView(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: Column(
+                                      children: dayPlans
+                                          .map(
+                                            (plan) => LongPressDraggable(
+                                              data: plan,
+                                              feedback: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
+                                              childWhenDragging: RecipeCard(recipeId: null, groupCollection: null),
+                                              child: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
+                                            ),
+                                          )
+                                          .toList(),
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                      onWillAcceptWithDetails: (details) => ['cooking_plan', 'recipes'].contains(details.data.reference.parent.id),
-                      onAcceptWithDetails: (details) {
-                        if (details.data.reference.parent.id == 'recipes') {
-                          //adding a new cooking plan
-                          groupCollection.collection('cooking_plan').add({
-                            'recipe': details.data.id,
-                            'plannedFor': Timestamp.fromDate(DateTime(day.year, day.month, day.day)),
-                            'servings': 2,
-                          });
-                          //TODO save default (or most recent) servings in recipe and show status bar to update servings
-                          //TODO add ingredients to shopping list
-                          details.data.reference.update({'lastUsedAt': FieldValue.serverTimestamp()});
-                        } else if (details.data.reference.parent.id == 'cooking_plan') {
-                          //moving an existing cooking plan
-                          details.data.reference.update({'plannedFor': Timestamp.fromDate(DateTime(day.year, day.month, day.day))});
-                        }
-                      },
-                    );
-                  }
-                }).toList(),
+                              ],
+                            ),
+                          );
+                        },
+                        onWillAcceptWithDetails: (details) => ['cooking_plan', 'recipes'].contains(details.data.reference.parent.id),
+                        onAcceptWithDetails: (details) {
+                          if (details.data.reference.parent.id == 'recipes') {
+                            //adding a new cooking plan
+                            groupCollection.collection('cooking_plan').add({
+                              'recipe': details.data.id,
+                              'plannedFor': Timestamp.fromDate(DateTime(day.year, day.month, day.day)),
+                              'servings': 2,
+                            });
+                            //TODO save default (or most recent) servings in recipe and show status bar to update servings
+                            //TODO add ingredients to shopping list
+                            details.data.reference.update({'lastUsedAt': FieldValue.serverTimestamp()});
+                          } else if (details.data.reference.parent.id == 'cooking_plan') {
+                            //moving an existing cooking plan
+                            details.data.reference.update({'plannedFor': Timestamp.fromDate(DateTime(day.year, day.month, day.day))});
+                          }
+                        },
+                      );
+                    }
+                  }).toList(),
+            ),
           ),
         ),
         //recipes list (recents/favorites) or filtered by searchbar
@@ -274,12 +289,7 @@ class _RecipePageState extends State<RecipePage> {
                 alignment: Alignment.bottomCenter,
                 child: SearchBar(
                   controller: _searchController,
-                  padding: WidgetStateProperty.resolveWith<EdgeInsetsGeometry?>((Set<WidgetState> states) {
-                    if (states.contains(WidgetState.focused)) {
-                      return const EdgeInsets.all(8.0);
-                    }
-                    return EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom + 16, left: 8, right: 8, top: 8);
-                  }),
+                  padding: WidgetStatePropertyAll(EdgeInsets.only(bottom: keyboardVisible ? 8 : MediaQuery.of(context).viewInsets.bottom + 16, left: 8, right: 8, top: 8)),
                   shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16)))),
                   hintText: "Search Recipes",
                   onChanged: (value) {
@@ -295,20 +305,20 @@ class _RecipePageState extends State<RecipePage> {
                               onPressed: searchQuery.isNotEmpty ? () async {
                                 setAIState(() => aiGenerating = true);
                                 try {
-                                  var result = await FirebaseFunctions.instance.httpsCallable('generateRecipe').call(<String, dynamic>{
-                                    'groupId': widget.groupId,
-                                    'prompt': searchQuery,
-                                  });
+                                  // var result = await FirebaseFunctions.instance.httpsCallable('generateRecipe').call(<String, dynamic>{
+                                  //   'groupId': widget.groupId,
+                                  //   'prompt': searchQuery,
+                                  // });
                                   setAIState(() => aiGenerating = false);
-                                  String? recipeId = result.data['recipeId'];
-                                  if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
-                                      ),
-                                    );
-                                  }
+                                  // String? recipeId = result.data['recipeId'];
+                                  // if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
+                                  //   Navigator.push(
+                                  //     context,
+                                  //     MaterialPageRoute(
+                                  //       builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
+                                  //     ),
+                                  //   );
+                                  // }
                                 } catch (e) {
                                   if (context.mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error generating recipe: $e')));
