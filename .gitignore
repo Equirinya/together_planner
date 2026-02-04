@@ -301,6 +301,7 @@ firebase.json
 /linux
 /macos
 /web
+/windows
 /test
 /functions
 
