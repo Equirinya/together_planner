@@ -7,7 +7,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-// import 'package:cloud_functions/cloud_functions.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
@@ -305,20 +305,20 @@ class _RecipePageState extends State<RecipePage> {
                               onPressed: searchQuery.isNotEmpty ? () async {
                                 setAIState(() => aiGenerating = true);
                                 try {
-                                  // var result = await FirebaseFunctions.instance.httpsCallable('generateRecipe').call(<String, dynamic>{
-                                  //   'groupId': widget.groupId,
-                                  //   'prompt': searchQuery,
-                                  // });
+                                  var result = await FirebaseFunctions.instance.httpsCallable('generateRecipe').call(<String, dynamic>{
+                                    'groupId': widget.groupId,
+                                    'prompt': searchQuery,
+                                  });
                                   setAIState(() => aiGenerating = false);
-                                  // String? recipeId = result.data['recipeId'];
-                                  // if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
-                                  //   Navigator.push(
-                                  //     context,
-                                  //     MaterialPageRoute(
-                                  //       builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
-                                  //     ),
-                                  //   );
-                                  // }
+                                  String? recipeId = result.data['recipeId'];
+                                  if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
+                                    Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
+                                      ),
+                                    );
+                                  }
                                 } catch (e) {
                                   if (context.mounted) {
                                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error generating recipe: $e')));
