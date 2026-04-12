@@ -43,9 +43,7 @@ class WelcomePage extends StatelessWidget {
           SizedBox(
             height: smallerSide / 4,
             width: smallerSide / 4,
-            child: ColorFiltered(
-                colorFilter: ColorFilter.mode(Colors.black, BlendMode.srcIn), //Theme.of(context).colorScheme.primary
-                child: Image.asset("assets/icon/icon_transparent.png")),
+            child: Image.asset("assets/icon/icon_transparent.png"),
           ),
           Text("Welcome to Together Planner!", style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.black)),
         ],
