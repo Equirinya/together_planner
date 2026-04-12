@@ -98,7 +98,6 @@ captures/
 .externalNativeBuild
 
 # Google Services (e.g. APIs or Firebase)
-google-services.json
 firebase.json
 
 # Freeline
@@ -291,7 +290,6 @@ DerivedData/
 ## Custom
 # Google API key and other resources
 GoogleService-Info.plist
-google-services.json
 firebase.json
 # Plugins (already resolved through pubspec.yaml)
 .flutter-plugins

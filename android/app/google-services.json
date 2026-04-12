@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "384756239580",
+    "project_id": "couple-planner-99826",
+    "storage_bucket": "couple-planner-99826.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:384756239580:android:7b9d7d0a1c04c943d4f819",
+        "android_client_info": {
+          "package_name": "de.equirinya.couple_planner"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCrmBrqSzf-NkXmQdV0IHMf279MmViPFoA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
