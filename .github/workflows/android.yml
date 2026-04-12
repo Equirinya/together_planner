@@ -1,3 +1,14 @@
+###necessary github action repository variables:
+#BUNDLE_ID
+#KEY_ALIAS
+#FLUTTER_VERSION
+
+###necessary github action repository secrets:
+#GOOGLE_PLAY_SERVICE_ACCOUNT_JSON
+#KEYSTORE_BASE64
+#KEYSTORE_PASSWORD
+#KEY_PASSWORD
+
 name: Android Build and Deploy
 
 on:
@@ -6,6 +17,8 @@ on:
 jobs:
   android_deployment:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       # Step 1: Checkout Code
@@ -22,9 +35,11 @@ jobs:
       # Step 3: Set up Flutter SDK
       - name: Set up Flutter SDK
         uses: flutter-actions/setup-flutter@v3
+        env:
+          FLUTTER_VERSION: ${{ vars.FLUTTER_VERSION }}
         with:
           channel: stable
-          version: 3.27.1  # Keep this up to date with flutter --version
+          version: ${{ env.FLUTTER_VERSION }} # Keep this up to date with flutter --version
 
       # Step 4: Install Dependencies
       - name: Install Dependencies
@@ -47,7 +62,7 @@ jobs:
           Set-Content -Path android/key.properties -Value @"
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword=${{ secrets.KEY_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
+          keyAlias=${{ vars.KEY_ALIAS }}
           storeFile=keystore.jks
           "@
 
@@ -55,11 +70,13 @@ jobs:
       - name: Parse Build Number and Name
         id: version
         run: |
-          $VERSION_LINE = Get-Content pubspec.yaml | Select-String '^version:'
+          $VERSION_LINE = (Get-Content pubspec.yaml | Select-String '^version:').ToString()
           $VERSION = ($VERSION_LINE -split ' ')[1].Split('+')[0]
           $BUILD_NUMBER = ($VERSION_LINE -split '\+')[1]
           echo "VERSION=$VERSION" >> $env:GITHUB_ENV
           echo "BUILD_NUMBER=$BUILD_NUMBER" >> $env:GITHUB_ENV
+          echo "version=$VERSION" >> $env:GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $env:GITHUB_OUTPUT
 
       # Step 8: Build APK
       - name: Build APK
@@ -75,28 +92,43 @@ jobs:
             --build-number=$env:BUILD_NUMBER `
             --build-name=$env:VERSION
 
-      # Step 10: Upload to existing Release
-      - name: Upload APK to Release
-        uses: actions/upload-release-asset@v1
+      # Step 10: Create Release and Upload Assets
+      - name: Create Release and Upload Assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: build/app/outputs/flutter-apk/app-release.apk
-          asset_name: app-v${{ env.VERSION }}.apk
-          asset_content_type: application/vnd.android.package-archive
+        run: |
+          $VERSION = "${{ steps.version.outputs.version }}"
+          $TAG_NAME = "v$VERSION"
+          $APK_PATH = "build/app/outputs/flutter-apk/app-release.apk"
+          $AAB_PATH = "build/app/outputs/bundle/release/app-release.aab"
 
-      - name: Upload AAB to Release
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: build/app/outputs/bundle/release/app-release.aab
-          asset_name: app-v${{ env.VERSION }}.aab
-          asset_content_type: application/x-authorware-bin
+          # 1. Check if release already exists.
+          # If it does, just upload the assets to the existing release.
+          if (gh release view "$TAG_NAME" 2>$null) {
+            Write-Output "Release $TAG_NAME exists. Uploading assets..."
+            gh release upload "$TAG_NAME" "$APK_PATH" --clobber
+            gh release upload "$TAG_NAME" "$AAB_PATH" --clobber
+          } else {
+            # 2. Create new release and attach assets in one step
+            Write-Output "Creating release $TAG_NAME..."
+            gh release create "$TAG_NAME" "$APK_PATH" "$AAB_PATH" `
+              --title "Release $TAG_NAME" `
+              --draft=true `
+              --prerelease=false `
+              --generate-notes
+          }
 
-      # Step 11: Cleanup
+      # Step 11: Upload AAB to Google Play (Internal Testing)
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ vars.BUNDLE_ID }}
+          releaseFiles: build/app/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
+
+      # Step 12: Cleanup
       - name: Cleanup
         if: always()
         run: |
