@@ -109,6 +109,10 @@ class StorageImage extends StatefulWidget {
   /// Whether to automatically attempt to re-download on error (useful for transient network)
   final bool retryOnError;
 
+  ///if the image is displayed smaller than its raw resolution
+  final int? memCacheWidth;
+  final int? memCacheHeight;
+
   const StorageImage({
     Key? key,
     required this.storagePath,
@@ -117,6 +121,8 @@ class StorageImage extends StatefulWidget {
     this.fit,
     this.maxSizeBytes,
     this.retryOnError = true,
+    this.memCacheWidth,
+    this.memCacheHeight,
   }) : super(key: key);
 
   @override
@@ -124,8 +130,11 @@ class StorageImage extends StatefulWidget {
 }
 
 class _StorageImageState extends State<StorageImage> {
+  static Directory? _globalCacheDir;
+  static final Set<String> _verifiedDiskFiles = {};
+
   File? _file;
-  double? _progress; // 0..1
+  double? _progress;
   String? _error;
   bool _loading = true;
 
@@ -149,7 +158,6 @@ class _StorageImageState extends State<StorageImage> {
   }
 
   Future<String> _hashedFilename(String path) async {
-    // Use md5 of the storage path to create a stable filename. Keep original extension if present.
     final bytes = utf8.encode(path);
     final digest = md5.convert(bytes).toString();
     final ext = _extensionFromPath(path);
@@ -159,19 +167,20 @@ class _StorageImageState extends State<StorageImage> {
   String _extensionFromPath(String path) {
     final idx = path.lastIndexOf('.');
     if (idx == -1) return '';
-    final ext = path.substring(idx + 1);
-    // sanitize a bit:
-    final sanitized = ext.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
-    return sanitized;
+    return path.substring(idx + 1).replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
   }
 
-  Future<Directory> _cacheDir() async {
-    final dir = await getTemporaryDirectory(); // cache-like
+  Future<Directory> _getCacheDir() async {
+    if (_globalCacheDir != null) return _globalCacheDir!;
+
+    final dir = await getTemporaryDirectory();
     final storageCache = Directory('${dir.path}/couple_planner_firebase_storage_cache');
     if (!await storageCache.exists()) {
       await storageCache.create(recursive: true);
     }
-    return storageCache;
+
+    _globalCacheDir = storageCache;
+    return _globalCacheDir!;
   }
 
   Future<void> _loadOrDownload() async {
@@ -182,115 +191,102 @@ class _StorageImageState extends State<StorageImage> {
     });
 
     try {
-      final cache = await _cacheDir();
+      final cache = await _getCacheDir();
       final filename = await _hashedFilename(widget.storagePath);
       final file = File('${cache.path}/$filename');
 
-      // if cached, use it
-      if (await file.exists()) {
-        setState(() {
-          _file = file;
-          _loading = false;
-          _progress = 1;
-        });
+      if (_verifiedDiskFiles.contains(filename) || await file.exists()) {
+        _verifiedDiskFiles.add(filename); // Add to memory cache
+        if (mounted) {
+          setState(() {
+            _file = file;
+            _loading = false;
+            _progress = 1;
+          });
+        }
         return;
       }
 
-      // otherwise download from Firebase Storage directly to file (no public URL)
       final ref = FirebaseStorage.instance.ref(widget.storagePath);
-
-      // Use writeToFile which streams to disk (preferred).
-      // The return is a firebase_storage.DownloadTask which exposes snapshot events.
       final downloadTask = ref.writeToFile(file);
 
-      // Listen for progress
       final sub = downloadTask.snapshotEvents.listen((snapshot) {
+        if (!mounted) return;
         final total = snapshot.totalBytes ?? 0;
         final transferred = snapshot.bytesTransferred;
-        double p;
-        if (total > 0) {
-          p = transferred / total;
-        } else {
-          // if totalBytes not available, just set null or 0
-          p = 0.0;
-        }
         setState(() {
-          _progress = p;
+          _progress = total > 0 ? transferred / total : 0.0;
         });
       }, onError: (e) {
-        // handle stream error
+        // Handle stream error quietly, catch block will handle failure
       });
 
-      // Wait for completion
       await downloadTask;
       await sub.cancel();
 
-      // double-check file exists
       if (await file.exists()) {
-        setState(() {
-          _file = file;
-          _loading = false;
-          _progress = 1.0;
-        });
+        _verifiedDiskFiles.add(filename); // Add to memory cache
+        if (mounted) {
+          setState(() {
+            _file = file;
+            _loading = false;
+            _progress = 1.0;
+          });
+        }
         return;
       } else {
         throw Exception('Downloaded but file missing');
       }
     } catch (e, st) {
-      // If writeToFile is unavailable in your package version or fails, optional fallback:
-      //  - Use ref.getData(maxSizeBytes) to retrieve bytes, then write to file.
-      //  - But be aware getData loads into memory — keep maxSizeBytes small.
-      // We'll attempt fallback only if writeToFile fails and a size is provided.
-      if (kDebugMode) {
-        // print stack in debug
-        debugPrint('StorageImage download error: $e\n$st');
-      }
+      if (kDebugMode) debugPrint('StorageImage download error: $e\n$st');
 
-      // Attempt fallback if maxSizeBytes supplied
       if (widget.maxSizeBytes != null) {
         try {
           final ref = FirebaseStorage.instance.ref(widget.storagePath);
           final bytes = await ref.getData(widget.maxSizeBytes!);
           if (bytes != null) {
-            final cache = await _cacheDir();
+            final cache = await _getCacheDir();
             final filename = await _hashedFilename(widget.storagePath);
             final file = File('${cache.path}/$filename');
             await file.writeAsBytes(bytes);
-            setState(() {
-              _file = file;
-              _loading = false;
-              _progress = 1.0;
-            });
+
+            _verifiedDiskFiles.add(filename);
+            if (mounted) {
+              setState(() {
+                _file = file;
+                _loading = false;
+                _progress = 1.0;
+              });
+            }
             return;
           }
         } catch (e2, st2) {
-          if (kDebugMode) {
-            debugPrint('StorageImage fallback error: $e2\n$st2');
-          }
+          if (kDebugMode) debugPrint('StorageImage fallback error: $e2\n$st2');
         }
       }
 
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-        _progress = null;
-      });
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+          _progress = null;
+        });
+      }
     }
   }
 
   Widget _buildContent() {
-    if (_file != null && _file!.existsSync()) {
+    if (_file != null) {
       return Image.file(
         _file!,
         fit: widget.fit,
-        errorBuilder: (_, __, ___) {
-          return widget.errorWidget ?? const Icon(Icons.broken_image);
-        },
+        cacheWidth: (widget.memCacheWidth != null && widget.memCacheWidth! > 0) ? widget.memCacheWidth : null,
+        cacheHeight: (widget.memCacheWidth == null && widget.memCacheHeight != null && widget.memCacheHeight! > 0) ? widget.memCacheHeight : null,
+        errorBuilder: (_, __, ___) => widget.errorWidget ?? const Icon(Icons.broken_image),
       );
     }
 
     if (_loading) {
-      // show placeholder + optional progress indicator
       final placeholder = widget.placeholder ??
           Container(
             color: Colors.grey.shade200,
@@ -298,49 +294,37 @@ class _StorageImageState extends State<StorageImage> {
           );
 
       if (_progress != null) {
-        // small linear progress overlay
         return Stack(
           fit: StackFit.expand,
           children: [
             placeholder,
-            Center(
-              child: CircularProgressIndicator(value: _progress),
-            ),
+            Center(child: CircularProgressIndicator(value: _progress)),
           ],
         );
       }
       return placeholder;
     }
 
-    // Not loading and no file => error
-    final err = widget.errorWidget ??
+    return widget.errorWidget ??
         Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.broken_image),
               const SizedBox(height: 6),
-              Text('Failed to load image', style: TextStyle(fontSize: 12)),
+              const Text('Failed to load image', style: TextStyle(fontSize: 12)),
               if (_error != null) ...[
                 const SizedBox(height: 6),
-                Text(_error!, style: TextStyle(fontSize: 10)),
+                Text(_error!, style: const TextStyle(fontSize: 10)),
               ],
               if (widget.retryOnError)
                 TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _loading = true;
-                      _error = null;
-                    });
-                    _loadOrDownload();
-                  },
+                  onPressed: _loadOrDownload,
                   child: const Text('Retry'),
                 )
             ],
           ),
         );
-
-    return err;
   }
 
   @override
