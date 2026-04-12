@@ -63,8 +63,8 @@ class _HomePageState extends State<HomePage> {
   Stream<QuerySnapshot<Map<String, dynamic>>>? groupsStream;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? groupListener;
 
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> acceptedGroups = [];
-  List<QueryDocumentSnapshot<Map<String, dynamic>>> pendingGroups = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>>? acceptedGroups;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>>? pendingGroups;
 
   @override
   void initState() {
@@ -109,8 +109,8 @@ class _HomePageState extends State<HomePage> {
           var groups = snapshot.docs;
           acceptedGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'accepted').toList();
           pendingGroups = groups.where((inviteDoc) => inviteDoc.data()['status'] == 'pending').toList();
-          if (_selectedGroup == null || !acceptedGroups.any((element) => element.id == _selectedGroup)) {
-            _selectedGroup = acceptedGroups.first.id;
+          if (_selectedGroup == null || !acceptedGroups!.any((element) => element.id == _selectedGroup)) {
+            _selectedGroup = acceptedGroups!.firstOrNull?.id;
           }
           setState(() {});
 
@@ -183,7 +183,19 @@ class _HomePageState extends State<HomePage> {
           ShoppingListPage(groupId: _selectedGroup!),
           RecipePage(groupId: _selectedGroup!),
         ],
-      ) : const Center(child: CupertinoActivityIndicator())
+      ) : acceptedGroups != null && acceptedGroups!.isEmpty?
+          const Center(child: Padding(
+            padding: EdgeInsets.all(64.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.group_off, size: 32),
+                SizedBox(height: 16),
+                Text('You are not a member of any groups yet. Ask Jacob to invite you!', style: TextStyle(fontSize: 18), textAlign: TextAlign.center,),
+              ],
+            ),
+          ))
+          : const Center(child: CupertinoActivityIndicator())
     );
   }
 }

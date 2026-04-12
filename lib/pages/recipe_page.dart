@@ -26,7 +26,8 @@ class RecipePage extends StatefulWidget {
 }
 
 class _RecipePageState extends State<RecipePage> {
-  late DocumentReference<Map<String, dynamic>> groupCollection;
+  late DocumentReference<Map<String, dynamic>> groupDoc;
+  bool aiEnabled = false;
   final int daysToShowPrior = 15; //show plans from the last 15 days
   final int daysToShowFuture = 30; //show plans up to 30 days in the future
 
@@ -44,8 +45,16 @@ class _RecipePageState extends State<RecipePage> {
 
   @override
   void initState() {
-    groupCollection = FirebaseFirestore.instance.collection('groups').doc(widget.groupId);
-    final cookingPlanStream = groupCollection
+    groupDoc = FirebaseFirestore.instance.collection('groups').doc(widget.groupId);
+    groupDoc.get().then((doc) {
+      if (doc.exists) {
+        var data = doc.data()!;
+        setState(() {
+          aiEnabled = data['ai'] ?? false;
+        });
+      }
+    });
+    final cookingPlanStream = groupDoc
         .collection('cooking_plan')
         .where('plannedFor', isGreaterThan: Timestamp.fromDate(DateTime.now().subtract(Duration(days: daysToShowPrior))))
         .orderBy('plannedFor')
@@ -55,7 +64,7 @@ class _RecipePageState extends State<RecipePage> {
         cookingPlans = snapshot.docs;
       });
     });
-    final recipesStream = groupCollection.collection('recipes').orderBy('lastUsedAt', descending: true).limit(50).snapshots();
+    final recipesStream = groupDoc.collection('recipes').orderBy('lastUsedAt', descending: true).limit(50).snapshots();
     recipesListener = recipesStream.listen((snapshot) {
       setState(() {
         recipes = snapshot.docs;
@@ -156,7 +165,7 @@ class _RecipePageState extends State<RecipePage> {
       'images': <String>[],
       'steps': <String>[],
     };
-    var newRecipeRef = await groupCollection.collection('recipes').add(newRecipeData);
+    var newRecipeRef = await groupDoc.collection('recipes').add(newRecipeData);
     if (mounted) {
       Navigator.push(
         context,
@@ -223,9 +232,14 @@ class _RecipePageState extends State<RecipePage> {
                                           .map(
                                             (plan) => LongPressDraggable(
                                               data: plan,
-                                              feedback: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
+                                              feedback: RecipeCard(recipeId: plan['recipe'], groupCollection: groupDoc),
                                               childWhenDragging: RecipeCard(recipeId: null, groupCollection: null),
-                                              child: RecipeCard(recipeId: plan['recipe'], groupCollection: groupCollection),
+                                              child: GestureDetector(child: RecipeCard(recipeId: plan['recipe'], groupCollection: groupDoc),                           onTap: () => Navigator.push(
+                                                context,
+                                                MaterialPageRoute(
+                                                  builder: (context) => RecipeDetailPage(groupId: groupDoc.id, recipeId:plan['recipe']),
+                                                ),
+                                              )),
                                             ),
                                           )
                                           .toList(),
@@ -240,7 +254,7 @@ class _RecipePageState extends State<RecipePage> {
                         onAcceptWithDetails: (details) {
                           if (details.data.reference.parent.id == 'recipes') {
                             //adding a new cooking plan
-                            groupCollection.collection('cooking_plan').add({
+                            groupDoc.collection('cooking_plan').add({
                               'recipe': details.data.id,
                               'plannedFor': Timestamp.fromDate(DateTime(day.year, day.month, day.day)),
                               'servings': 2,
@@ -270,10 +284,10 @@ class _RecipePageState extends State<RecipePage> {
                     .map(
                       (e) => LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
                         data: e,
-                        feedback: RecipeCard(recipeId: e.id, groupCollection: groupCollection),
-                        childWhenDragging: RecipeCard(recipeId: e.id, groupCollection: groupCollection),
+                        feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
+                        childWhenDragging: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
                         child: GestureDetector(
-                          child: RecipeCard(recipeId: e.id, groupCollection: groupCollection),
+                          child: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -297,7 +311,7 @@ class _RecipePageState extends State<RecipePage> {
                     generateSearchedRecipes();
                   },
                   trailing: [
-                    StatefulBuilder(
+                    if(aiEnabled) StatefulBuilder(
                       builder: (context, setAIState) => aiGenerating
                           ? CupertinoActivityIndicator()
                           : IconButton(
@@ -395,39 +409,43 @@ class RecipeCard extends StatelessWidget {
                       docRef: groupCollection!.collection("recipes").doc(recipeId),
                       builder: (recipeData) {
                         List<String> images = List<String>.from(recipeData['images'] ?? []);
-                        return Stack(
-                          children: [
-                            if (images.isNotEmpty) ...[
-                              SizedBox.expand(
-                                child: StorageImage(storagePath: images.first, fit: BoxFit.cover),
-                              ),
-                              Container(color: Colors.black26),
-                            ] else
-                              Align(
-                                alignment: Alignment(0, -0.3),
-                                child: LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    final double smallerdim = constraints.maxWidth < constraints.maxHeight
-                                        ? constraints.maxWidth
-                                        : constraints.maxHeight;
-                                    return Icon(Icons.restaurant_menu, size: smallerdim / 2, color: color.toColor());
-                                  },
+                        return LayoutBuilder(
+                          builder: (context, constraints) {
+                            final double smallerdim = constraints.maxWidth < constraints.maxHeight
+                                ? constraints.maxWidth
+                                : constraints.maxHeight;
+                            final double dpr = MediaQuery.of(context).devicePixelRatio;
+                            return Stack(
+                              children: [
+                                if (images.isNotEmpty) ...[
+                                  SizedBox.expand(
+                                    child: StorageImage(storagePath: images.first, fit: BoxFit.cover,
+                                    memCacheHeight: (constraints.maxHeight * dpr).toInt(),
+                                    // memCacheWidth: (constraints.maxWidth *dpr).toInt()
+                                    ),
+                                  ),
+                                  Container(color: Colors.black26),
+                                ] else
+                                  Align(
+                                    alignment: Alignment(0, -0.3),
+                                    child: Icon(Icons.restaurant_menu, size: smallerdim / 2, color: color.toColor()),
+                                  ),
+                                Align(
+                                  alignment: Alignment.bottomLeft,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(4.0),
+                                    child: Text(
+                                      recipeData['name'] ?? 'Unnamed Recipe',
+                                      style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white, height: 1.2),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            Align(
-                              alignment: Alignment.bottomLeft,
-                              child: Padding(
-                                padding: const EdgeInsets.all(4.0),
-                                child: Text(
-                                  recipeData['name'] ?? 'Unnamed Recipe',
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white, height: 1.2),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ),
-                            //more recipe details
-                          ],
+                                //more recipe details
+                              ],
+                            );
+                          }
                         );
                       },
                     )

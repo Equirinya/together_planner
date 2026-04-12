@@ -103,9 +103,6 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
         usernameError = 0;
         loading = true;
       });
-      setState(() {
-        loading = false;
-      });
       if (false)//((numberOfNameAppearances.count ?? 0) > 0)
       {
         setState(() {
@@ -113,32 +110,47 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
         });
       } else {
 
-        //TODO add loop to wait until user is fully created
         var currentUser = auth.currentUser;
-        print(currentUser);
-        await Future.delayed(const Duration(seconds: 5));
-
-        currentUser = auth.currentUser;
-        print(currentUser);
+        int retries = 0;
+        const maxRetries = 100;
+        while (currentUser == null && retries < maxRetries) {
+          await Future.delayed(const Duration(milliseconds: 500));
+          currentUser = auth.currentUser;
+          retries++;
+        }
+        if (currentUser == null) {
+          print("User creation timed out.");
+          setState(() {
+            loading = false;
+          });
+          return;
+        }
 
         final userDoc = <String, dynamic>{
           'username': username,
-          'createdAt': DateTime.now(),
-          'lastLogin': DateTime.now(),
+          'createdAt': FieldValue.serverTimestamp(),
+          'lastLogin': FieldValue.serverTimestamp(),
         };
         final userNameDoc = <String, dynamic>{
           'uid': auth.currentUser!.uid,
-          'createdAt': DateTime.now(),
+          'createdAt': FieldValue.serverTimestamp(),
         };
         final userPublicDoc = <String, dynamic>{
           'username': username,
-          'updatedAt': DateTime.now(),
+          'updatedAt': FieldValue.serverTimestamp(),
         };
+
+        print("usernameDoc");
+        print(userNameDoc);
 
 
         db.collection('users').doc(auth.currentUser!.uid).set(userDoc);
         db.collection('usernames').doc(username).set(userNameDoc);
         db.collection('users_public').doc(auth.currentUser!.uid).set(userPublicDoc);
+
+        setState(() {
+          loading = false;
+        });
 
         prefs.setBool("userCreated", true);
         stage == 2;
@@ -235,12 +247,11 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
           Icon(
             Icons.badge_outlined,
             size: 32,
-            color: Theme.of(context).primaryColor,
           ),
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Text("Choose your username",
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(color: Theme.of(context).primaryColor)),
+                style: Theme.of(context).textTheme.headlineMedium),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -278,17 +289,9 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
               style: Theme.of(context).textTheme.bodySmall!.copyWith(color: Colors.red),
             ),
           ),
-          Visibility(
-            visible: loading,
-            maintainSize: false,
-            child: const Padding(
-              padding: EdgeInsets.all(16.0),
-              child: CupertinoActivityIndicator(),
-            ),
-          ),
           Padding(
             padding: const EdgeInsets.all(16.0),
-            child: FilledButton(
+            child: loading ? CupertinoActivityIndicator() : FilledButton(
               onPressed: signIn,
               child: const Text("Sign In"),
             ),
@@ -590,9 +593,9 @@ class _SignUpPageState extends State<SignUpPage> {
                 return "Bitte gib ein Passwort ein.";
               }
 
-              if (!acceptedTerms) {
-                return "Bitte akzeptiere die Bedingungen.";
-              }
+              // if (!acceptedTerms) {
+              //   return "Bitte akzeptiere die Bedingungen.";
+              // }
 
               final connectivityResult = await (Connectivity().checkConnectivity());
               if (connectivityResult == ConnectivityResult.none) {
@@ -621,16 +624,16 @@ class _SignUpPageState extends State<SignUpPage> {
               return null;
             },
           ),
-          Row(
-            children: [
-              Checkbox(
-                  value: acceptedTerms,
-                  onChanged: (value) => setState(() {
-                        acceptedTerms = value ?? false;
-                      })),
-              Expanded(child: Text("Ich akzeptiere die Datenschutzerklärung und allgemeinen Geschäftsbedingungen.", style: TextStyle(color: Colors.black),))
-            ],
-          )
+          // TODO Row(
+          //   children: [
+          //     Checkbox(
+          //         value: acceptedTerms,
+          //         onChanged: (value) => setState(() {
+          //               acceptedTerms = value ?? false;
+          //             })),
+          //     Expanded(child: Text("Ich akzeptiere die Datenschutzerklärung und allgemeinen Geschäftsbedingungen.", style: TextStyle(color: Colors.black),))
+          //   ],
+          // )
         ],
       ),
     );
