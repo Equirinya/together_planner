@@ -1,3 +1,9 @@
+<style>
+.page-header a {
+  display: none;
+}
+</style>
+
 ---
 layout: default
 title: Account Deletion Request
