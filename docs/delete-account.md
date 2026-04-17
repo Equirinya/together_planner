@@ -1,13 +1,17 @@
-<style>
-.page-header a {
-  display: none;
-}
-</style>
-
 ---
 layout: default
 title: Account Deletion Request
 ---
+
+<style>
+.page-header a {
+  display: none;
+}
+.page-header {
+  background-image: linear-gradient(120deg, #4CD85A, #FFA144);
+}
+</style>
+
 
 # Request Account and Data Deletion
 
