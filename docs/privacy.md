@@ -1,11 +1,14 @@
+<style>
+.page-header a {
+  display: none;
+}
+</style>
+
 ---
 layout: default
 title: Privacy Policy
+description: We value your privacy. This document outlines how we handle your information.
 ---
-
-# Privacy Policy
-
-We value your privacy. This document outlines how we handle your information.
 
 ## Information Collection
 We only collect information necessary to provide our app's features, such as user profiles, recipes, shopping lists, to-do items, reminders, and calendar events.

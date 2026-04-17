@@ -1,11 +1,14 @@
+<style>
+.page-header {
+  background-image: linear-gradient(120deg, #1e3c72, #2a5298);
+}
+</style>
+
 ---
 layout: default
-title: Welcome to My App
+title: Together Planner
+description: Plan your recipes, chores and appointments together.
 ---
-
-# Together Planner
-
-Plan your recipes, chores and appointments together.
 
 ## Features
 
