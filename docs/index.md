@@ -25,4 +25,4 @@ Need help using the app or have a general question?
 [Email our Support Team](mailto:equirinya@gmail.com?subject=Together%20Planner%20Support%20Question)
 
 ---
-[Privacy Policy](./privacy.md) | [Delete Account Data](./delete-account.md)
+[Privacy Policy](./privacy.md) | [Terms and Conditions](./terms.md) | [Delete Account Data](./delete-account.md)
