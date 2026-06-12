@@ -17,49 +17,6 @@ const String kUnknownIngredient = '1'; // could not be matched at all
 const String _kFunctionsRegion = 'europe-west1';
 const String _kResolveFn = 'ingredients-resolveShoppingItem';
 
-// ─── Categories ───────────────────────────────────────────────────────────────
-// Matches the `category` field stored on ingredient docs.
-// Icons approximate MDI; swap for MdiIcons.* if you add material_design_icons_flutter.
-const List<String> kCategories = [
-  'fruits_and_vegetables',
-  'meat_and_fish',
-  'dairy_and_eggs',
-  'grains_and_pasta',
-  'baking_ingredients',
-  'spices_and_herbs',
-  'nuts_and_seeds',
-  'beverages',
-  'condiments_and_sauces',
-  'snacks_and_sweets',
-  'frozen_foods',
-  'canned_and_packaged_goods',
-  'other',
-];
-
-const Map<String, IconData> kCategoryIcons = {
-  'fruits_and_vegetables':    Icons.eco,
-  'meat_and_fish':            Icons.set_meal,
-  'dairy_and_eggs':           Icons.egg_alt,
-  'grains_and_pasta':         Icons.grain,
-  'baking_ingredients':       Icons.cake,
-  'spices_and_herbs':         Icons.spa,
-  'nuts_and_seeds':           Icons.scatter_plot,
-  'beverages':                Icons.local_drink,
-  'condiments_and_sauces':    Icons.water_drop,
-  'snacks_and_sweets':        Icons.cookie,
-  'frozen_foods':             Icons.ac_unit,
-  'canned_and_packaged_goods':Icons.inventory_2,
-  'other':                    Icons.category,
-};
-
-// ⚡ For instant, restart-surviving lookups make sure Firestore persistence is
-//    on (default on iOS/Android; add this in main() to be explicit / for web):
-//
-//      FirebaseFirestore.instance.settings = const Settings(
-//        persistenceEnabled: true,
-//        cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
-//      );
-
 // =============================================================================
 // Small shared helpers
 // =============================================================================
@@ -85,35 +42,6 @@ String sanitizeLang(String code) =>
 // =============================================================================
 // Models
 // =============================================================================
-
-class UnitModel {
-  UnitModel(this.id, this.name, this.synonyms);
-  final String id;
-  final Map<String, dynamic> name;     // lang -> { singular, plural }
-  final Map<String, dynamic> synonyms; // lang -> [..]
-
-  String display(String lang, num count) {
-    final n = (name[lang] ?? name['en'] ?? const {}) as Map;
-    return (count == 1 ? n['singular'] : n['plural'])?.toString() ??
-        n['singular']?.toString() ??
-        id;
-  }
-
-  bool matches(String needle) {
-    final n = needle.trim().toLowerCase();
-    for (final v in name.values) {
-      if (v is Map &&
-          (v['singular']?.toString().toLowerCase() == n ||
-              v['plural']?.toString().toLowerCase() == n)) {
-        return true;
-      }
-    }
-    for (final v in synonyms.values) {
-      if (v is List && v.any((e) => e.toString().toLowerCase() == n)) return true;
-    }
-    return false;
-  }
-}
 
 class MatchedIngredient {
   MatchedIngredient(this.id, this.data);
@@ -182,6 +110,61 @@ class Suggestion {
 // Unit cache (snapshot listener serves the offline cache first → instant)
 // =============================================================================
 
+class UnitModel {
+  final String id;
+
+  /// { "en": { "singular": "cup", "plural": "cups" }, "de": { … } }
+  final Map<String, dynamic> name;
+
+  /// { "en": ["c."], "de": ["Ts."] }
+  final Map<String, dynamic> synonyms;
+
+  /// How much one +/– tap changes the amount for this unit.
+  /// Defaults to 1 if not set in Firestore.
+  /// Examples: 1 for pieces/grams/ml, 5 for grams when editing in bulk, 0.25 for cups.
+  final num defaultIncrement;
+
+  UnitModel(this.id, this.name, this.synonyms, [this.defaultIncrement = 1]);
+
+  // ── Display ──────────────────────────────────────────────────────────────
+
+  /// Returns the localised unit name only (singular or plural).
+  /// The caller is responsible for formatting and prepending the amount.
+  String display(String lang, num count) {
+    final langMap =
+    (name[lang] ?? name['en'] ?? const {}) as Map<dynamic, dynamic>;
+    final singular = (langMap['singular'] ?? id).toString();
+    final plural = (langMap['plural'] ?? singular).toString();
+    return count == 1 ? singular : plural;
+  }
+
+  // ── Matching (used by recipe parsing / search) ───────────────────────────
+
+  /// Returns true if [word] matches any singular, plural, or synonym for
+  /// any language.
+  bool matches(String word) {
+    final lower = word.toLowerCase();
+    for (final entry in name.values) {
+      if (entry is Map) {
+        if ((entry['singular'] ?? '').toString().toLowerCase() == lower) {
+          return true;
+        }
+        if ((entry['plural'] ?? '').toString().toLowerCase() == lower) {
+          return true;
+        }
+      }
+    }
+    for (final list in synonyms.values) {
+      if (list is List) {
+        if (list.any((s) => s.toString().toLowerCase() == lower)) return true;
+      }
+    }
+    return false;
+  }
+}
+
+// ── Cache ──────────────────────────────────────────────────────────────────
+
 class UnitsCache {
   UnitsCache._();
   static final UnitsCache instance = UnitsCache._();
@@ -193,7 +176,10 @@ class UnitsCache {
   Future<void> ensureLoaded() async {
     if (_loaded) return;
     _loaded = true;
-    _sub ??= FirebaseFirestore.instance.collection('units').snapshots().listen(_apply);
+    _sub ??= FirebaseFirestore.instance
+        .collection('units')
+        .snapshots()
+        .listen(_apply);
   }
 
   void _apply(QuerySnapshot snap) {
@@ -203,6 +189,8 @@ class UnitsCache {
         d.id,
         Map<String, dynamic>.from(data['name'] ?? const {}),
         Map<String, dynamic>.from(data['synonyms'] ?? const {}),
+        // Fall back to 1 if the field is absent or null
+        (data['defaultIncrement'] as num?) ?? 1,
       );
     }
   }
@@ -217,9 +205,22 @@ class UnitsCache {
     return null;
   }
 
+  /// Formats [count] with the correct singular/plural name for [unitId].
+  /// Falls back to [kDefaultUnitId] then to the raw id string.
   String display(String? unitId, String lang, num count) =>
       (byId(unitId) ?? byId(kDefaultUnitId))?.display(lang, count) ??
           (unitId ?? kDefaultUnitId);
+
+  /// Returns the step size for +/– controls for [unitId].
+  /// Falls back to 1 if the unit is unknown or has no defaultIncrement set.
+  num increment(String? unitId) => byId(unitId)?.defaultIncrement ?? 1;
+
+  void dispose() {
+    _sub?.cancel();
+    _sub = null;
+    _loaded = false;
+    _units.clear();
+  }
 }
 
 // =============================================================================

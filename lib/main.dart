@@ -253,7 +253,7 @@ class _HomePageState extends State<HomePage> {
       case 'shopping_list':
         return ShoppingListPage(groupId: _selectedGroup!);
       case 'recipes':
-        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled);
+        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled);
       case 'todos':
         // Replace with your real TodosPage when ready
         return const _PlaceholderPage(label: 'To-Do\'s');
