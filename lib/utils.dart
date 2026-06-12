@@ -19,7 +19,7 @@ String getRelativeDateString(DateTime date) {
     return 'Tomorrow';
   } else if (difference.inHours > -24 && difference.inHours <= 0) {
     return 'Today';
-  } else if(difference.inHours > - 48 && difference.inHours <= 24) {
+  } else if (difference.inHours > -48 && difference.inHours <= 24) {
     return 'Yesterday';
   } else {
     const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -39,54 +39,60 @@ class _CacheEntry {
 class LoadDocumentBuilder extends StatelessWidget {
   const LoadDocumentBuilder({super.key, required this.docRef, required this.builder, this.useCache = true});
 
-
   final DocumentReference<Map<String, dynamic>> docRef;
-  final Widget Function(Map<String,dynamic> data) builder;
+  final Widget Function(Map<String, dynamic> data) builder;
   final bool useCache;
 
   static final Map<String, _CacheEntry> _memoryCache = {};
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder(future: docRef.get(), builder: (context, snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        if(useCache && (_memoryCache[docRef.path]?.isValid ?? false)) {
-          return builder(_memoryCache[docRef.path]!.data);
+    return FutureBuilder(
+      future: docRef.get(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          if (useCache && (_memoryCache[docRef.path]?.isValid ?? false)) {
+            return builder(_memoryCache[docRef.path]!.data);
+          }
+          return const CupertinoActivityIndicator();
         }
-        return const CupertinoActivityIndicator();
-      }
-      if (snapshot.hasError) {
-        return const Icon(Icons.warning_rounded);
-      }
-      if (!snapshot.hasData || snapshot.data == null) {
-        return const Icon(Icons.error_outline_rounded);
-      }
-      _memoryCache[docRef.path] = _CacheEntry(snapshot.data!.data()!, DateTime.now());
-      return builder(snapshot.data!.data()!);
-    },);
+        if (snapshot.hasError) {
+          return const Icon(Icons.warning_rounded);
+        }
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const Icon(Icons.error_outline_rounded);
+        }
+        _memoryCache[docRef.path] = _CacheEntry(snapshot.data!.data()!, DateTime.now());
+        return builder(snapshot.data!.data()!);
+      },
+    );
   }
 }
 
 class LoadCollectionBuilder extends StatelessWidget {
   final Query<Map<String, dynamic>> collRef;
   final Widget Function(List<QueryDocumentSnapshot<Map<String, dynamic>>>) builder;
+
   const LoadCollectionBuilder({super.key, required this.collRef, required this.builder});
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder(future: collRef.get(), builder: (context, snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        return const CupertinoActivityIndicator();
-      }
-      if (snapshot.hasError) {
-        return const Icon(Icons.warning_rounded);
-      }
-      if (!snapshot.hasData || snapshot.data == null) {
-        return const Icon(Icons.error_outline_rounded);
-      }
-      final docsData = snapshot.data!.docs;
-      return builder(docsData);
-    },);
+    return FutureBuilder(
+      future: collRef.get(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const CupertinoActivityIndicator();
+        }
+        if (snapshot.hasError) {
+          return const Icon(Icons.warning_rounded);
+        }
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const Icon(Icons.error_outline_rounded);
+        }
+        final docsData = snapshot.data!.docs;
+        return builder(docsData);
+      },
+    );
   }
 }
 
@@ -137,6 +143,7 @@ class _StorageImageState extends State<StorageImage> {
   double? _progress;
   String? _error;
   bool _loading = true;
+  bool _hasRetriedDecode = false;
 
   @override
   void initState() {
@@ -153,6 +160,7 @@ class _StorageImageState extends State<StorageImage> {
       _progress = null;
       _error = null;
       _loading = true;
+      _hasRetriedDecode = false; // Reset the retry flag
       _loadOrDownload();
     }
   }
@@ -183,7 +191,35 @@ class _StorageImageState extends State<StorageImage> {
     return _globalCacheDir!;
   }
 
-  Future<void> _loadOrDownload() async {
+  Future<void> _handleCorruptFile() async {
+    if (!mounted) return;
+
+    setState(() {
+      _hasRetriedDecode = true;
+      _file = null;
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      final cache = await _getCacheDir();
+      final filename = await _hashedFilename(widget.storagePath);
+      final file = File('${cache.path}/$filename');
+
+      // Delete the corrupted file from disk and memory cache
+      if (await file.exists()) {
+        await file.delete();
+      }
+      _verifiedDiskFiles.remove(filename);
+    } catch (e) {
+      if (kDebugMode) debugPrint("Failed to delete corrupt file: $e");
+    }
+
+    // Force a fresh download
+    _loadOrDownload(forceDownload: true);
+  }
+
+  Future<void> _loadOrDownload({bool forceDownload = false}) async {
     setState(() {
       _loading = true;
       _progress = null;
@@ -195,7 +231,8 @@ class _StorageImageState extends State<StorageImage> {
       final filename = await _hashedFilename(widget.storagePath);
       final file = File('${cache.path}/$filename');
 
-      if (_verifiedDiskFiles.contains(filename) || await file.exists()) {
+      // Skip cache check if we are forcing a redownload
+      if (!forceDownload && (_verifiedDiskFiles.contains(filename) || await file.exists())) {
         _verifiedDiskFiles.add(filename); // Add to memory cache
         if (mounted) {
           setState(() {
@@ -210,21 +247,30 @@ class _StorageImageState extends State<StorageImage> {
       final ref = FirebaseStorage.instance.ref(widget.storagePath);
       final downloadTask = ref.writeToFile(file);
 
-      final sub = downloadTask.snapshotEvents.listen((snapshot) {
-        if (!mounted) return;
-        final total = snapshot.totalBytes ?? 0;
-        final transferred = snapshot.bytesTransferred;
-        setState(() {
-          _progress = total > 0 ? transferred / total : 0.0;
-        });
-      }, onError: (e) {
-        // Handle stream error quietly, catch block will handle failure
-      });
+      final sub = downloadTask.snapshotEvents.listen(
+        (snapshot) {
+          if (!mounted) return;
+          final total = snapshot.totalBytes ?? 0;
+          final transferred = snapshot.bytesTransferred;
+          setState(() {
+            _progress = total > 0 ? transferred / total : 0.0;
+          });
+        },
+        onError: (e) {
+          // Handle stream error quietly, catch block will handle failure
+        },
+      );
 
       await downloadTask;
       await sub.cancel();
 
       if (await file.exists()) {
+        // Simple sanity check: Make sure the file isn't 0 bytes
+        if (await file.length() == 0) {
+          await file.delete();
+          throw Exception('Downloaded file is empty');
+        }
+
         _verifiedDiskFiles.add(filename); // Add to memory cache
         if (mounted) {
           setState(() {
@@ -244,7 +290,7 @@ class _StorageImageState extends State<StorageImage> {
         try {
           final ref = FirebaseStorage.instance.ref(widget.storagePath);
           final bytes = await ref.getData(widget.maxSizeBytes!);
-          if (bytes != null) {
+          if (bytes != null && bytes.isNotEmpty) {
             final cache = await _getCacheDir();
             final filename = await _hashedFilename(widget.storagePath);
             final file = File('${cache.path}/$filename');
@@ -285,13 +331,8 @@ class _StorageImageState extends State<StorageImage> {
         errorBuilder: (_, __, ___) => widget.errorWidget ?? const Icon(Icons.broken_image),
       );
     }
-
     if (_loading) {
-      final placeholder = widget.placeholder ??
-          Container(
-            color: Colors.grey.shade200,
-            child: const Center(child: Icon(Icons.image)),
-          );
+      final placeholder = Center(child: widget.placeholder ?? const Icon(Icons.image));
 
       if (_progress != null) {
         return Stack(
@@ -305,26 +346,7 @@ class _StorageImageState extends State<StorageImage> {
       return placeholder;
     }
 
-    return widget.errorWidget ??
-        Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.broken_image),
-              const SizedBox(height: 6),
-              const Text('Failed to load image', style: TextStyle(fontSize: 12)),
-              if (_error != null) ...[
-                const SizedBox(height: 6),
-                Text(_error!, style: const TextStyle(fontSize: 10)),
-              ],
-              if (widget.retryOnError)
-                TextButton(
-                  onPressed: _loadOrDownload,
-                  child: const Text('Retry'),
-                )
-            ],
-          ),
-        );
+    return widget.errorWidget ?? Center(child: const Icon(Icons.broken_image));
   }
 
   @override
