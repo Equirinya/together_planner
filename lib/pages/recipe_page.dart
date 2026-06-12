@@ -55,6 +55,38 @@ class _RecipePageState extends State<RecipePage> {
   GlobalKey _planKey(String planId) =>
       _planCardKeys.putIfAbsent(planId, () => GlobalKey());
 
+  // Shopping-list rows preloaded when a recipe drag starts, keyed by recipe id,
+  // so the add-to-shopping-list dialog can open instantly.
+  final Map<String, Future<List<_IngPreload>>> _ingredientPreload = {};
+  Future<List<_IngPreload>> _preloadIngredients(String recipeId) =>
+      _ingredientPreload.putIfAbsent(
+        recipeId,
+            () => _ShoppingListDialogState.loadRows(groupDoc, recipeId),
+      );
+
+  // Live drop preview: the day (by date key) currently hovered and the index at
+  // which a dropped card would be inserted, used to open a gap in that day.
+  String? _hoverDayKey;
+  int _hoverIndex = -1;
+
+  int _computeInsertIndex(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> dayPlans,
+      double pointerDy,
+      ) {
+    int insertIdx = dayPlans.length;
+    for (int i = 0; i < dayPlans.length; i++) {
+      final box = _planKey(dayPlans[i].id).currentContext?.findRenderObject()
+      as RenderBox?;
+      if (box == null) continue;
+      final midY = box.localToGlobal(Offset(0, box.size.height / 2)).dy;
+      if (pointerDy < midY) {
+        insertIdx = i;
+        break;
+      }
+    }
+    return insertIdx;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -237,15 +269,23 @@ class _RecipePageState extends State<RecipePage> {
       });
       data.reference.update({'lastUsedAt': FieldValue.serverTimestamp()});
       if (widget.shoppingListEnabled && mounted) {
-        showDialog(
-          context: context,
-          builder: (_) => _ShoppingListDialog(
-            group: groupDoc,
-            recipeId: data.id,
-            planRef: planRef,
-            recipeServings: servings.toInt(),
-          ),
-        );
+        // Use the rows preloaded when dragging started (falling back to a fresh
+        // load), and only surface the dialog when the recipe actually has
+        // ingredients to add.
+        final rows = await (_ingredientPreload[data.id] ?? _preloadIngredients(data.id));
+        _ingredientPreload.remove(data.id); // avoid serving stale preference data
+        if (rows.isNotEmpty && mounted) {
+          showDialog(
+            context: context,
+            builder: (_) => _ShoppingListDialog(
+              group: groupDoc,
+              recipeId: data.id,
+              planRef: planRef,
+              recipeServings: servings.toInt(),
+              preloadedRows: rows,
+            ),
+          );
+        }
       }
     } else if (data.reference.parent.id == 'cooking_plan') {
       data.reference.update({'plannedFor': ts});
@@ -256,29 +296,30 @@ class _RecipePageState extends State<RecipePage> {
   /// quantities from the shopping list (deletes shopping-list entries that
   /// reach zero).
   Future<void> _removePlan(DocumentReference<Map<String, dynamic>> planRef) async {
-    final added = await planRef.collection('added_ingredients').get();
-    for (final a in added.docs) {
-      final ingId = a['ingredientId'].toString();
-      final q = Map<String, dynamic>.from(a['quantity'] ?? {});
-      final existing = await groupDoc
-          .collection('shopping_list')
-          .where('ingredientId', isEqualTo: ingId)
-          .limit(1)
-          .get();
-      if (existing.docs.isNotEmpty) {
-        final doc = existing.docs.first;
-        final cur = Map<String, dynamic>.from(doc['quantity'] ?? {});
-        q.forEach((k, v) {
-          if (cur.containsKey(k)) {
-            final n = (cur[k] as num) - (v as num);
-            n > 0 ? cur[k] = n : cur.remove(k);
-          }
-        });
-        cur.isEmpty
-            ? await doc.reference.delete()
-            : await doc.reference.update({'quantity': cur});
-      }
-      await a.reference.delete();
+    // The plan now stores the shopping-list item ids it contributed to and the
+    // matching quantities as parallel arrays, instead of an added_ingredients
+    // subcollection.
+    final planSnap = await planRef.get();
+    final planData = planSnap.data() ?? {};
+    final itemIds = List<String>.from(planData['itemIds'] ?? const []);
+    final quantities = (planData['quantities'] as List?) ?? const [];
+    for (int i = 0; i < itemIds.length; i++) {
+      final itemRef = groupDoc.collection('shopping_list').doc(itemIds[i]);
+      final q = i < quantities.length
+          ? Map<String, dynamic>.from(quantities[i] as Map? ?? {})
+          : <String, dynamic>{};
+      final itemSnap = await itemRef.get();
+      if (!itemSnap.exists) continue;
+      final cur = Map<String, dynamic>.from(itemSnap['quantity'] ?? {});
+      q.forEach((k, v) {
+        if (cur.containsKey(k)) {
+          final n = (cur[k] as num) - (v as num);
+          n > 0 ? cur[k] = n : cur.remove(k);
+        }
+      });
+      cur.isEmpty
+          ? await itemRef.delete()
+          : await itemRef.update({'quantity': cur});
     }
     await planRef.delete();
   }
@@ -317,6 +358,7 @@ class _RecipePageState extends State<RecipePage> {
                 final bool isToday = DateTime.now().difference(day).inHours < 1 &&
                     DateTime.now().difference(day).inHours > -1;
                 final String dateString = getRelativeDateString(day);
+                final String dayKey = '${day.year}-${day.month}-${day.day}';
 
                 // Single DragTarget per day. onAcceptWithDetails computes the
                 // insertion index from each plan card's GlobalKey midpoint, so
@@ -324,19 +366,30 @@ class _RecipePageState extends State<RecipePage> {
                 return DragTarget<DocumentSnapshot<Map<String, dynamic>>>(
                   onWillAcceptWithDetails: (d) =>
                       ['cooking_plan', 'recipes'].contains(d.data.reference.parent.id),
+                  onMove: (d) {
+                    final idx = _computeInsertIndex(dayPlans, d.offset.dy);
+                    if (_hoverDayKey != dayKey || _hoverIndex != idx) {
+                      setState(() {
+                        _hoverDayKey = dayKey;
+                        _hoverIndex = idx;
+                      });
+                    }
+                  },
+                  onLeave: (_) {
+                    if (_hoverDayKey == dayKey) {
+                      setState(() {
+                        _hoverDayKey = null;
+                        _hoverIndex = -1;
+                      });
+                    }
+                  },
                   onAcceptWithDetails: (d) {
-                    int insertIdx = dayPlans.length;
-                    for (int i = 0; i < dayPlans.length; i++) {
-                      final box = _planKey(dayPlans[i].id)
-                          .currentContext
-                          ?.findRenderObject() as RenderBox?;
-                      if (box == null) continue;
-                      final midY =
-                          box.localToGlobal(Offset(0, box.size.height / 2)).dy;
-                      if (d.offset.dy < midY) {
-                        insertIdx = i;
-                        break;
-                      }
+                    final insertIdx = _computeInsertIndex(dayPlans, d.offset.dy);
+                    if (_hoverDayKey != null) {
+                      setState(() {
+                        _hoverDayKey = null;
+                        _hoverIndex = -1;
+                      });
                     }
                     _handleDrop(day, dayPlans, insertIdx, d.data);
                   },
@@ -369,37 +422,65 @@ class _RecipePageState extends State<RecipePage> {
                             child: SingleChildScrollView(
                               padding: const EdgeInsets.only(bottom: 8),
                               child: Column(
-                                children: dayPlans.map((plan) => Container(
-                                  key: _planKey(plan.id),
-                                  child: LongPressDraggable<
-                                      DocumentSnapshot<Map<String, dynamic>>>(
-                                    data: plan,
-                                    feedback: RecipeCard(
-                                      recipeId: plan['recipe'],
-                                      groupCollection: groupDoc,
-                                    ),
-                                    childWhenDragging: const RecipeCard(
-                                      recipeId: null,
-                                      groupCollection: null,
-                                    ),
-                                    child: GestureDetector(
-                                      onTap: () => Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (_) => RecipeDetailPage(
-                                            groupId: groupDoc.id,
-                                            recipeId: plan['recipe'],
-                                            aiEnabled: widget.aiEnabled,
+                                children: [
+                                  for (int i = 0; i < dayPlans.length; i++)
+                                    AnimatedPadding(
+                                      duration: const Duration(milliseconds: 150),
+                                      curve: Curves.easeOut,
+                                      // Open a gap above this card while a drag
+                                      // hovers at its index, so the incoming
+                                      // recipe visibly makes room for itself.
+                                      padding: EdgeInsets.only(
+                                        top: (_hoverDayKey == dayKey &&
+                                            _hoverIndex == i)
+                                            ? 72
+                                            : 0,
+                                      ),
+                                      child: Container(
+                                        key: _planKey(dayPlans[i].id),
+                                        child: LongPressDraggable<
+                                            DocumentSnapshot<Map<String, dynamic>>>(
+                                          data: dayPlans[i],
+                                          feedback: RecipeCard(
+                                            recipeId: dayPlans[i]['recipe'],
+                                            groupCollection: groupDoc,
+                                          ),
+                                          childWhenDragging: const RecipeCard(
+                                            recipeId: null,
+                                            groupCollection: null,
+                                          ),
+                                          child: GestureDetector(
+                                            onTap: () => Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) => RecipeDetailPage(
+                                                  groupId: groupDoc.id,
+                                                  recipeId: dayPlans[i]['recipe'],
+                                                  aiEnabled: widget.aiEnabled,
+                                                ),
+                                              ),
+                                            ),
+                                            child: RecipeCard(
+                                              recipeId: dayPlans[i]['recipe'],
+                                              groupCollection: groupDoc,
+                                            ),
                                           ),
                                         ),
                                       ),
-                                      child: RecipeCard(
-                                        recipeId: plan['recipe'],
-                                        groupCollection: groupDoc,
-                                      ),
+                                    ),
+                                  // Gap shown when the drop position is the end
+                                  // of the list.
+                                  AnimatedSize(
+                                    duration: const Duration(milliseconds: 150),
+                                    curve: Curves.easeOut,
+                                    child: SizedBox(
+                                      height: (_hoverDayKey == dayKey &&
+                                          _hoverIndex >= dayPlans.length)
+                                          ? 72
+                                          : 0,
                                     ),
                                   ),
-                                )).toList(),
+                                ],
                               ),
                             ),
                           ),
@@ -426,6 +507,7 @@ class _RecipePageState extends State<RecipePage> {
                     .map(
                       (e) => LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
                     data: e,
+                    onDragStarted: () => _preloadIngredients(e.id),
                     feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
                     childWhenDragging:
                     RecipeCard(recipeId: e.id, groupCollection: groupDoc),
@@ -686,14 +768,29 @@ class RecipeCard extends StatelessWidget {
 
 // ─── Shopping-list dialog ─────────────────────────────────────────────────────
 
+/// Immutable snapshot of a recipe ingredient used to (pre)load the shopping
+/// list dialog: id, localised name, base quantities, default add flag and
+/// category. Kept separate from [_IngRow] so cached preloads stay pristine
+/// across repeated drags while each dialog gets its own mutable rows.
+class _IngPreload {
+  final String id;
+  final String name;
+  final Map<String, num?> base;
+  final bool added;
+  final String category;
+  const _IngPreload(this.id, this.name, this.base, this.added, this.category);
+}
+
 class _IngRow {
   final String id;
   final String name;
   final Map<String, num?> base; // amounts at the recipe's base servings
   Map<String, num?> cur; // amounts scaled to the current servings selector
   bool added;
+  final String category;
 
-  _IngRow(this.id, this.name, this.base, this.added) : cur = Map.of(base);
+  _IngRow(this.id, this.name, this.base, this.added, this.category)
+      : cur = Map.of(base);
 }
 
 class _ShoppingListDialog extends StatefulWidget {
@@ -701,12 +798,14 @@ class _ShoppingListDialog extends StatefulWidget {
   final String recipeId;
   final DocumentReference<Map<String, dynamic>> planRef;
   final int recipeServings;
+  final List<_IngPreload>? preloadedRows;
 
   const _ShoppingListDialog({
     required this.group,
     required this.recipeId,
     required this.planRef,
     required this.recipeServings,
+    this.preloadedRows,
   });
 
   @override
@@ -727,61 +826,99 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
 
   Future<void> _load() async {
     try {
-      await UnitsCache.instance.ensureLoaded();
-
-      final ingSnap = await widget.group
-          .collection('recipes')
-          .doc(widget.recipeId)
-          .collection('ingredients')
-          .get();
-
-      // Determine per-ingredient add/skip preference from up to 5 past plans.
-      final pastSnap = await widget.group
-          .collection('cooking_plan')
-          .where('recipe', isEqualTo: widget.recipeId)
-          .get();
-      final past = pastSnap.docs.where((d) => d.id != widget.planRef.id).toList()
-        ..sort((a, b) =>
-            (b['plannedFor'] as Timestamp).compareTo(a['plannedFor'] as Timestamp));
-      final recent = past.take(5).toList();
-      final recentAdded = <Set<String>>[];
-      for (final p in recent) {
-        final ai = await p.reference.collection('added_ingredients').get();
-        recentAdded.add(ai.docs.map((d) => d['ingredientId'].toString()).toSet());
-      }
-
-      for (final ing in ingSnap.docs) {
-        final id = ing['ingredientId'].toString();
-        final base = <String, num?>{};
-        (ing.data()['quantity'] as Map?)?.forEach(
-              (k, v) => base[k.toString()] = v == null ? null : v as num,
-        );
-
-        final ingDoc =
-        await FirebaseFirestore.instance.collection('ingredients').doc(id).get();
-        final ingData = ingDoc.data();
-        final category = (ingData?['category'] ?? '').toString();
-        final nameMap = (ingData?['name'] as Map?) ?? {};
-        final name = (nameMap['en'] ??
-            (nameMap.values.isNotEmpty ? nameMap.values.first : id))
-            .toString();
-
-        final bool added;
-        if (recent.isEmpty) {
-          // First time: add everything except spices and herbs.
-          added = category != 'spices_and_herbs';
-        } else {
-          // Majority of the last 5 plans; ties favour adding.
-          final addCount = recentAdded.where((s) => s.contains(id)).length;
-          added = addCount * 2 >= recent.length;
-        }
-        rows.add(_IngRow(id, name, base, added));
+      final preload = widget.preloadedRows ??
+          await loadRows(widget.group, widget.recipeId,
+              excludePlanId: widget.planRef.id);
+      for (final p in preload) {
+        rows.add(_IngRow(p.id, p.name, p.base, p.added, p.category));
       }
       _rescale();
       if (mounted) setState(() => loading = false);
     } catch (_) {
       if (mounted) Navigator.pop(context);
     }
+  }
+
+  /// Loads the shopping-list rows for [recipeId]: each recipe ingredient with
+  /// its base quantity, localised name, category and a default add/skip flag.
+  /// Extracted so it can be kicked off as soon as a recipe drag starts and
+  /// reused when the dialog opens. Returns an empty list when there are none.
+  static Future<List<_IngPreload>> loadRows(
+      DocumentReference<Map<String, dynamic>> group,
+      String recipeId, {
+        String? excludePlanId,
+      }) async {
+    await UnitsCache.instance.ensureLoaded();
+
+    final ingSnap = await group
+        .collection('recipes')
+        .doc(recipeId)
+        .collection('ingredients')
+        .get();
+    if (ingSnap.docs.isEmpty) return const <_IngPreload>[];
+
+    // Determine per-ingredient add/skip preference from up to 5 past plans.
+    final pastSnap = await group
+        .collection('cooking_plan')
+        .where('recipe', isEqualTo: recipeId)
+        .get();
+    final past = pastSnap.docs
+        .where((d) => excludePlanId == null || d.id != excludePlanId)
+        .toList()
+      ..sort((a, b) =>
+          (b['plannedFor'] as Timestamp).compareTo(a['plannedFor'] as Timestamp));
+    final recent = past.take(5).toList();
+
+    // Past plans now record the shopping-list item ids they contributed to
+    // (itemIds) rather than an added_ingredients subcollection, so resolve each
+    // item back to its ingredientId. Items removed since are simply skipped.
+    final allItemIds = <String>{
+      for (final p in recent)
+        ...List<String>.from(p.data()['itemIds'] ?? const []),
+    };
+    final itemToIng = <String, String>{};
+    await Future.wait(allItemIds.map((itemId) async {
+      final snap = await group.collection('shopping_list').doc(itemId).get();
+      final ingId = snap.data()?['ingredientId'];
+      if (ingId != null) itemToIng[itemId] = ingId.toString();
+    }));
+    final recentAdded = <Set<String>>[
+      for (final p in recent)
+        {
+          for (final itemId in List<String>.from(p.data()['itemIds'] ?? const []))
+            if (itemToIng.containsKey(itemId)) itemToIng[itemId]!,
+        },
+    ];
+
+    final preload = <_IngPreload>[];
+    for (final ing in ingSnap.docs) {
+      final id = ing['ingredientId'].toString();
+      final base = <String, num?>{};
+      (ing.data()['quantity'] as Map?)?.forEach(
+            (k, v) => base[k.toString()] = v == null ? null : v as num,
+      );
+
+      final ingDoc =
+      await FirebaseFirestore.instance.collection('ingredients').doc(id).get();
+      final ingData = ingDoc.data();
+      final category = (ingData?['category'] ?? '').toString();
+      final nameMap = (ingData?['name'] as Map?) ?? {};
+      final name = (nameMap['en'] ??
+          (nameMap.values.isNotEmpty ? nameMap.values.first : id))
+          .toString();
+
+      final bool added;
+      if (recent.isEmpty) {
+        // First time: add everything except spices and herbs.
+        added = category != 'spices_and_herbs';
+      } else {
+        // Majority of the last 5 plans; ties favour adding.
+        final addCount = recentAdded.where((s) => s.contains(id)).length;
+        added = addCount * 2 >= recent.length;
+      }
+      preload.add(_IngPreload(id, name, base, added, category));
+    }
+    return preload;
   }
 
   void _rescale() {
@@ -799,18 +936,17 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
 
   Future<void> _submit() async {
     setState(() => saving = true);
+    // Record which shopping-list items this plan contributed to, and how much,
+    // as parallel arrays on the plan document (replaces the old
+    // added_ingredients subcollection).
+    final itemIds = <String>[];
+    final quantities = <Map<String, num>>[];
     for (final row in rows.where((r) => r.added)) {
       final q = <String, num>{};
       row.cur.forEach((k, v) {
         if (v != null && v > 0) q[k] = v;
       });
       if (q.isEmpty) continue;
-
-      await widget.planRef.collection('added_ingredients').add({
-        'ingredientId': row.id,
-        'quantity': q,
-        'addedAt': FieldValue.serverTimestamp(),
-      });
 
       // Merge into an existing shopping-list entry for the same ingredient,
       // or create a new one.
@@ -819,20 +955,28 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
           .where('ingredientId', isEqualTo: row.id)
           .limit(1)
           .get();
+      final DocumentReference<Map<String, dynamic>> itemRef;
       if (existing.docs.isNotEmpty) {
+        itemRef = existing.docs.first.reference;
         final cur = Map<String, dynamic>.from(existing.docs.first['quantity'] ?? {});
         q.forEach((k, v) => cur[k] = ((cur[k] ?? 0) as num) + v);
-        await existing.docs.first.reference.update({'quantity': cur});
+        await itemRef.update({'quantity': cur});
       } else {
-        await widget.group.collection('shopping_list').add({
+        itemRef = await widget.group.collection('shopping_list').add({
           'ingredientId': row.id,
           'displayName': row.name,
           'description': '',
           'createdAt': FieldValue.serverTimestamp(),
           'quantity': q,
           'doneAt': null,
+          'category': row.category,
         });
       }
+      itemIds.add(itemRef.id);
+      quantities.add(q);
+    }
+    if (itemIds.isNotEmpty) {
+      await widget.planRef.update({'itemIds': itemIds, 'quantities': quantities});
     }
     if (mounted) Navigator.pop(context);
   }
