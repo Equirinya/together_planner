@@ -31,7 +31,7 @@ Upon processing your request, we will permanently delete your user account and a
 
 Please send the deletion request from the email address linked to your account so we can verify your identity.
 
-[**Click here to send the account deletion email**](mailto:equirinya@gmail.com?subject=Account%20Deletion%20Request&body=Hello%2C%0A%0AI%20would%20like%20to%20request%20the%20complete%20deletion%20of%20my%20account.%0A%0AI%20understand%20that%20my%20account%20will%20be%20deleted%20and%20all%20my%20generated%20data%20will%20be%20deleted%20as%20well%20from%20all%20groups%20that%20I%20participated%20in.%20This%20includes%20all%20my%20recipes%2C%20shopping%20list%20items%2C%20todo%20items%20and%20reminders%2C%20and%20calendar%20events.%0A%0AThe%20email%20associated%20with%20my%20account%20is%3A%20%5BPlease%20confirm%20your%20email%20here%5D%0A%0AThank%20you.)
+[**Click here to send the account deletion email**](mailto:equirinya@gmail.com?subject=Together%20Planner%20Account%20Deletion%20Request&body=Hello%2C%0A%0AI%20would%20like%20to%20request%20the%20complete%20deletion%20of%20my%20account.%0A%0AI%20understand%20that%20my%20account%20will%20be%20deleted%20and%20all%20my%20generated%20data%20will%20be%20deleted%20as%20well%20from%20all%20groups%20that%20I%20participated%20in.%20This%20includes%20all%20my%20recipes%2C%20shopping%20list%20items%2C%20todo%20items%20and%20reminders%2C%20and%20calendar%20events.%0A%0AThe%20email%20associated%20with%20my%20account%20is%3A%20%5BPlease%20confirm%20your%20email%20here%5D%0A%0AThank%20you.)
 
 *(If the link above doesn't work, manually send an email to **equirinya@gmail.com** with the subject "Account Deletion Request" and include the text confirming you want your account and all your content deleted).*
 

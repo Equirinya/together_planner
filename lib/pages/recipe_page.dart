@@ -18,8 +18,9 @@ import 'recipe_detail.dart';
 
 class RecipePage extends StatefulWidget {
   final String groupId;
+  final bool shoppingListEnabled;
 
-  const RecipePage({super.key, required this.groupId});
+  const RecipePage({super.key, required this.groupId, required this.shoppingListEnabled});
 
   @override
   State<RecipePage> createState() => _RecipePageState();
@@ -46,14 +47,6 @@ class _RecipePageState extends State<RecipePage> {
   @override
   void initState() {
     groupDoc = FirebaseFirestore.instance.collection('groups').doc(widget.groupId);
-    groupDoc.get().then((doc) {
-      if (doc.exists) {
-        var data = doc.data()!;
-        setState(() {
-          aiEnabled = data['ai'] ?? false;
-        });
-      }
-    });
     final cookingPlanStream = groupDoc
         .collection('cooking_plan')
         .where('plannedFor', isGreaterThan: Timestamp.fromDate(DateTime.now().subtract(Duration(days: daysToShowPrior))))
@@ -301,50 +294,58 @@ class _RecipePageState extends State<RecipePage> {
               ),
               Align(
                 alignment: Alignment.bottomCenter,
-                child: SearchBar(
-                  controller: _searchController,
-                  padding: WidgetStatePropertyAll(EdgeInsets.only(bottom: keyboardVisible ? 8 : MediaQuery.of(context).viewInsets.bottom + 16, left: 8, right: 8, top: 8)),
-                  shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16)))),
-                  hintText: "Search Recipes",
-                  onChanged: (value) {
-                    searchQuery = value;
-                    generateSearchedRecipes();
-                  },
-                  trailing: [
-                    if(aiEnabled) StatefulBuilder(
-                      builder: (context, setAIState) => aiGenerating
-                          ? CupertinoActivityIndicator()
-                          : IconButton(
-                              icon: Icon(MdiIcons.creation),
-                              onPressed: searchQuery.isNotEmpty ? () async {
-                                setAIState(() => aiGenerating = true);
-                                try {
-                                  var result = await FirebaseFunctions.instance.httpsCallable('generateRecipe').call(<String, dynamic>{
-                                    'groupId': widget.groupId,
-                                    'prompt': searchQuery,
-                                  });
-                                  setAIState(() => aiGenerating = false);
-                                  String? recipeId = result.data['recipeId'];
-                                  if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
-                                      ),
-                                    );
+                child: Padding(
+                  padding: keyboardVisible ? const EdgeInsets.all(0) : const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                  child: SearchBar(
+                    shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16), bottom: keyboardVisible ? Radius.circular(0) : Radius.circular(16)))),
+                    controller: _searchController,
+                    hintText: "Search Recipes",
+                    onChanged: (value) {
+                      searchQuery = value;
+                      generateSearchedRecipes();
+                    },
+                    trailing: [
+                      if(aiEnabled) StatefulBuilder(
+                        builder: (context, setAIState) => aiGenerating
+                            ? CupertinoActivityIndicator()
+                            : IconButton(
+                                icon: Icon(MdiIcons.creation),
+                                onPressed: searchQuery.isNotEmpty ? () async {
+                                  setAIState(() => aiGenerating = true);
+                                  try {
+                                    var result = await FirebaseFunctions.instanceFor(region: 'europe-west1').httpsCallable('recipes-generateFromPrompt').call(<String, dynamic>{
+                                      'groupId': widget.groupId,
+                                      'prompt': searchQuery,
+                                    });
+                                    setAIState(() => aiGenerating = false);
+                                    String? recipeId = result.data['recipeId'];
+                                    if (context.mounted && recipeId != null && recipeId.isNotEmpty) {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => RecipeDetailPage(groupId: widget.groupId, recipeId: recipeId, editMode: false),
+                                        ),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (context.mounted) {
+                                        String errorCode;
+                                        try {
+                                          errorCode = (e as dynamic).code?.toString() ?? e.runtimeType.toString();
+                                        } catch (_) {
+                                          errorCode = e.runtimeType.toString();
+                                        }
+                                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error generating recipe: $errorCode')));
+                                      }
+                                  } finally {
+                                    setAIState(() => aiGenerating = false);
                                   }
-                                } catch (e) {
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error generating recipe: $e')));
-                                  }
-                                } finally {
-                                  setAIState(() => aiGenerating = false);
-                                }
-                              } : null,
-                            ),
-                    ),
-                    IconButton(onPressed: addNewRecipe, icon: const Icon(Icons.add)),
-                  ],
+                                } : null,
+                              ),
+                      ),
+                      IconButton(onPressed: addNewRecipe, icon: const Icon(Icons.add)),
+                    ],
+                  ),
                 ),
               ),
               DragTarget<DocumentSnapshot<Map<String, dynamic>>>(

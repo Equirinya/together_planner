@@ -4,7 +4,7 @@
 #FLUTTER_VERSION
 
 ###necessary github action repository secrets:
-#GOOGLE_PLAY_SERVICE_ACCOUNT_JSON
+#GOOGLE_PLAY_SERVICE_ACCOUNT_JSON  see see https://github.com/marketplace/actions/upload-android-release-to-play-store
 #KEYSTORE_BASE64
 #KEYSTORE_PASSWORD
 #KEY_PASSWORD

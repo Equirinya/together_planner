@@ -1,16 +1,19 @@
+import 'dart:async';
+
+import 'package:couple_planner/pages/ingredient_search.dart';
 import 'package:couple_planner/utils.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 
-import 'package:shared_preferences/shared_preferences.dart';
+// =============================================================================
+// Page
+// =============================================================================
 
 class ShoppingListPage extends StatefulWidget {
   final String groupId;
-
   const ShoppingListPage({super.key, required this.groupId});
 
   @override
@@ -18,149 +21,408 @@ class ShoppingListPage extends StatefulWidget {
 }
 
 class _ShoppingListPageState extends State<ShoppingListPage> {
-  final db = FirebaseFirestore.instance;
+  final _db = FirebaseFirestore.instance;
+
+  late final String _lang;
+
+  /// Live copy of the shopping list — kept in sync by _listSub.
+  List<Map<String, dynamic>> _currentItems = [];
+  StreamSubscription? _listSub;
+
+  final Set<String> _optimisticallyHidden = {};
+
+  CollectionReference<Map<String, dynamic>> get _listRef =>
+      _db.collection('groups').doc(widget.groupId).collection('shopping_list');
+
+  // ── lifecycle ──────────────────────────────────────────────────────────────
+
+  @override
+  void initState() {
+    super.initState();
+    _lang = sanitizeLang(
+      WidgetsBinding.instance.platformDispatcher.locale.languageCode,
+    );
+    UnitsCache.instance.ensureLoaded();
+    _startListSubscription(); // also resolves any pre-existing pending items
+  }
+
+  @override
+  void dispose() {
+    _listSub?.cancel();
+    super.dispose();
+  }
+
+  void _startListSubscription() {
+    _listSub = _listRef.snapshots().listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _currentItems = snap.docs
+            .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
+            .toList();
+      });
+      // Resolve any pending items (new arrivals and pre-existing ones).
+      // De-duplication is handled inside resolvePendingItem.
+      for (final item in _currentItems) {
+        if (item['ingredientId'] == kPendingIngredient) {
+          resolvePendingItem(
+            _listRef.doc(item['id'] as String),
+            (item['displayName'] ?? '').toString(),
+            _lang,
+          );
+        }
+      }
+    });
+  }
+
+  // ── item mutations ─────────────────────────────────────────────────────────
+
+  Future<void> _markDone(Map<String, dynamic> item) async {
+    final id = item['id'] as String;
+    setState(() => _optimisticallyHidden.add(id));
+    try {
+      await _listRef.doc(id).update({'doneAt': FieldValue.serverTimestamp()});
+    } catch (_) {
+      if (mounted) setState(() => _optimisticallyHidden.remove(id));
+    }
+  }
+
+  Future<void> _updateQuantity(String id, String unitId, num qty) =>
+      _listRef.doc(id).update({'quantity': {unitId: qty.toDouble()}});
+
+  // ── build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    //for every doc get the igrendients document by its id
-    return Placeholder();
-    var stream = db
-        .collection('groups')
-        .doc(widget.groupId)
-        .collection('shopping_list')
-        .snapshots()
-        .asyncMap(
-          (s) async => Future.wait(
-            s.docs.map(
-              (d) async => {
-                ...d.data(),
-                'id': d.id,
-                ...((await FirebaseFirestore.instance
-                        .collection('ingredients')
-                        .doc(d.id)
-                        .get())
-                    .data()??{}),
-              },
-            ),
-          ),
-        );
+    final active = _currentItems
+        .where((i) => i['doneAt'] == null && !_optimisticallyHidden.contains(i['id']))
+        .toList();
+
+    // ── group by category ──────────────────────────────────────────────────
+    final Map<String, List<Map<String, dynamic>>> groups = {};
+    for (final item in active) {
+      final cat = (item['category'] as String?)?.trim() ?? '';
+      (groups[cat] ??= []).add(item);
+    }
+
+    // Within each group: oldest at top, newest (null = optimistic add) at bottom.
+    for (final list in groups.values) {
+      list.sort((a, b) {
+        final ta = a['createdAt'] as Timestamp?;
+        final tb = b['createdAt'] as Timestamp?;
+        if (ta == null && tb == null) return 0;
+        if (ta == null) return 1;
+        if (tb == null) return -1;
+        return ta.compareTo(tb);
+      });
+    }
+
+    // Categories alphabetically; empty/uncategorised goes last.
+    final sortedCats = groups.keys.toList()
+      ..sort((a, b) {
+        if (a.isEmpty && b.isEmpty) return 0;
+        if (a.isEmpty) return 1;
+        if (b.isEmpty) return -1;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+
+    final showHeaders = groups.length > 1;
 
     return Column(
-      mainAxisSize: MainAxisSize.max,
       children: [
         Expanded(
-          child: StreamBuilder(
-            stream: stream,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return Center(child: Text('Error: ${snapshot.error}'));
-              }
-              if (!snapshot.hasData) {
-                if (kDebugMode)
-                  print(
-                    "No items found in shopping list for group ${widget.groupId}",
-                  ); //TODO check if this fires
-                // return const Center(child: Text('No items found.'));
-              }
-              var items = snapshot.data!;
-              var done = items.where((item) => item['done'] == true).toList()..sort((a, b) => a['name'].compareTo(b['name']));
-              var notDone = items.where((item) => item['done'] == false).toList()..sort((a, b) => a['name'].compareTo(b['name']));
-              return
-                ListView.builder(
-                itemCount: notDone.length+1,
-                itemBuilder: (context, index) {
-                  if(index<notDone.length) {
-                    var item = items[index];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        radius: 16,
-                        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-                        child: StorageImage(storagePath: "ingredients/${item['id']}.jpg", errorWidget: const Text("?"))
-                      ),
-                      title: Text(item['name']),
-                      trailing: Checkbox(
-                        value: item['done'],
-                        onChanged: (value) {
-                          db
-                              .collection('groups')
-                              .doc(widget.groupId)
-                              .collection('shopping_list')
-                              .doc(item['id'])
-                              .update({'done': value});
-                        },
-                      ),
-                    );
-                  }
-                  else{
-                    return ExpansionTile(
-                      title: Text("Done (${done.length})"),
-                      children: done.map((item) => ListTile(
-                        title: Text(item['name'], style: const TextStyle(decoration: TextDecoration.lineThrough)),
-                        trailing: Checkbox(
-                          value: item['done'],
-                          onChanged: (value) {
-                            db
-                                .collection('groups')
-                                .doc(widget.groupId)
-                                .collection('shopping_list')
-                                .doc(item['id'])
-                                .update({'done': value});
-                          },
-                        ),
-                      )).toList(),
-                    );
-                  }
-                },
-              );
-            },
+          child: active.isEmpty
+              ? const Center(child: Text('Your shopping list is empty.'))
+              : ListView(
+            padding: const EdgeInsets.only(bottom: 24),
+            children: [
+              for (final cat in sortedCats) ...[
+                if (showHeaders)
+                  _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
+                for (final item in groups[cat]!)
+                  _ShoppingItem(
+                    key: ValueKey(item['id']),
+                    item: item,
+                    lang: _lang,
+                    onMarkDone: () => _markDone(item),
+                    onQuantityChanged: (u, q) =>
+                        _updateQuantity(item['id'] as String, u, q),
+                  ),
+              ],
+            ],
           ),
         ),
-        Row(
-          mainAxisSize: MainAxisSize.max,
-          children: [
-            TextField(
-              decoration: const InputDecoration(
-                labelText: 'Add Item',
-                contentPadding: EdgeInsets.symmetric(horizontal: 8),
-              ),
-              onSubmitted: (value) async {
-                if (value.trim().isEmpty) return;
-                String? ingredientId;
-
-                //call cloud function to get ingredientId (if it doesnt exist yet it is created)
-                // try {
-                //   final ingredientIdResult =
-                //   await FirebaseFunctions.instance.httpsCallable('addMessage').call();
-                //   ingredientId = ingredientIdResult.data as String;
-                // } on FirebaseFunctionsException catch (error) {
-                //   print(error.code);
-                //   print(error.details);
-                //   print(error.message);
-                // }
-
-                if(ingredientId == null) return;
-
-                //TODO check if already on List
-
-                //add to shopping list
-                await db
-                    .collection('groups')
-                    .doc(widget.groupId)
-                    .collection('shopping_list')
-                    .doc(ingredientId)
-                    .set({
-                  'done': false,
-                  'description': '',
-                  'createdAt': FieldValue.serverTimestamp(),
-                });
-              },
+        SafeArea(
+          top: false,
+          child: _AddItemBar(
+            onTap: () => IngredientSearchSheet.show(
+              context,
+              targetRef: _listRef,
+              lang: _lang,
+              hintText: 'Add item to shopping list…',
             ),
-          ],
+          ),
         ),
       ],
+    );
+  }
+}
+
+/// Section separator: a small category icon followed by a hairline divider.
+class _CategoryHeader extends StatelessWidget {
+  const _CategoryHeader({required this.category});
+  final String category;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: Row(
+        children: [
+          Icon(
+            kCategoryIcons[category] ?? Icons.category,
+            size: 16,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 8),
+          const Expanded(child: Divider(height: 1)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Tappable bar at the bottom of the list that opens the search sheet.
+class _AddItemBar extends StatelessWidget {
+  const _AddItemBar({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      child: Material(
+        color: cs.surfaceContainer,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            child: Row(
+              children: [
+                Icon(Icons.search, color: cs.onSurfaceVariant),
+                const SizedBox(width: 12),
+                Text(
+                  'Add item to shopping list…',
+                  style: TextStyle(color: cs.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Shopping item row
+// =============================================================================
+
+class _ShoppingItem extends StatelessWidget {
+  const _ShoppingItem({
+    super.key,
+    required this.item,
+    required this.lang,
+    required this.onMarkDone,
+    required this.onQuantityChanged,
+  });
+
+  final Map<String, dynamic> item;
+  final String lang;
+  final VoidCallback onMarkDone;
+  final Future<void> Function(String unitId, num qty) onQuantityChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final q = readQuantity(item['quantity']);
+
+    return Dismissible(
+      key: ValueKey('dismiss_${item['id']}'),
+      direction: DismissDirection.horizontal,
+      background: _doneBg(Alignment.centerLeft),
+      secondaryBackground: _doneBg(Alignment.centerRight),
+      confirmDismiss: (_) async {
+        onMarkDone();
+        return false;
+      },
+      child: ListTile(
+        // When there's no quantity, tap the tile itself to set one.
+        onTap: q == null ? () => _openQuantityEditor(context, null, null) : null,
+        leading: Avatar(
+          ingredientId: (item['ingredientId'] ?? kUnknownIngredient).toString(),
+        ),
+        title: Text((item['displayName'] ?? item['id'] ?? '').toString()),
+        subtitle: (item['description'] as String?)?.isNotEmpty == true
+            ? Text(item['description'] as String)
+            : null,
+        trailing: q == null
+            ? null
+            : GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _openQuantityEditor(context, q.unitId, q.qty),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Text(
+              '${fmtQty(q.qty)} '
+                  '${UnitsCache.instance.display(q.unitId, lang, q.qty)}',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _doneBg(Alignment align) => Container(
+    color: Colors.green.shade600,
+    padding: const EdgeInsets.symmetric(horizontal: 24),
+    child: Align(
+      alignment: align,
+      child: const Icon(Icons.check, color: Colors.white),
+    ),
+  );
+
+  void _openQuantityEditor(BuildContext context, String? unitId, num? qty) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _QuantityEditor(
+        initialUnitId: unitId ?? kDefaultUnitId,
+        initialQty: qty ?? 1, // start at 1 when no quantity was set
+        lang: lang,
+        onChanged: onQuantityChanged,
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Quantity editor (bottom sheet, floats above the number keyboard)
+// =============================================================================
+
+class _QuantityEditor extends StatefulWidget {
+  const _QuantityEditor({
+    required this.initialUnitId,
+    required this.initialQty,
+    required this.lang,
+    required this.onChanged,
+  });
+
+  final String initialUnitId;
+  final num initialQty;
+  final String lang;
+  // Called immediately on every action so changes survive even if the sheet is
+  // dismissed via the keyboard close gesture.
+  final Future<void> Function(String unitId, num qty) onChanged;
+
+  @override
+  State<_QuantityEditor> createState() => _QuantityEditorState();
+}
+
+class _QuantityEditorState extends State<_QuantityEditor> {
+  late final TextEditingController _ctrl;
+  late String _unitId;
+
+  StreamSubscription<bool>? _kbSub;
+  bool _keyboardWasVisible = false;
+
+  num get _qty => num.tryParse(_ctrl.text.replaceAll(',', '.')) ?? 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _unitId = widget.initialUnitId;
+    final text = fmtQty(widget.initialQty);
+    _ctrl = TextEditingController(text: text)
+      ..selection = TextSelection(baseOffset: 0, extentOffset: text.length);
+
+    // Close the sheet when the keyboard is dismissed — only after it opened once.
+    _kbSub = KeyboardVisibilityController().onChange.listen((visible) {
+      if (visible) {
+        _keyboardWasVisible = true;
+      } else if (_keyboardWasVisible && mounted) {
+        Navigator.of(context).maybePop();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _kbSub?.cancel();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _bump(num delta) {
+    final next = (_qty + delta).clamp(0, 1 << 31);
+    setState(() => _ctrl.text = fmtQty(next));
+    _push();
+  }
+
+  void _push() => widget.onChanged(_unitId, _qty);
+
+  @override
+  Widget build(BuildContext context) {
+    final units = UnitsCache.instance.all;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          12, 12, 12, MediaQuery.of(context).viewInsets.bottom + 12),
+      child: Row(
+        children: [
+          IconButton.filledTonal(
+              icon: const Icon(Icons.remove), onPressed: () => _bump(-1)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _ctrl,
+              autofocus: true,
+              textAlign: TextAlign.center,
+              keyboardType:
+              const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))
+              ],
+              decoration:
+              const InputDecoration(border: OutlineInputBorder()),
+              onChanged: (_) => setState(() {}),
+              onSubmitted: (_) {
+                _push();
+                Navigator.of(context).maybePop();
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          DropdownButton<String>(
+            value: units.any((u) => u.id == _unitId) ? _unitId : null,
+            items: [
+              for (final u in units)
+                DropdownMenuItem(
+                    value: u.id,
+                    child: Text(u.display(widget.lang, _qty))),
+            ],
+            onChanged: (v) {
+              if (v == null) return;
+              setState(() => _unitId = v);
+              _push();
+            },
+          ),
+          const SizedBox(width: 8),
+          IconButton.filledTonal(
+              icon: const Icon(Icons.add), onPressed: () => _bump(1)),
+        ],
+      ),
     );
   }
 }
