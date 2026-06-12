@@ -12,6 +12,9 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 
+// =============================================================================
+// Page
+// =============================================================================
 
 class RecipeDetailPage extends StatefulWidget {
   const RecipeDetailPage({
@@ -61,6 +64,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   // ── ingredients (live stream) ─────────────────────────────────────────────
   List<Map<String, dynamic>> ingredients = [];
   StreamSubscription? _ingredientsSub;
+
+  // ── image upload / generation placeholders ────────────────────────────────
+  // Each in-flight upload gets a unique key so multiple concurrent uploads
+  // each show their own shimmer tile.
+  int _uploadingCount = 0;
+  bool _generatingImage = false;
 
   // ── AI state ──────────────────────────────────────────────────────────────
   final Set<String> _enhancing = {};
@@ -159,7 +168,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     for (final c in stepsControllers ?? const <TextEditingController>[]) {
       c.dispose();
     }
-    stepsControllers = steps.map((s) => TextEditingController(text: s)).toList();
+    stepsControllers =
+        steps.map((s) => TextEditingController(text: s)).toList();
     setState(() {});
   }
 
@@ -187,7 +197,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       if (raw == null) continue;
       final q = Map<String, dynamic>.from(raw as Map);
       if (q.isEmpty) continue;
-      final scaled = q.map((k, v) => MapEntry(k, (v as num).toDouble() * factor));
+      final scaled =
+      q.map((k, v) => MapEntry(k, (v as num).toDouble() * factor));
       await ingredientsRef.doc(ing['id'] as String).update({'quantity': scaled});
     }
     _baseServings = target;
@@ -223,27 +234,70 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  // ── AI: image enhance ─────────────────────────────────────────────────────
+  // ── image upload ──────────────────────────────────────────────────────────
+
+  Future<void> _pickAndUploadImage() async {
+    final image = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (image == null) return;
+    // Show shimmer immediately — before the upload even starts.
+    setState(() => _uploadingCount++);
+    try {
+      final ref = FirebaseStorage.instance.ref().child(
+          'groups/${widget.groupId}/recipes/${widget.recipeId}/${DateTime.now().millisecondsSinceEpoch}');
+      await ref.putFile(File(image.path));
+      await docRef.update({
+        'images': FieldValue.arrayUnion([ref.fullPath]),
+      });
+      await _loadRecipe();
+    } finally {
+      if (mounted) setState(() => _uploadingCount--);
+    }
+  }
+
+  // ── AI: image enhance / generate ─────────────────────────────────────────
 
   bool _isAiImage(String path) => path.split('/').last.startsWith('ai_');
+
+  Map<String, dynamic> _buildRecipeContext() {
+    return {
+      'name': nameController?.text ?? recipeData?['name'] ?? '',
+      'description': descriptionController?.text ?? recipeData?['description'] ?? '',
+      'tags': tagsController?.text
+          .split('#')
+          .map((t) => t.trim())
+          .where((t) => t.isNotEmpty)
+          .toList() ??
+          tags,
+      'steps': stepsControllers
+          ?.map((c) => c.text.trim())
+          .where((s) => s.isNotEmpty)
+          .toList() ??
+          steps,
+      'images': images,
+      'ingredients': ingredients
+          .map((ing) => {
+        'name': ing['displayName'] ?? ing['ingredientId'] ?? '',
+        'description': ing['description'] ?? '',
+        'quantity': ing['quantity'],
+      })
+          .toList(),
+    };
+  }
 
   Future<void> _enhanceImage(String path) async {
     setState(() => _enhancing.add(path));
     try {
       final res = await _functions.httpsCallable('enhanceRecipeImage').call({
+        ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
         'imagePath': path,
       });
       final newPath = (res.data as Map)['path'] as String;
-      final idx = images.indexOf(path);
-      if (idx != -1) {
-        images[idx] = newPath;
-        await docRef.update({'images': images});
-        try {
-          await FirebaseStorage.instance.ref().child(path).delete();
-        } catch (_) {}
-      }
+      // Append the AI image — original is intentionally kept
+      await docRef.update({
+        'images': FieldValue.arrayUnion([newPath]),
+      });
       await _loadRecipe();
     } catch (e) {
       _snack('Could not enhance image: $e');
@@ -252,16 +306,31 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
-  // ── AI: generate ──────────────────────────────────────────────────────────
+  Future<void> _generateImageWithAI() async {
+    setState(() => _generatingImage = true);
+    try {
+      await _functions.httpsCallable('generateRecipeImage').call({
+        ..._buildRecipeContext(),
+        'groupId': widget.groupId,
+        'recipeId': widget.recipeId,
+      });
+      await _loadRecipe();
+    } catch (e) {
+      _snack('Could not generate image: $e');
+    } finally {
+      if (mounted) setState(() => _generatingImage = false);
+    }
+  }
+
+  // ── AI: ingredients / steps ───────────────────────────────────────────────
 
   Future<void> _generateIngredients() async {
     setState(() => _loadingIngredients = true);
     try {
       await _functions.httpsCallable('generateRecipeIngredients').call({
+        ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
-        'name': nameController?.text ?? '',
-        'description': descriptionController?.text ?? '',
       });
     } catch (e) {
       _snack('Could not generate ingredients: $e');
@@ -274,10 +343,9 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     setState(() => _loadingSteps = true);
     try {
       await _functions.httpsCallable('generateRecipeSteps').call({
+        ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
-        'name': nameController?.text ?? '',
-        'description': descriptionController?.text ?? '',
       });
       await _reloadStepsOnly();
     } catch (e) {
@@ -299,6 +367,9 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     if (recipeData == null) {
       return const Scaffold(body: Center(child: CupertinoActivityIndicator()));
     }
+
+    final bool hasIngredients = ingredients.isNotEmpty;
+    final bool hasSteps = steps.any((s) => s.isNotEmpty);
 
     return Scaffold(
       appBar: AppBar(
@@ -393,8 +464,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             )
                 : Padding(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 8),
               child: Text(
                 recipeData?['name'] ?? 'Unnamed Recipe',
                 style: Theme.of(context).textTheme.headlineMedium,
@@ -433,21 +504,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                     ),
                   ),
                   _timeTile(Icons.schedule, totalHour, totalMinute, 'time'),
-                  _timeTile(Icons.blender, prepHour, prepMinute,
-                      'preparationTime'),
+                  _timeTile(
+                      Icons.blender, prepHour, prepMinute, 'preparationTime'),
                 ],
               ),
             ),
 
             const SizedBox(height: 20),
 
-            // ── Ingredients (card includes servings) ─────────────────────
-            _ingredientsSection(),
+            // ── Ingredients + servings (hidden in view mode when empty) ──
+            if (edit || hasIngredients) _ingredientsSection(),
 
-            const SizedBox(height: 20),
+            if (edit || hasIngredients) const SizedBox(height: 20),
 
-            // ── Steps ────────────────────────────────────────────────────
-            _stepsSection(),
+            // ── Steps (hidden in view mode when empty) ───────────────────
+            if (edit || hasSteps) _stepsSection(),
 
             const SizedBox(height: 32),
           ],
@@ -464,14 +535,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       enableSplash: false,
       onTap: (index) => Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => _FullscreenImagePage(
-            paths: images,
-            initialIndex: index,
-          ),
+          builder: (_) =>
+              _FullscreenImagePage(paths: images, initialIndex: index),
         ),
       ),
-      children:
-      images.map((p) => StorageImage(storagePath: p, fit: BoxFit.cover)).toList(),
+      children: images
+          .map((p) => StorageImage(storagePath: p, fit: BoxFit.cover))
+          .toList(),
     );
   }
 
@@ -485,8 +555,64 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         docRef.update({'images': images});
         setState(() {});
       },
-      footer: _addPhotoButton(),
-      children: images.map(_editImageTile).toList(),
+      footer: _editImageFooter(),
+      children: [
+        // Real images
+        ...images.map(_editImageTile),
+        // One shimmer per in-flight upload
+        for (int i = 0; i < _uploadingCount; i++)
+          _shimmerImageTile(ValueKey('upload_$i')),
+        // One shimmer while AI is generating
+        if (_generatingImage)
+          _shimmerImageTile(const ValueKey('generating')),
+      ],
+    );
+  }
+
+  /// Footer for the edit carousel: "add photo" always, "generate with AI"
+  /// below it when aiEnabled. Buttons are stacked vertically and share the
+  /// same width as an image tile so the list feels uniform.
+  Widget _editImageFooter() {
+    final cs = Theme.of(context).colorScheme;
+    final tileWidth = MediaQuery.of(context).size.width * 0.4;
+
+    ButtonStyle tileButtonStyle(Color bg) => ElevatedButton.styleFrom(
+      elevation: 0,
+      backgroundColor: bg,
+      shape:
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      minimumSize: const Size(double.infinity, 0),
+      padding: EdgeInsets.zero,
+    );
+
+    return SizedBox(
+      width: tileWidth,
+      height: double.infinity,
+      child: Column(
+        children: [
+          Expanded(
+            child: ElevatedButton(
+              style: tileButtonStyle(cs.primaryContainer),
+              onPressed: _pickAndUploadImage,
+              child: const Icon(Icons.add_a_photo),
+            ),
+          ),
+          if (widget.aiEnabled) ...[
+            const SizedBox(height: 4),
+            Expanded(
+              child: ElevatedButton(
+                style: tileButtonStyle(cs.secondaryContainer),
+                onPressed:
+                _generatingImage ? null : _generateImageWithAI,
+                child: Icon(Icons.auto_awesome,
+                    color: _generatingImage
+                        ? cs.onSurface.withOpacity(0.38)
+                        : null),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 
@@ -505,7 +631,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Section header
           Row(
             children: [
               Padding(
@@ -522,8 +647,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 ),
             ],
           ),
-
-          // Card: servings + ingredient list
           Card(
             margin: EdgeInsets.zero,
             elevation: 0,
@@ -533,21 +656,32 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // ── Servings ──────────────────────────────────────────
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.restaurant_menu),
-                          const SizedBox(width: 12),
-                          Text("Servings",
-                              style:
-                              Theme.of(context).textTheme.titleMedium),
-                          const Spacer(),
-                          if (edit) ...[
+                // ── Servings ────────────────────────────────────────────
+                if (!edit)
+                // View mode: "🍽 2 Servings" as a ListTile
+                  ListTile(
+                    leading: const Icon(Icons.restaurant_menu),
+                    title: Text(
+                      '$servings ${servings == 1 ? 'Serving' : 'Servings'}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  )
+                else
+                // Edit mode: stepper + optional scale button
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.restaurant_menu),
+                            const SizedBox(width: 12),
+                            Text("Servings",
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium),
+                            const Spacer(),
                             IconButton.filledTonal(
                               icon: const Icon(Icons.remove),
                               onPressed: () =>
@@ -566,33 +700,28 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                               onPressed: () =>
                                   _changeServings(servings + 1),
                             ),
-                          ] else
-                            Text("$servings",
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium),
-                        ],
-                      ),
-                      if (showScaleButton)
-                        Padding(
-                          padding:
-                          const EdgeInsets.only(top: 8, right: 8),
-                          child: FilledButton.tonalIcon(
-                            icon: const Icon(Icons.straighten),
-                            label: Text(
-                                "Scale amounts to $servings servings"),
-                            onPressed: () async {
-                              await _applyScale(servings);
-                              if (mounted)
-                                setState(() => _autoScale = true);
-                            },
-                          ),
+                          ],
                         ),
-                    ],
+                        if (showScaleButton)
+                          Padding(
+                            padding: const EdgeInsets.only(
+                                top: 8, right: 8),
+                            child: FilledButton.tonalIcon(
+                              icon: const Icon(Icons.straighten),
+                              label: Text(
+                                  "Scale amounts to $servings servings"),
+                              onPressed: () async {
+                                await _applyScale(servings);
+                                if (mounted)
+                                  setState(() => _autoScale = true);
+                              },
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
-                ),
 
-                // ── Ingredient list ───────────────────────────────────
+                // ── Ingredient list ──────────────────────────────────────
                 if (_loadingIngredients)
                   _skeletonInCard(3)
                 else if (ingredients.isNotEmpty) ...[
@@ -624,7 +753,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   ],
                 ],
 
-                // ── Add ingredient (edit) ─────────────────────────────
+                // ── Add ingredient row (edit) ────────────────────────────
                 if (edit) ...[
                   Divider(
                       height: 1,
@@ -678,41 +807,47 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           _skeleton(3)
         else ...[
           for (var (index, step) in steps.indexed)
-            Card(
-              margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              elevation: 0,
-              child: Row(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(left: 8),
-                    child: Text("${index + 1}:",
-                        style: Theme.of(context).textTheme.titleMedium),
-                  ),
-                  Expanded(
-                    child: edit
-                        ? TextField(
-                      controller: stepsControllers![index],
-                      maxLines: null,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.all(8),
-                      ),
-                    )
-                        : Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 16),
-                      child: Text(step,
+            if (edit || step.isNotEmpty)
+              Card(
+                margin: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 4),
+                elevation: 0,
+                child: Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text("${index + 1}:",
                           style:
-                          Theme.of(context).textTheme.bodyMedium),
+                          Theme.of(context).textTheme.titleMedium),
                     ),
-                  ),
-                ],
+                    Expanded(
+                      child: edit
+                          ? TextField(
+                        controller: stepsControllers![index],
+                        maxLines: null,
+                        style:
+                        Theme.of(context).textTheme.bodyMedium,
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          contentPadding: EdgeInsets.all(8),
+                        ),
+                      )
+                          : Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 16),
+                        child: Text(step,
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
           if (edit)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 4),
               child: SizedBox(
                 width: double.infinity,
                 child: OutlinedButton(
@@ -764,48 +899,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  Widget _addPhotoButton() {
-    return ElevatedButton(
-      style: ElevatedButton.styleFrom(
-        fixedSize: Size(
-            MediaQuery.of(context).size.width * 0.4, double.infinity),
-        elevation: 0,
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-        shape:
-        RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-      onPressed: () async {
-        final image =
-        await ImagePicker().pickImage(source: ImageSource.gallery);
-        if (image == null) return;
-        final ref = FirebaseStorage.instance.ref().child(
-            'groups/${widget.groupId}/recipes/${widget.recipeId}/${DateTime.now().millisecondsSinceEpoch}');
-        await ref.putFile(File(image.path));
-        await docRef.update({
-          'images': FieldValue.arrayUnion([ref.fullPath]),
-        });
-        _loadRecipe();
-      },
-      child: const Icon(Icons.add_a_photo),
-    );
-  }
-
   Widget _editImageTile(String imgPath) {
     final isAi = _isAiImage(imgPath);
     final enhancing = _enhancing.contains(imgPath);
     final cs = Theme.of(context).colorScheme;
-
-    // Shared style for overlay icon buttons — dark translucent pill so both
-    // buttons look identical regardless of the image behind them.
-    ButtonStyle overlayButtonStyle(Color iconColor) =>
-        IconButton.styleFrom(
-          backgroundColor: Colors.black38,
-          foregroundColor: iconColor,
-          // keep the same tap-target size as a standard IconButton
-          minimumSize: const Size(40, 40),
-          padding: const EdgeInsets.all(8),
-          shape: const CircleBorder(),
-        );
 
     return SizedBox(
       key: ValueKey(imgPath),
@@ -817,16 +914,15 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // ── Image or shimmer placeholder ────────────────────────
+              // Image or enhance shimmer
               if (enhancing)
-                _Shimmer(
-                    child: Container(color: cs.surfaceContainerHighest))
+                _Shimmer(child: Container(color: cs.surfaceContainerHighest))
               else
                 StorageImage(storagePath: imgPath, fit: BoxFit.cover),
 
-              // ── Top-right: [enhance?] [delete] ─────────────────────
-              // Both buttons share the same style: dark translucent circle,
-              // icon colour the only difference.
+              // Top-right: [enhance?]  [delete]
+              // Both are plain IconButton — same style as the original delete
+              // button: no background, just the coloured icon on the image.
               Align(
                 alignment: Alignment.topRight,
                 child: Row(
@@ -834,20 +930,18 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   children: [
                     if (widget.aiEnabled && !isAi && !enhancing)
                       IconButton(
-                        style: overlayButtonStyle(Colors.white),
-                        icon: const Icon(Icons.auto_awesome),
-                        tooltip: 'Enhance with AI',
+                        icon: Icon(Icons.auto_awesome,
+                            color: cs.primary),
                         onPressed: () => _enhanceImage(imgPath),
+                        tooltip: 'Enhance with AI',
                       ),
                     IconButton(
-                      style: overlayButtonStyle(cs.error),
-                      icon: const Icon(Icons.close),
+                      icon: Icon(Icons.cancel, color: cs.error),
                       onPressed: enhancing
                           ? null
                           : () {
                         docRef.update({
-                          'images':
-                          FieldValue.arrayRemove([imgPath])
+                          'images': FieldValue.arrayRemove([imgPath])
                         });
                         FirebaseStorage.instance
                             .ref()
@@ -860,7 +954,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 ),
               ),
 
-              // ── Bottom-left: AI badge for AI-generated images ───────
+              // Bottom-left: AI badge on AI-generated images
               if (isAi)
                 const Align(
                   alignment: Alignment.bottomLeft,
@@ -876,7 +970,25 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  /// Skeleton shown inside the ingredients card while AI is generating.
+  /// A shimmer tile the same size as a real image tile, used as a placeholder
+  /// while an image is uploading or being AI-generated.
+  Widget _shimmerImageTile(Key key) {
+    return SizedBox(
+      key: key,
+      width: MediaQuery.of(context).size.width * 0.4,
+      child: Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: _Shimmer(
+            child: Container(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _skeletonInCard(int rows) {
     return AbsorbPointer(
       child: Padding(
@@ -885,8 +997,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           children: [
             for (int i = 0; i < rows; i++)
               Padding(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 6),
                 child: _Shimmer(
                   child: Container(
                     height: 48,
@@ -905,15 +1017,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  /// Skeleton shown outside a card (steps).
   Widget _skeleton(int rows) {
     return AbsorbPointer(
       child: Column(
         children: [
           for (int i = 0; i < rows; i++)
             Padding(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 4),
               child: _Shimmer(
                 child: Container(
                   height: 60,
@@ -1031,7 +1142,8 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
     final q = readQuantity(widget.ing['quantity']);
     final ingId =
     (widget.ing['ingredientId'] ?? kUnknownIngredient).toString();
-    final name = ((widget.ing['displayName'] as String?)?.isNotEmpty == true
+    final name =
+    ((widget.ing['displayName'] as String?)?.isNotEmpty == true
         ? widget.ing['displayName'] as String
         : ingId);
     final description =
@@ -1052,7 +1164,6 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
       );
     }
 
-    // Edit mode: name + description field inline
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 4, 8),
       child: Row(
