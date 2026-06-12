@@ -7,6 +7,41 @@ import 'package:flutter/services.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+
+// ─── Categories ───────────────────────────────────────────────────────────────
+// Matches the `category` field stored on ingredient docs.
+const List<String> kCategories = [
+  'fruits_and_vegetables',
+  'meat_and_fish',
+  'dairy_and_eggs',
+  'grains_and_pasta',
+  'baking_ingredients',
+  'spices_and_herbs',
+  'nuts_and_seeds',
+  'beverages',
+  'condiments_and_sauces',
+  'snacks_and_sweets',
+  'frozen_foods',
+  'canned_and_packaged_goods',
+  'other',
+];
+
+final Map<String, IconData> kCategoryIcons = {
+  'fruits_and_vegetables':     MdiIcons.foodApple,
+  'meat_and_fish':             MdiIcons.fish,
+  'dairy_and_eggs':            MdiIcons.cheese,
+  'grains_and_pasta':          MdiIcons.pasta,
+  'baking_ingredients':        MdiIcons.breadSlice,
+  'spices_and_herbs':          MdiIcons.leaf,
+  'nuts_and_seeds':            MdiIcons.peanut,
+  'beverages':                 MdiIcons.glassWine,
+  'condiments_and_sauces':     MdiIcons.bottleSodaClassic,
+  'snacks_and_sweets':         MdiIcons.candy,
+  'frozen_foods':              MdiIcons.snowflake,
+  'canned_and_packaged_goods': MdiIcons.foodTakeoutBox,
+  'other':                     MdiIcons.dotsHorizontalCircleOutline,
+};
 
 // =============================================================================
 // Page
@@ -298,7 +333,7 @@ class _ShoppingItem extends StatelessWidget {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _QuantityEditor(
+      builder: (_) => QuantityEditor(
         initialUnitId: unitId ?? kDefaultUnitId,
         initialQty: qty ?? 1, // start at 1 when no quantity was set
         lang: lang,
@@ -312,8 +347,8 @@ class _ShoppingItem extends StatelessWidget {
 // Quantity editor (bottom sheet, floats above the number keyboard)
 // =============================================================================
 
-class _QuantityEditor extends StatefulWidget {
-  const _QuantityEditor({
+class QuantityEditor extends StatefulWidget {
+  const QuantityEditor({
     required this.initialUnitId,
     required this.initialQty,
     required this.lang,
@@ -328,10 +363,10 @@ class _QuantityEditor extends StatefulWidget {
   final Future<void> Function(String unitId, num qty) onChanged;
 
   @override
-  State<_QuantityEditor> createState() => _QuantityEditorState();
+  State<QuantityEditor> createState() => _QuantityEditorState();
 }
 
-class _QuantityEditorState extends State<_QuantityEditor> {
+class _QuantityEditorState extends State<QuantityEditor> {
   late final TextEditingController _ctrl;
   late String _unitId;
 
