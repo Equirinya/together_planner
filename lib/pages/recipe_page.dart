@@ -14,8 +14,9 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ingredient_search.dart' show UnitsCache, sanitizeLang;
+import 'ingredient_search.dart' show UnitsCache, sanitizeLang, Avatar;
 import 'recipe_detail.dart';
+import 'shopping_list_page.dart' show categoryRank;
 
 class RecipePage extends StatefulWidget {
   final String groupId;
@@ -263,7 +264,10 @@ class _RecipePageState extends State<RecipePage> {
 
     if (data.reference.parent.id == 'recipes') {
       final servings = ((data.data() as Map<String, dynamic>?)?['servings'] ?? 2) as num;
-      final planRef = await groupDoc.collection('cooking_plan').add({
+      // Create the document reference synchronously and write without awaiting,
+      // so the dialog can open immediately instead of waiting for the write.
+      final planRef = groupDoc.collection('cooking_plan').doc();
+      planRef.set({
         'recipe': data.id,
         'plannedFor': ts,
         'servings': servings,
@@ -271,22 +275,20 @@ class _RecipePageState extends State<RecipePage> {
       data.reference.update({'lastUsedAt': FieldValue.serverTimestamp()});
       if (widget.shoppingListEnabled && mounted) {
         // Use the rows preloaded when dragging started (falling back to a fresh
-        // load), and only surface the dialog when the recipe actually has
-        // ingredients to add.
-        final rows = await (_ingredientPreload[data.id] ?? _preloadIngredients(data.id));
+        // load). The dialog opens immediately showing a loading indicator and
+        // closes itself if the recipe has no ingredients to add.
+        final rowsFuture = _ingredientPreload[data.id] ?? _preloadIngredients(data.id);
         _ingredientPreload.remove(data.id); // avoid serving stale preference data
-        if (rows.isNotEmpty && mounted) {
-          showDialog(
-            context: context,
-            builder: (_) => _ShoppingListDialog(
-              group: groupDoc,
-              recipeId: data.id,
-              planRef: planRef,
-              recipeServings: servings.toInt(),
-              preloadedRows: rows,
-            ),
-          );
-        }
+        showDialog(
+          context: context,
+          builder: (_) => _ShoppingListDialog(
+            group: groupDoc,
+            recipeId: data.id,
+            planRef: planRef,
+            recipeServings: servings.toInt(),
+            rowsFuture: rowsFuture,
+          ),
+        );
       }
     } else if (data.reference.parent.id == 'cooking_plan') {
       data.reference.update({'plannedFor': ts});
@@ -470,6 +472,7 @@ class _RecipePageState extends State<RecipePage> {
                                             child: RecipeCard(
                                               recipeId: dayPlans[i]['recipe'],
                                               groupCollection: groupDoc,
+                                              cropContent: true,
                                             ),
                                           ),
                                         ),
@@ -513,6 +516,7 @@ class _RecipePageState extends State<RecipePage> {
                 children: searchedRecipes
                     .map(
                       (e) => LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
+                    key: ValueKey(e.id),
                     data: e,
                     onDragStarted: () => _preloadIngredients(e.id),
                     feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
@@ -663,15 +667,29 @@ class _RecipePageState extends State<RecipePage> {
 // ─── RecipeCard ───────────────────────────────────────────────────────────────
 
 class RecipeCard extends StatelessWidget {
-  const RecipeCard({super.key, required this.recipeId, required this.groupCollection});
+  const RecipeCard({
+    super.key,
+    required this.recipeId,
+    required this.groupCollection,
+    this.cropContent = false,
+  });
 
   final String? recipeId;
   final DocumentReference<Map<String, dynamic>>? groupCollection;
+
+  /// When true, the inner content is laid out at the card's full size and
+  /// cropped by the rounded frame instead of shrinking with the available
+  /// width (used inside the calendar carousel).
+  final bool cropContent;
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
     final smallerdim = size.width < size.height ? size.width : size.height;
+    // Full inner size of the card at its unconstrained width, used to keep the
+    // content at a fixed size and crop it when [cropContent] is set.
+    final fullContentWidth = smallerdim / 3 - 8;
+    final fullContentHeight = smallerdim / 4 - 8;
     final primaryColor = HSVColor.fromColor(Theme.of(context).colorScheme.primary);
     final primaryContainerColor =
     HSVColor.fromColor(Theme.of(context).colorScheme.primaryContainer);
@@ -709,7 +727,27 @@ class RecipeCard extends StatelessWidget {
                   width: 2,
                 ),
               ),
-              child: (recipeId != null && groupCollection != null)
+              child: !cropContent
+                  ? _content(context, color)
+                  : OverflowBox(
+                minWidth: fullContentWidth,
+                maxWidth: fullContentWidth,
+                minHeight: fullContentHeight,
+                maxHeight: fullContentHeight,
+                alignment: Alignment.center,
+                child: _content(context, color),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget? _content(BuildContext context, HSVColor color) {
+    final size = MediaQuery.of(context).size;
+    final smallerdim = size.width < size.height ? size.width : size.height;
+    return (recipeId != null && groupCollection != null)
                   ? LoadDocumentBuilder(
                 docRef: groupCollection!.collection('recipes').doc(recipeId),
                 builder: (recipeData) {
@@ -764,12 +802,7 @@ class RecipeCard extends StatelessWidget {
                   );
                 },
               )
-                  : null,
-            ),
-          ),
-        ),
-      ),
-    );
+                  : null;
   }
 }
 
@@ -808,14 +841,14 @@ class _ShoppingListDialog extends StatefulWidget {
   final String recipeId;
   final DocumentReference<Map<String, dynamic>> planRef;
   final int recipeServings;
-  final List<_IngPreload>? preloadedRows;
+  final Future<List<_IngPreload>> rowsFuture;
 
   const _ShoppingListDialog({
     required this.group,
     required this.recipeId,
     required this.planRef,
     required this.recipeServings,
-    this.preloadedRows,
+    required this.rowsFuture,
   });
 
   @override
@@ -836,8 +869,13 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
 
   Future<void> _load() async {
     try {
-      final preload = widget.preloadedRows ??
-          await loadRows(widget.group, widget.recipeId);
+      final preload = await widget.rowsFuture;
+      // Recipe has no ingredients to add: close the dialog instead of showing
+      // an empty list.
+      if (preload.isEmpty) {
+        if (mounted) Navigator.pop(context);
+        return;
+      }
       for (final p in preload) {
         rows.add(_IngRow(p.id, p.name, p.description, p.base, p.added, p.category));
       }
@@ -856,13 +894,20 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
       DocumentReference<Map<String, dynamic>> group,
       String recipeId,
       ) async {
-    await UnitsCache.instance.ensureLoaded();
-
-    final ingSnap = await group
+    // Kick off the independent reads concurrently: the units cache, the
+    // recipe's ingredients, and the recipe's past cooking plans.
+    final unitsFuture = UnitsCache.instance.ensureLoaded();
+    final ingFuture = group
         .collection('recipes')
         .doc(recipeId)
         .collection('ingredients')
         .get();
+    final pastFuture = group
+        .collection('cooking_plan')
+        .where('recipe', isEqualTo: recipeId)
+        .get();
+
+    final ingSnap = await ingFuture;
     if (ingSnap.docs.isEmpty) return const <_IngPreload>[];
 
     // Determine per-ingredient add/skip preference from up to 5 past plans.
@@ -871,10 +916,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     // added). Plans from older app versions — and plans where the add dialog
     // was skipped — have no itemIds field at all and are excluded, so they
     // don't dilute the majority calculation.
-    final pastSnap = await group
-        .collection('cooking_plan')
-        .where('recipe', isEqualTo: recipeId)
-        .get();
+    final pastSnap = await pastFuture;
     final past = pastSnap.docs
         .where((d) => d.data().containsKey('itemIds'))
         .toList()
@@ -903,8 +945,9 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
         },
     ];
 
-    final preload = <_IngPreload>[];
-    for (final ing in ingSnap.docs) {
+    // Fetch every ingredient's master document in parallel rather than one at a
+    // time. Future.wait preserves order, so the rows stay in recipe order.
+    final preload = await Future.wait(ingSnap.docs.map((ing) async {
       final id = ing['ingredientId'].toString();
       final description = (ing.data()['description'] ?? '').toString();
 
@@ -930,15 +973,18 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
 
       final bool added;
       if (recent.isEmpty) {
-        // First time: add everything except spices and herbs.
-        added = category != 'spices_and_herbs';
+        // First time: add everything except spices/herbs and condiments/sauces.
+        added = category != 'spices_and_herbs' &&
+            category != 'condiments_and_sauces';
       } else {
         // Majority of the last 5 plans; ties favour adding.
         final addCount = recentAdded.where((s) => s.contains(id)).length;
         added = addCount * 2 >= recent.length;
       }
-      preload.add(_IngPreload(id, name, description, base, added, category));
-    }
+      return _IngPreload(id, name, description, base, added, category);
+    }).toList());
+
+    await unitsFuture;
     return preload;
   }
 
@@ -1021,14 +1067,19 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     final colorScheme = Theme.of(context).colorScheme;
     final lang = sanitizeLang(
         WidgetsBinding.instance.platformDispatcher.locale.languageCode);
-    final ordered = [...rows.where((r) => r.added), ...rows.where((r) => !r.added)];
+    final ordered = [
+      ...rows.where((r) => r.added).toList()
+        ..sort((a, b) => categoryRank(a.category).compareTo(categoryRank(b.category))),
+      ...rows.where((r) => !r.added).toList()
+        ..sort((a, b) => categoryRank(a.category).compareTo(categoryRank(b.category))),
+    ];
 
     return Dialog(
       insetPadding: const EdgeInsets.all(16),
       child: loading
           ? const SizedBox(
         height: 160,
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: CupertinoActivityIndicator()),
       )
           : Column(
         mainAxisSize: MainAxisSize.min,
@@ -1108,6 +1159,10 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                         ? null
                         : colorScheme.errorContainer.withAlpha(80),
                     child: ListTile(
+                      contentPadding: const EdgeInsets.only(left: 16, right: 4),
+                      minVerticalPadding: 8,
+                      minTileHeight: 64,
+                      leading: Avatar(ingredientId: row.id),
                       title: Text(row.name),
                       subtitle: row.description.isNotEmpty
                           ? Text(row.description)

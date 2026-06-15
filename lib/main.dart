@@ -276,8 +276,7 @@ class _HomePageState extends State<HomePage> {
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
     return Scaffold(
-      appBar: AppBar(surfaceTintColor: Colors.transparent, backgroundColor: Colors.transparent),
-      bottomNavigationBar: groupReady
+      bottomNavigationBar: groupReady && _enabledFeatures.length >= 2
           ? NavigationBar(
               height: 60,
               destinations: _buildDestinations(),
@@ -288,7 +287,9 @@ class _HomePageState extends State<HomePage> {
               },
             )
           : null,
-      body: groupReady
+      body: Padding(
+        padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
+        child: groupReady
           ? IndexedStack(
               index: _selectedIndex,
               children: _enabledFeatures.map((key) => _buildPage(key, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled)).toList(),
@@ -312,6 +313,7 @@ class _HomePageState extends State<HomePage> {
               ),
             )
           : const Center(child: CupertinoActivityIndicator()),
+      ),
     );
   }
 }

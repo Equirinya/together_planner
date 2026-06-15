@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:couple_planner/pages/ingredient_search.dart';
-import 'package:couple_planner/pages/shopping_list_page.dart' show QuantityEditor;
+import 'package:couple_planner/pages/shopping_list_page.dart' show QuantityEditor, categoryRank;
 import 'package:couple_planner/utils.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -147,6 +147,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       final list = snap.docs
           .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
           .toList();
+      list.sort((a, b) => categoryRank((a['category'] as String?) ?? '')
+          .compareTo(categoryRank((b['category'] as String?) ?? '')));
       setState(() => ingredients = list);
       for (final item in list) {
         if (item['ingredientId'] == kPendingIngredient) {
@@ -1190,9 +1192,11 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
 
     if (!widget.editMode) {
       return ListTile(
+        minVerticalPadding: 8,
+        minTileHeight:64,
         leading: Avatar(ingredientId: ingId),
         title: Text(name),
-        subtitle: description != null ? Text(description) : null,
+        subtitle: Text(description ?? ''),
         trailing: Text(qtyLabel,
             style: Theme.of(context).textTheme.titleMedium),
       );

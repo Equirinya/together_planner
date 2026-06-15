@@ -7,41 +7,33 @@ import 'package:flutter/services.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 // ─── Categories ───────────────────────────────────────────────────────────────
 // Matches the `category` field stored on ingredient docs.
+// Ordered to follow a typical supermarket walk: produce first, frozen last.
 const List<String> kCategories = [
   'fruits_and_vegetables',
+  'bread_and_bakery',
   'meat_and_fish',
   'dairy_and_eggs',
   'grains_and_pasta',
+  'canned_and_packaged_goods',
   'baking_ingredients',
   'spices_and_herbs',
-  'nuts_and_seeds',
-  'beverages',
   'condiments_and_sauces',
+  'nuts_and_seeds',
   'snacks_and_sweets',
+  'beverages',
   'frozen_foods',
-  'canned_and_packaged_goods',
   'other',
 ];
 
-final Map<String, IconData> kCategoryIcons = {
-  'fruits_and_vegetables':     MdiIcons.foodApple,
-  'meat_and_fish':             MdiIcons.fish,
-  'dairy_and_eggs':            MdiIcons.cheese,
-  'grains_and_pasta':          MdiIcons.pasta,
-  'baking_ingredients':        MdiIcons.breadSlice,
-  'spices_and_herbs':          MdiIcons.leaf,
-  'nuts_and_seeds':            MdiIcons.peanut,
-  'beverages':                 MdiIcons.glassWine,
-  'condiments_and_sauces':     MdiIcons.bottleSodaClassic,
-  'snacks_and_sweets':         MdiIcons.candy,
-  'frozen_foods':              MdiIcons.snowflake,
-  'canned_and_packaged_goods': MdiIcons.foodTakeoutBox,
-  'other':                     MdiIcons.dotsHorizontalCircleOutline,
-};
+/// Rank of [category] in shopping-walk order; uncategorised/unknown sorts last.
+int categoryRank(String category) {
+  final c = category.trim();
+  final i = kCategories.indexOf(c.isEmpty ? 'other' : c);
+  return i == -1 ? kCategories.length : i;
+}
 
 // =============================================================================
 // Page
@@ -94,6 +86,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
         _currentItems = snap.docs
             .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
             .toList();
+        // Once the done state is confirmed (or the item is gone), drop the
+        // optimistic hide — otherwise a later restore (doneAt → null) from the
+        // search sheet would stay hidden.
+        final byId = {for (final i in _currentItems) i['id'] as String: i};
+        _optimisticallyHidden.removeWhere(
+          (id) => byId[id] == null || byId[id]!['doneAt'] != null,
+        );
       });
       // Resolve any pending items (new arrivals and pre-existing ones).
       // De-duplication is handled inside resolvePendingItem.
@@ -151,14 +150,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
       });
     }
 
-    // Categories alphabetically; empty/uncategorised goes last.
+    // Categories in supermarket-walk order; empty/uncategorised goes last.
+    int catRank(String c) {
+      final i = kCategories.indexOf(c.isEmpty ? 'other' : c);
+      return i == -1 ? kCategories.length : i;
+    }
     final sortedCats = groups.keys.toList()
-      ..sort((a, b) {
-        if (a.isEmpty && b.isEmpty) return 0;
-        if (a.isEmpty) return 1;
-        if (b.isEmpty) return -1;
-        return a.toLowerCase().compareTo(b.toLowerCase());
-      });
+      ..sort((a, b) => catRank(a).compareTo(catRank(b)));
 
     final showHeaders = groups.length > 1;
 
@@ -213,10 +211,16 @@ class _CategoryHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
       child: Row(
         children: [
-          Icon(
-            kCategoryIcons[category] ?? Icons.category,
-            size: 16,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          CircleAvatar(
+            radius: 12,
+            child: StorageImage(
+              storagePath: 'categories/$category.png',
+              fit: BoxFit.contain,
+              memCacheWidth: 64,
+              memCacheHeight: 64,
+              errorWidget: const SizedBox.shrink(),
+              placeholder: const SizedBox.shrink(),
+            ),
           ),
           const SizedBox(width: 8),
           const Expanded(child: Divider(height: 1)),
