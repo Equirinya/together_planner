@@ -1067,12 +1067,16 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     final colorScheme = Theme.of(context).colorScheme;
     final lang = sanitizeLang(
         WidgetsBinding.instance.platformDispatcher.locale.languageCode);
+    int cmp(_IngRow a, _IngRow b) {
+      final c = categoryRank(a.category).compareTo(categoryRank(b.category));
+      return c != 0 ? c : rows.indexOf(a).compareTo(rows.indexOf(b));
+    }
+    // Added first, then skipped; each group ordered by category.
     final ordered = [
-      ...rows.where((r) => r.added).toList()
-        ..sort((a, b) => categoryRank(a.category).compareTo(categoryRank(b.category))),
-      ...rows.where((r) => !r.added).toList()
-        ..sort((a, b) => categoryRank(a.category).compareTo(categoryRank(b.category))),
+      ...rows.where((r) => r.added).toList()..sort(cmp),
+      ...rows.where((r) => !r.added).toList()..sort(cmp),
     ];
+    final orderKey = ValueKey(ordered.map((r) => r.id).join('|'));
 
     return Dialog(
       insetPadding: const EdgeInsets.all(16),
@@ -1123,6 +1127,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
           // ── Ingredient list ─────────────────────────────────────
           Flexible(
             child: ListView(
+              key: orderKey,
               shrinkWrap: true,
               children: ordered.map((row) {
                 final toggleIcon = Icon(

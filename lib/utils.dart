@@ -138,6 +138,10 @@ class StorageImage extends StatefulWidget {
 class _StorageImageState extends State<StorageImage> {
   static Directory? _globalCacheDir;
   static final Set<String> _verifiedDiskFiles = {};
+  // Resolved files keyed by storage path, so a freshly mounted StorageImage for
+  // an already-loaded image can render synchronously without the async disk
+  // lookup (and its one-frame placeholder flash).
+  static final Map<String, File> _resolvedFiles = {};
 
   File? _file;
   double? _progress;
@@ -148,20 +152,35 @@ class _StorageImageState extends State<StorageImage> {
   @override
   void initState() {
     super.initState();
-    _loadOrDownload();
+    final cached = _resolvedFiles[widget.storagePath];
+    if (cached != null) {
+      _file = cached;
+      _loading = false;
+      _progress = 1;
+    } else {
+      _loadOrDownload();
+    }
   }
 
   @override
   void didUpdateWidget(covariant StorageImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.storagePath != widget.storagePath) {
-      // reset and load new
-      _file = null;
-      _progress = null;
-      _error = null;
-      _loading = true;
       _hasRetriedDecode = false; // Reset the retry flag
-      _loadOrDownload();
+      final cached = _resolvedFiles[widget.storagePath];
+      if (cached != null) {
+        _file = cached;
+        _progress = 1;
+        _error = null;
+        _loading = false;
+      } else {
+        // reset and load new
+        _file = null;
+        _progress = null;
+        _error = null;
+        _loading = true;
+        _loadOrDownload();
+      }
     }
   }
 
@@ -211,6 +230,7 @@ class _StorageImageState extends State<StorageImage> {
         await file.delete();
       }
       _verifiedDiskFiles.remove(filename);
+      _resolvedFiles.remove(widget.storagePath);
     } catch (e) {
       if (kDebugMode) debugPrint("Failed to delete corrupt file: $e");
     }
@@ -234,6 +254,7 @@ class _StorageImageState extends State<StorageImage> {
       // Skip cache check if we are forcing a redownload
       if (!forceDownload && (_verifiedDiskFiles.contains(filename) || await file.exists())) {
         _verifiedDiskFiles.add(filename); // Add to memory cache
+        _resolvedFiles[widget.storagePath] = file;
         if (mounted) {
           setState(() {
             _file = file;
@@ -272,6 +293,7 @@ class _StorageImageState extends State<StorageImage> {
         }
 
         _verifiedDiskFiles.add(filename); // Add to memory cache
+        _resolvedFiles[widget.storagePath] = file;
         if (mounted) {
           setState(() {
             _file = file;
@@ -297,6 +319,7 @@ class _StorageImageState extends State<StorageImage> {
             await file.writeAsBytes(bytes);
 
             _verifiedDiskFiles.add(filename);
+            _resolvedFiles[widget.storagePath] = file;
             if (mounted) {
               setState(() {
                 _file = file;
