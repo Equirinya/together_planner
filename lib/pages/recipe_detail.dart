@@ -76,7 +76,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   bool _loadingIngredients = false;
   bool _loadingSteps = false;
 
-  final _functions = FirebaseFunctions.instance;
+  final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
 
   // ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -192,6 +192,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final base = _baseServings;
     if (base == null || base == 0) return;
     final factor = target / base;
+    final batch = FirebaseFirestore.instance.batch();
     for (final ing in ingredients) {
       final raw = ing['quantity'];
       if (raw == null) continue;
@@ -199,9 +200,28 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       if (q.isEmpty) continue;
       final scaled =
       q.map((k, v) => MapEntry(k, (v as num).toDouble() * factor));
-      await ingredientsRef.doc(ing['id'] as String).update({'quantity': scaled});
+      batch.update(ingredientsRef.doc(ing['id'] as String), {'quantity': scaled});
     }
+    await batch.commit();
     _baseServings = target;
+  }
+
+  Future<void> _clearIngredients() async {
+    final batch = FirebaseFirestore.instance.batch();
+    for (final ing in ingredients) {
+      batch.delete(ingredientsRef.doc(ing['id'] as String));
+    }
+    await batch.commit();
+  }
+
+  void _clearSteps() {
+    for (final c in stepsControllers ?? const <TextEditingController>[]) {
+      c.dispose();
+    }
+    setState(() {
+      steps = [''];
+      stepsControllers = [TextEditingController()];
+    });
   }
 
   // ── ingredient mutations ──────────────────────────────────────────────────
@@ -223,6 +243,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
+      useRootNavigator: true,
       builder: (_) => QuantityEditor(
         initialUnitId: q?.unitId ?? kDefaultUnitId,
         initialQty: q?.qty ?? 1,
@@ -287,14 +308,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Future<void> _enhanceImage(String path) async {
     setState(() => _enhancing.add(path));
     try {
-      final res = await _functions.httpsCallable('enhanceRecipeImage').call({
+      final res = await _functions.httpsCallable('recipesEnhancement-enhanceRecipeImage').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
         'imagePath': path,
       });
       final newPath = (res.data as Map)['path'] as String;
-      // Append the AI image — original is intentionally kept
       await docRef.update({
         'images': FieldValue.arrayUnion([newPath]),
       });
@@ -309,7 +329,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Future<void> _generateImageWithAI() async {
     setState(() => _generatingImage = true);
     try {
-      await _functions.httpsCallable('generateRecipeImage').call({
+      await _functions.httpsCallable('recipesEnhancement-generateRecipeImage').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
@@ -327,7 +347,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Future<void> _generateIngredients() async {
     setState(() => _loadingIngredients = true);
     try {
-      await _functions.httpsCallable('generateRecipeIngredients').call({
+      await _functions.httpsCallable('recipesEnhancement-generateRecipeIngredients').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
@@ -342,7 +362,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Future<void> _generateSteps() async {
     setState(() => _loadingSteps = true);
     try {
-      await _functions.httpsCallable('generateRecipeSteps').call({
+      await _functions.httpsCallable('recipesEnhancement-generateRecipeSteps').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
         'recipeId': widget.recipeId,
@@ -461,6 +481,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               child: TextField(
                 controller: nameController,
                 style: Theme.of(context).textTheme.headlineMedium,
+                decoration: const InputDecoration(hintText: 'Recipe name'),
               ),
             )
                 : Padding(
@@ -482,6 +503,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         ? TextField(
                       controller: tagsController,
                       style: Theme.of(context).textTheme.bodyMedium,
+                      decoration: const InputDecoration(hintText: '#tag1 #tag2…'),
                     )
                         : Wrap(
                       spacing: 8,
@@ -562,6 +584,9 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         // One shimmer per in-flight upload
         for (int i = 0; i < _uploadingCount; i++)
           _shimmerImageTile(ValueKey('upload_$i')),
+        // One shimmer per in-flight enhance
+        for (final path in _enhancing)
+          _shimmerImageTile(ValueKey('enhancing_$path')),
         // One shimmer while AI is generating
         if (_generatingImage)
           _shimmerImageTile(const ValueKey('generating')),
@@ -644,6 +669,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   icon: const Icon(Icons.auto_awesome),
                   tooltip: 'Generate with AI',
                   onPressed: _generateIngredients,
+                ),
+              if (edit && ingredients.isNotEmpty)
+                IconButton(
+                  icon: const Icon(Icons.delete_sweep),
+                  tooltip: 'Clear all',
+                  onPressed: _clearIngredients,
                 ),
             ],
           ),
@@ -730,7 +761,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       indent: 16,
                       endIndent: 16,
                       color: cs.outlineVariant),
-                  for (int i = 0; i < ingredients.length; i++) ...[
+                  for (int i = 0; i < ingredients.length; i++)
                     _RecipeIngredientTile(
                       key: ValueKey(ingredients[i]['id']),
                       ing: ingredients[i],
@@ -744,13 +775,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                           .doc(ingredients[i]['id'] as String)
                           .update({'description': desc}),
                     ),
-                    if (i < ingredients.length - 1)
-                      Divider(
-                          height: 1,
-                          indent: 68,
-                          endIndent: 0,
-                          color: cs.outlineVariant),
-                  ],
                 ],
 
                 // ── Add ingredient row (edit) ────────────────────────────
@@ -799,6 +823,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   icon: const Icon(Icons.auto_awesome),
                   tooltip: 'Generate with AI',
                   onPressed: _generateSteps,
+                ),
+              if (edit && steps.any((s) => s.isNotEmpty))
+                IconButton(
+                  icon: const Icon(Icons.delete_sweep),
+                  tooltip: 'Clear all',
+                  onPressed: _clearSteps,
                 ),
             ],
           ),
@@ -914,11 +944,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Image or enhance shimmer
-              if (enhancing)
-                _Shimmer(child: Container(color: cs.surfaceContainerHighest))
-              else
-                StorageImage(storagePath: imgPath, fit: BoxFit.cover),
+              StorageImage(storagePath: imgPath, fit: BoxFit.cover),
 
               // Top-right: [enhance?]  [delete]
               // Both are plain IconButton — same style as the original delete
@@ -1127,6 +1153,14 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
           widget.onDescriptionSave(_descCtrl.text.trim());
         }
       });
+  }
+
+  @override
+  void didUpdateWidget(_RecipeIngredientTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.editMode && !widget.editMode) {
+      widget.onDescriptionSave(_descCtrl.text.trim());
+    }
   }
 
   @override

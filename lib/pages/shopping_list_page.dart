@@ -388,7 +388,10 @@ class _QuantityEditorState extends State<QuantityEditor> {
       if (visible) {
         _keyboardWasVisible = true;
       } else if (_keyboardWasVisible && mounted) {
-        Navigator.of(context).maybePop();
+        final animation = ModalRoute.of(context)?.animation;
+        final closing = animation?.status == AnimationStatus.reverse
+            || animation?.status == AnimationStatus.dismissed;
+        if (!closing) Navigator.of(context).maybePop();
       }
     });
   }

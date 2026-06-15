@@ -14,7 +14,7 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ingredient_search.dart' show UnitsCache;
+import 'ingredient_search.dart' show UnitsCache, sanitizeLang;
 import 'recipe_detail.dart';
 
 class RecipePage extends StatefulWidget {
@@ -46,6 +46,7 @@ class _RecipePageState extends State<RecipePage> {
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? planListener;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> cookingPlans = [];
+  final Set<String> _deletingPlanIds = {};
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? recipesListener;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> recipes = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> searchedRecipes = [];
@@ -296,6 +297,7 @@ class _RecipePageState extends State<RecipePage> {
   /// quantities from the shopping list (deletes shopping-list entries that
   /// reach zero).
   Future<void> _removePlan(DocumentReference<Map<String, dynamic>> planRef) async {
+    setState(() => _deletingPlanIds.add(planRef.id));
     // The plan now stores the shopping-list item ids it contributed to and the
     // matching quantities as parallel arrays, instead of an added_ingredients
     // subcollection.
@@ -303,13 +305,18 @@ class _RecipePageState extends State<RecipePage> {
     final planData = planSnap.data() ?? {};
     final itemIds = List<String>.from(planData['itemIds'] ?? const []);
     final quantities = (planData['quantities'] as List?) ?? const [];
-    for (int i = 0; i < itemIds.length; i++) {
-      final itemRef = groupDoc.collection('shopping_list').doc(itemIds[i]);
+    // Read all affected shopping-list items in parallel, then apply every
+    // change (and the plan deletion) as a single atomic batch commit.
+    final snaps = await Future.wait([
+      for (final id in itemIds) groupDoc.collection('shopping_list').doc(id).get(),
+    ]);
+    final batch = FirebaseFirestore.instance.batch();
+    for (int i = 0; i < snaps.length; i++) {
+      final itemSnap = snaps[i];
+      if (!itemSnap.exists) continue;
       final q = i < quantities.length
           ? Map<String, dynamic>.from(quantities[i] as Map? ?? {})
           : <String, dynamic>{};
-      final itemSnap = await itemRef.get();
-      if (!itemSnap.exists) continue;
       final cur = Map<String, dynamic>.from(itemSnap['quantity'] ?? {});
       q.forEach((k, v) {
         if (cur.containsKey(k)) {
@@ -318,10 +325,12 @@ class _RecipePageState extends State<RecipePage> {
         }
       });
       cur.isEmpty
-          ? await itemRef.delete()
-          : await itemRef.update({'quantity': cur});
+          ? batch.delete(itemSnap.reference)
+          : batch.update(itemSnap.reference, {'quantity': cur});
     }
-    await planRef.delete();
+    batch.delete(planRef);
+    await batch.commit();
+    if (mounted) setState(() => _deletingPlanIds.remove(planRef.id));
   }
 
   @override
@@ -352,6 +361,7 @@ class _RecipePageState extends State<RecipePage> {
                     .add(Duration(days: i)),
               ).map((day) {
                 final dayPlans = cookingPlans.where((plan) {
+                  if (_deletingPlanIds.contains(plan.id)) return false;
                   final d = (plan['plannedFor'] as Timestamp).toDate();
                   return d.year == day.year && d.month == day.month && d.day == day.day;
                 }).toList();
@@ -445,10 +455,7 @@ class _RecipePageState extends State<RecipePage> {
                                             recipeId: dayPlans[i]['recipe'],
                                             groupCollection: groupDoc,
                                           ),
-                                          childWhenDragging: const RecipeCard(
-                                            recipeId: null,
-                                            groupCollection: null,
-                                          ),
+                                          childWhenDragging: const SizedBox.shrink(),
                                           child: GestureDetector(
                                             onTap: () => Navigator.push(
                                               context,
@@ -775,21 +782,24 @@ class RecipeCard extends StatelessWidget {
 class _IngPreload {
   final String id;
   final String name;
+  final String description;
   final Map<String, num?> base;
   final bool added;
   final String category;
-  const _IngPreload(this.id, this.name, this.base, this.added, this.category);
+  const _IngPreload(this.id, this.name, this.description, this.base, this.added,
+      this.category);
 }
 
 class _IngRow {
   final String id;
   final String name;
+  final String description;
   final Map<String, num?> base; // amounts at the recipe's base servings
   Map<String, num?> cur; // amounts scaled to the current servings selector
   bool added;
   final String category;
 
-  _IngRow(this.id, this.name, this.base, this.added, this.category)
+  _IngRow(this.id, this.name, this.description, this.base, this.added, this.category)
       : cur = Map.of(base);
 }
 
@@ -827,10 +837,9 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
   Future<void> _load() async {
     try {
       final preload = widget.preloadedRows ??
-          await loadRows(widget.group, widget.recipeId,
-              excludePlanId: widget.planRef.id);
+          await loadRows(widget.group, widget.recipeId);
       for (final p in preload) {
-        rows.add(_IngRow(p.id, p.name, p.base, p.added, p.category));
+        rows.add(_IngRow(p.id, p.name, p.description, p.base, p.added, p.category));
       }
       _rescale();
       if (mounted) setState(() => loading = false);
@@ -845,9 +854,8 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
   /// reused when the dialog opens. Returns an empty list when there are none.
   static Future<List<_IngPreload>> loadRows(
       DocumentReference<Map<String, dynamic>> group,
-      String recipeId, {
-        String? excludePlanId,
-      }) async {
+      String recipeId,
+      ) async {
     await UnitsCache.instance.ensureLoaded();
 
     final ingSnap = await group
@@ -858,20 +866,25 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     if (ingSnap.docs.isEmpty) return const <_IngPreload>[];
 
     // Determine per-ingredient add/skip preference from up to 5 past plans.
+    // Only plans that actually went through the ingredient-adding flow carry a
+    // signal: those have an itemIds field (an empty array when nothing was
+    // added). Plans from older app versions — and plans where the add dialog
+    // was skipped — have no itemIds field at all and are excluded, so they
+    // don't dilute the majority calculation.
     final pastSnap = await group
         .collection('cooking_plan')
         .where('recipe', isEqualTo: recipeId)
         .get();
     final past = pastSnap.docs
-        .where((d) => excludePlanId == null || d.id != excludePlanId)
+        .where((d) => d.data().containsKey('itemIds'))
         .toList()
       ..sort((a, b) =>
           (b['plannedFor'] as Timestamp).compareTo(a['plannedFor'] as Timestamp));
     final recent = past.take(5).toList();
 
-    // Past plans now record the shopping-list item ids they contributed to
-    // (itemIds) rather than an added_ingredients subcollection, so resolve each
-    // item back to its ingredientId. Items removed since are simply skipped.
+    // Past plans record the shopping-list item ids they contributed to
+    // (itemIds), so resolve each item back to its ingredientId. Items removed
+    // since are simply skipped.
     final allItemIds = <String>{
       for (final p in recent)
         ...List<String>.from(p.data()['itemIds'] ?? const []),
@@ -893,19 +906,27 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     final preload = <_IngPreload>[];
     for (final ing in ingSnap.docs) {
       final id = ing['ingredientId'].toString();
-      final base = <String, num?>{};
-      (ing.data()['quantity'] as Map?)?.forEach(
-            (k, v) => base[k.toString()] = v == null ? null : v as num,
-      );
+      final description = (ing.data()['description'] ?? '').toString();
 
       final ingDoc =
       await FirebaseFirestore.instance.collection('ingredients').doc(id).get();
       final ingData = ingDoc.data();
       final category = (ingData?['category'] ?? '').toString();
-      final nameMap = (ingData?['name'] as Map?) ?? {};
-      final name = (nameMap['en'] ??
-          (nameMap.values.isNotEmpty ? nameMap.values.first : id))
-          .toString();
+      final defaultUnit = (ingData?['defaultUnit'] ?? '').toString();
+      final name = (ing.data()['displayName'] ?? ingData?['name']?['en'] ?? id).toString();
+
+      // A missing/empty quantity map falls back to a single unit of the
+      // ingredient's default unit, and a null amount for a present unit is
+      // treated as 1.
+      final base = <String, num?>{};
+      final rawQuantity = ing.data()['quantity'] as Map?;
+      if (rawQuantity != null && rawQuantity.isNotEmpty) {
+        rawQuantity.forEach(
+              (k, v) => base[k.toString()] = v == null ? 1 : v as num,
+        );
+      } else {
+        base[defaultUnit] = 1;
+      }
 
       final bool added;
       if (recent.isEmpty) {
@@ -916,7 +937,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
         final addCount = recentAdded.where((s) => s.contains(id)).length;
         added = addCount * 2 >= recent.length;
       }
-      preload.add(_IngPreload(id, name, base, added, category));
+      preload.add(_IngPreload(id, name, description, base, added, category));
     }
     return preload;
   }
@@ -938,31 +959,46 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     setState(() => saving = true);
     // Record which shopping-list items this plan contributed to, and how much,
     // as parallel arrays on the plan document (replaces the old
-    // added_ingredients subcollection).
-    final itemIds = <String>[];
-    final quantities = <Map<String, num>>[];
+    // added_ingredients subcollection). The arrays are always written here —
+    // empty when nothing was added — so the plan is marked as having gone
+    // through the add flow. Skipped plans (and plans from older app versions)
+    // keep these fields absent instead, and are ignored by the heuristic.
+    // Collect the rows that contribute a quantity, then look up their existing
+    // shopping-list entries in parallel (reads can't go in a batch).
+    final pending = <(_IngRow, Map<String, num>)>[];
     for (final row in rows.where((r) => r.added)) {
       final q = <String, num>{};
       row.cur.forEach((k, v) {
         if (v != null && v > 0) q[k] = v;
       });
-      if (q.isEmpty) continue;
+      if (q.isNotEmpty) pending.add((row, q));
+    }
+    final existing = await Future.wait([
+      for (final p in pending)
+        widget.group
+            .collection('shopping_list')
+            .where('ingredientId', isEqualTo: p.$1.id)
+            .limit(1)
+            .get(),
+    ]);
 
-      // Merge into an existing shopping-list entry for the same ingredient,
-      // or create a new one.
-      final existing = await widget.group
-          .collection('shopping_list')
-          .where('ingredientId', isEqualTo: row.id)
-          .limit(1)
-          .get();
+    // Apply every shopping-list write and the plan update as one atomic batch.
+    final batch = FirebaseFirestore.instance.batch();
+    final itemIds = <String>[];
+    final quantities = <Map<String, num>>[];
+    for (int i = 0; i < pending.length; i++) {
+      final row = pending[i].$1;
+      final q = pending[i].$2;
+      final docs = existing[i].docs;
       final DocumentReference<Map<String, dynamic>> itemRef;
-      if (existing.docs.isNotEmpty) {
-        itemRef = existing.docs.first.reference;
-        final cur = Map<String, dynamic>.from(existing.docs.first['quantity'] ?? {});
+      if (docs.isNotEmpty) {
+        itemRef = docs.first.reference;
+        final cur = Map<String, dynamic>.from(docs.first['quantity'] ?? {});
         q.forEach((k, v) => cur[k] = ((cur[k] ?? 0) as num) + v);
-        await itemRef.update({'quantity': cur});
+        batch.update(itemRef, {'quantity': cur});
       } else {
-        itemRef = await widget.group.collection('shopping_list').add({
+        itemRef = widget.group.collection('shopping_list').doc();
+        batch.set(itemRef, {
           'ingredientId': row.id,
           'displayName': row.name,
           'description': '',
@@ -975,16 +1011,16 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
       itemIds.add(itemRef.id);
       quantities.add(q);
     }
-    if (itemIds.isNotEmpty) {
-      await widget.planRef.update({'itemIds': itemIds, 'quantities': quantities});
-    }
+    batch.update(widget.planRef, {'itemIds': itemIds, 'quantities': quantities});
+    await batch.commit();
     if (mounted) Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final lang = Localizations.localeOf(context).languageCode;
+    final lang = sanitizeLang(
+        WidgetsBinding.instance.platformDispatcher.locale.languageCode);
     final ordered = [...rows.where((r) => r.added), ...rows.where((r) => !r.added)];
 
     return Dialog(
@@ -1043,7 +1079,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                       ? Icons.remove_shopping_cart
                       : Icons.add_shopping_cart,
                 );
-                final subtitle = row.cur.entries
+                final quantityText = row.cur.entries
                     .where((e) => e.value != null && e.value! > 0)
                     .map((e) =>
                 '${_fmt(e.value!)} ${UnitsCache.instance.display(e.key, lang, e.value!)}')
@@ -1073,11 +1109,17 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                         : colorScheme.errorContainer.withAlpha(80),
                     child: ListTile(
                       title: Text(row.name),
-                      subtitle: subtitle.isNotEmpty ? Text(subtitle) : null,
+                      subtitle: row.description.isNotEmpty
+                          ? Text(row.description)
+                          : null,
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           IconButton(
+                            iconSize: 18,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 40, minHeight: 40),
                             icon: const Icon(Icons.remove),
                             onPressed: () => setState(() {
                               row.cur = row.cur.map(
@@ -1091,7 +1133,12 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                               );
                             }),
                           ),
+                          Text(quantityText, style: Theme.of(context).textTheme.bodyLarge),
                           IconButton(
+                            iconSize: 18,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                                minWidth: 40, minHeight: 40),
                             icon: const Icon(Icons.add),
                             onPressed: () => setState(() {
                               row.cur = row.cur.map(

@@ -17,6 +17,8 @@ const String kUnknownIngredient = '1'; // could not be matched at all
 const String _kFunctionsRegion = 'europe-west1';
 const String _kResolveFn = 'ingredients-resolveShoppingItem';
 
+const Duration _kFunctionDebounce = Duration(seconds: 2);
+
 // =============================================================================
 // Small shared helpers
 // =============================================================================
@@ -409,12 +411,22 @@ Future<void> resolvePendingItem(
     String lang) async {
   if (!_resolvingPending.add(ref.id)) return;
   try {
-    final id = await IngredientIndex.instance.resolveByName(displayName, lang);
-    final updates = <String, dynamic>{'ingredientId': id};
+    final parsed = parseInput(displayName);
+    final cleanName =
+        parsed.remaining.isNotEmpty ? parsed.remaining.join(' ') : displayName;
+    final id = await IngredientIndex.instance.resolveByName(cleanName, lang);
+    final updates = <String, dynamic>{
+      'ingredientId': id,
+      'displayName': cleanName,
+    };
+    if (parsed.quantity != null) {
+      final unitId = parsed.unitId ?? kDefaultUnitId;
+      updates['quantity'] = {unitId: parsed.quantity!.toDouble()};
+    }
     // Populate category from the resolved ingredient. The match results are
     // already cached from resolveByName so this is effectively free.
     if (id != kPendingIngredient && id != kUnknownIngredient) {
-      final candidates = await IngredientIndex.instance.match(displayName, lang);
+      final candidates = await IngredientIndex.instance.match(cleanName, lang);
       final matched = candidates.where((m) => m.id == id).firstOrNull;
       if (matched != null) updates['category'] = matched.category(lang);
     }
@@ -660,7 +672,10 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
       if (visible) {
         _keyboardWasVisible = true;
       } else if (_keyboardWasVisible && mounted) {
-        Navigator.of(context).maybePop();
+        final animation = ModalRoute.of(context)?.animation;
+        final closing = animation?.status == AnimationStatus.reverse
+            || animation?.status == AnimationStatus.dismissed;
+        if (!closing) Navigator.of(context).maybePop();
       }
     });
   }
@@ -710,7 +725,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
       });
 
       if (local.isEmpty && text.trim().length >= 3) {
-        _functionTimer = Timer(const Duration(milliseconds: 600), () async {
+        _functionTimer = Timer(_kFunctionDebounce, () async {
           if (!mounted || seq != _searchSeq) return;
           setState(() => _functionRunning = true);
           List<Suggestion> fromFn = const [];
