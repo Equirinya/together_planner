@@ -69,7 +69,7 @@ jobs:
 
       # Step 2: Set up Flutter SDK
       - name: Set up Flutter SDK
-        uses: flutter-actions/setup-flutter@v3
+        uses: flutter-actions/setup-flutter@v4
         env:
           FLUTTER_VERSION: ${{ vars.FLUTTER_VERSION }}
         with:
