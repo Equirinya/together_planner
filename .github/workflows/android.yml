@@ -23,7 +23,7 @@ jobs:
     steps:
       # Step 1: Checkout Code
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Step 2: Setup Java
       - name: Set up Java
