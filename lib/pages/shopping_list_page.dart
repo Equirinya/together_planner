@@ -19,12 +19,12 @@ const List<String> kCategories = [
   'grains_and_pasta',
   'canned_and_packaged_goods',
   'baking_ingredients',
-  'spices_and_herbs',
-  'condiments_and_sauces',
   'nuts_and_seeds',
   'snacks_and_sweets',
   'beverages',
   'frozen_foods',
+  'condiments_and_sauces',
+  'spices_and_herbs',
   'other',
 ];
 

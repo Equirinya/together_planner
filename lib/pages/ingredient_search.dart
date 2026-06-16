@@ -315,6 +315,18 @@ class IngredientIndex extends ChangeNotifier {
     return kUnknownIngredient;
   }
 
+  /// Fetches the stored category for [id], or '' when unavailable.
+  Future<String> categoryById(String id, String lang) async {
+    try {
+      final doc = await _col.doc(id).get();
+      final data = doc.data();
+      if (data == null) return '';
+      return MatchedIngredient(id, data).category(lang);
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// Cloud-function resolution; throws on failure so callers can react.
   Future<List<Suggestion>> resolveViaFunction(String query) async {
     final res = await FirebaseFunctions.instanceFor(region: _kFunctionsRegion)
@@ -426,9 +438,8 @@ Future<void> resolvePendingItem(
     // Populate category from the resolved ingredient. The match results are
     // already cached from resolveByName so this is effectively free.
     if (id != kPendingIngredient && id != kUnknownIngredient) {
-      final candidates = await IngredientIndex.instance.match(cleanName, lang);
-      final matched = candidates.where((m) => m.id == id).firstOrNull;
-      if (matched != null) updates['category'] = matched.category(lang);
+      final cat = await IngredientIndex.instance.categoryById(id, lang);
+      if (cat.isNotEmpty) updates['category'] = cat;
     }
     await ref.update(updates);
   } catch (_) {
