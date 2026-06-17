@@ -18,6 +18,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'pages/login_page.dart';
 import 'pages/shopping_list_page.dart';
+import 'pages/ingredient_admin_page.dart';
 
 // ---------------------------------------------------------------------------
 // Feature registry
@@ -25,7 +26,7 @@ import 'pages/shopping_list_page.dart';
 
 /// All features the app knows about, in canonical display order.
 /// The group document may reorder / subset this list via `enabledFeatures`.
-const _allFeatures = ['shopping_list', 'recipes', 'todos', 'calendar'];
+const _allFeatures = ['shopping_list', 'recipes', 'todos', 'calendar', 'money'];
 
 /// Default set shown when a group document has no `enabledFeatures` field.
 const _defaultEnabledFeatures = ['shopping_list', 'recipes'];
@@ -35,6 +36,8 @@ const _featureMeta = <String, ({IconData icon, String label})>{
   'recipes': (icon: Icons.restaurant_menu, label: 'Recipes'),
   'todos': (icon: Icons.checklist, label: 'To-Do\'s'),
   'calendar': (icon: Icons.calendar_month, label: 'Calendar'),
+  'money': (icon: Icons.account_balance_wallet, label: 'Money'),
+  'ingredients_admin': (icon: Icons.fact_check, label: 'Ingredients'),
 };
 
 // ---------------------------------------------------------------------------
@@ -42,7 +45,7 @@ const _featureMeta = <String, ({IconData icon, String label})>{
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  SystemTheme.fallbackColor = const Color(0xFFB7FF5E);
+  SystemTheme.fallbackColor = const Color(0xFF2E7D5B);
   await SystemTheme.accentColor.load();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -57,14 +60,59 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: SystemTheme.accentColor.accent)),
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(seedColor: SystemTheme.accentColor.dark, brightness: Brightness.dark),
-      ),
+      theme: _buildTheme(SystemTheme.accentColor.accent, Brightness.light),
+      darkTheme: _buildTheme(SystemTheme.accentColor.dark, Brightness.dark),
       home: const HomePage(),
     );
   }
+}
+
+/// Expressive Material You theme: green-seeded tonal palette with soft, rounded
+/// surfaces. Pages keep using default widgets, so the feel is set here once.
+ThemeData _buildTheme(Color seed, Brightness brightness) {
+  final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness);
+
+  return ThemeData(
+    colorScheme: scheme,
+    scaffoldBackgroundColor: scheme.surfaceDim,
+    splashFactory: InkSparkle.splashFactory,
+    cardTheme: CardThemeData(
+      elevation: 0,
+      color: scheme.surfaceContainerLow,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+    ),
+    appBarTheme: const AppBarThemeData(
+      centerTitle: true,
+      scrolledUnderElevation: 0,
+      backgroundColor: Colors.transparent,
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      elevation: 0,
+      backgroundColor: scheme.surfaceContainer,
+      indicatorColor: scheme.primaryContainer,
+    ),
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    ),
+    chipTheme: ChipThemeData(
+      side: BorderSide.none,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    dialogTheme: DialogThemeData(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      showDragHandle: true,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+    ),
+  );
 }
 
 class HomePage extends StatefulWidget {
@@ -99,6 +147,9 @@ class _HomePageState extends State<HomePage> {
   /// Whether AI features are enabled for the current group.
   bool _aiEnabled = false;
 
+  /// Server-set profile flag granting ingredient editing (admin tab).
+  bool _canEditIngredients = false;
+
   // ---------------------------------------------------------------------------
   // Init / dispose
   // ---------------------------------------------------------------------------
@@ -132,6 +183,8 @@ class _HomePageState extends State<HomePage> {
         ),
       );
     } else {
+      _canEditIngredients = (userDoc!.data() as Map<String, dynamic>?)?['editIngredients'] == true;
+
       if (Platform.isAndroid || Platform.isIOS) {
         PackageInfo packageInfo = await PackageInfo.fromPlatform();
 
@@ -191,7 +244,8 @@ class _HomePageState extends State<HomePage> {
       final raw = data['enabledFeatures'];
       final List<String> parsed = raw is List ? raw.map((e) => e.toString()).where(_allFeatures.contains).toList() : List.of(_defaultEnabledFeatures);
 
-      final enabled = parsed.isNotEmpty ? parsed : List.of(_defaultEnabledFeatures);
+      final base = parsed.isNotEmpty ? parsed : List.of(_defaultEnabledFeatures);
+      final enabled = _canEditIngredients ? [...base, 'ingredients_admin'] : base;
 
       // --- default startup page -----------------------------------------------
       final String? defaultPage = data['defaultPage'] as String?;
@@ -260,6 +314,11 @@ class _HomePageState extends State<HomePage> {
       case 'calendar':
         // Replace with your real CalendarPage when ready
         return const _PlaceholderPage(label: 'Calendar');
+      case 'money':
+        // Replace with your real MoneyPage when ready
+        return const _PlaceholderPage(label: 'Money');
+      case 'ingredients_admin':
+        return const IngredientAdminPage();
       default:
         return const SizedBox.shrink();
     }
@@ -276,15 +335,31 @@ class _HomePageState extends State<HomePage> {
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
     return Scaffold(
+      extendBody: true,
       bottomNavigationBar: groupReady && _enabledFeatures.length >= 2
-          ? NavigationBar(
-              height: 60,
-              destinations: _buildDestinations(),
-              labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (int index) {
-                setState(() => _selectedIndex = index);
-              },
+          ? ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, Colors.black],
+                stops: [0.0, 0.15],
+              ).createShader(bounds),
+              blendMode: BlendMode.dstIn,
+              child: ColoredBox(
+                color: Theme.of(context).colorScheme.surfaceContainer,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 16),
+                  child: NavigationBar(
+                    height: 50,
+                    destinations: _buildDestinations(),
+                    labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+                    selectedIndex: _selectedIndex,
+                    onDestinationSelected: (int index) {
+                      setState(() => _selectedIndex = index);
+                    },
+                  ),
+                ),
+              ),
             )
           : null,
       body: Padding(

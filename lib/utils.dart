@@ -119,6 +119,10 @@ class StorageImage extends StatefulWidget {
   final int? memCacheWidth;
   final int? memCacheHeight;
 
+  /// Cache buster: when this changes, the file is re-downloaded even if the
+  /// storagePath is unchanged (e.g. after the image at that path was replaced).
+  final String? cacheKey;
+
   const StorageImage({
     Key? key,
     required this.storagePath,
@@ -129,6 +133,7 @@ class StorageImage extends StatefulWidget {
     this.retryOnError = true,
     this.memCacheWidth,
     this.memCacheHeight,
+    this.cacheKey,
   }) : super(key: key);
 
   @override
@@ -149,10 +154,14 @@ class _StorageImageState extends State<StorageImage> {
   bool _loading = true;
   bool _hasRetriedDecode = false;
 
+  // Cache key combining the path with the optional cacheKey buster.
+  String get _mapKey =>
+      widget.cacheKey == null ? widget.storagePath : '${widget.storagePath}#${widget.cacheKey}';
+
   @override
   void initState() {
     super.initState();
-    final cached = _resolvedFiles[widget.storagePath];
+    final cached = _resolvedFiles[_mapKey];
     if (cached != null) {
       _file = cached;
       _loading = false;
@@ -165,9 +174,9 @@ class _StorageImageState extends State<StorageImage> {
   @override
   void didUpdateWidget(covariant StorageImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.storagePath != widget.storagePath) {
+    if (oldWidget.storagePath != widget.storagePath || oldWidget.cacheKey != widget.cacheKey) {
       _hasRetriedDecode = false; // Reset the retry flag
-      final cached = _resolvedFiles[widget.storagePath];
+      final cached = _resolvedFiles[_mapKey];
       if (cached != null) {
         _file = cached;
         _progress = 1;
@@ -185,7 +194,7 @@ class _StorageImageState extends State<StorageImage> {
   }
 
   Future<String> _hashedFilename(String path) async {
-    final bytes = utf8.encode(path);
+    final bytes = utf8.encode(path + (widget.cacheKey ?? ''));
     final digest = md5.convert(bytes).toString();
     final ext = _extensionFromPath(path);
     return ext.isNotEmpty ? '$digest.$ext' : digest;
@@ -230,7 +239,7 @@ class _StorageImageState extends State<StorageImage> {
         await file.delete();
       }
       _verifiedDiskFiles.remove(filename);
-      _resolvedFiles.remove(widget.storagePath);
+      _resolvedFiles.remove(_mapKey);
     } catch (e) {
       if (kDebugMode) debugPrint("Failed to delete corrupt file: $e");
     }
@@ -254,7 +263,7 @@ class _StorageImageState extends State<StorageImage> {
       // Skip cache check if we are forcing a redownload
       if (!forceDownload && (_verifiedDiskFiles.contains(filename) || await file.exists())) {
         _verifiedDiskFiles.add(filename); // Add to memory cache
-        _resolvedFiles[widget.storagePath] = file;
+        _resolvedFiles[_mapKey] = file;
         if (mounted) {
           setState(() {
             _file = file;
@@ -293,7 +302,7 @@ class _StorageImageState extends State<StorageImage> {
         }
 
         _verifiedDiskFiles.add(filename); // Add to memory cache
-        _resolvedFiles[widget.storagePath] = file;
+        _resolvedFiles[_mapKey] = file;
         if (mounted) {
           setState(() {
             _file = file;
@@ -319,7 +328,7 @@ class _StorageImageState extends State<StorageImage> {
             await file.writeAsBytes(bytes);
 
             _verifiedDiskFiles.add(filename);
-            _resolvedFiles[widget.storagePath] = file;
+            _resolvedFiles[_mapKey] = file;
             if (mounted) {
               setState(() {
                 _file = file;

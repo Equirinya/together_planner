@@ -4,6 +4,8 @@ import 'package:couple_planner/utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 
+import 'package:animations/animations.dart';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
@@ -191,6 +193,16 @@ class _RecipePageState extends State<RecipePage> {
           scored.map((e) => e['doc'] as QueryDocumentSnapshot<Map<String, dynamic>>).toList();
     }
     setState(() {});
+  }
+
+  // The already-loaded recipe document data for [recipeId], if it's among the
+  // streamed recipes, so the detail page can paint its image/title immediately
+  // during the open transition instead of flashing a loading state.
+  Map<String, dynamic>? _recipeDataFor(String recipeId) {
+    for (final r in recipes) {
+      if (r.id == recipeId) return r.data();
+    }
+    return null;
   }
 
   void addNewRecipe() async {
@@ -458,17 +470,13 @@ class _RecipePageState extends State<RecipePage> {
                                             groupCollection: groupDoc,
                                           ),
                                           childWhenDragging: const SizedBox.shrink(),
-                                          child: GestureDetector(
-                                            onTap: () => Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) => RecipeDetailPage(
-                                                  groupId: groupDoc.id,
-                                                  recipeId: dayPlans[i]['recipe'],
-                                                  aiEnabled: widget.aiEnabled,
-                                                ),
-                                              ),
-                                            ),
+                                          child: _RecipeOpenContainer(
+                                            recipeId: dayPlans[i]['recipe'],
+                                            groupId: groupDoc.id,
+                                            groupDoc: groupDoc,
+                                            aiEnabled: widget.aiEnabled,
+                                            initialData:
+                                                _recipeDataFor(dayPlans[i]['recipe']),
                                             child: RecipeCard(
                                               recipeId: dayPlans[i]['recipe'],
                                               groupCollection: groupDoc,
@@ -509,7 +517,10 @@ class _RecipePageState extends State<RecipePage> {
             children: [
               GridView.count(
                 padding: EdgeInsets.only(
-                    bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
+                    bottom: MediaQuery.of(context).viewInsets.bottom +
+                        MediaQuery.of(context).padding.bottom +
+                        72 +
+                        32),
                 crossAxisCount: displaySize.width < displaySize.height
                     ? 3
                     : displaySize.width ~/ (displaySize.height / 3),
@@ -522,17 +533,12 @@ class _RecipePageState extends State<RecipePage> {
                     feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
                     childWhenDragging:
                     RecipeCard(recipeId: e.id, groupCollection: groupDoc),
-                    child: GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => RecipeDetailPage(
-                            groupId: widget.groupId,
-                            recipeId: e.id,
-                            aiEnabled: widget.aiEnabled,
-                          ),
-                        ),
-                      ),
+                    child: _RecipeOpenContainer(
+                      recipeId: e.id,
+                      groupId: widget.groupId,
+                      groupDoc: groupDoc,
+                      aiEnabled: widget.aiEnabled,
+                      initialData: e.data(),
                       child: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
                     ),
                   ),
@@ -545,20 +551,25 @@ class _RecipePageState extends State<RecipePage> {
                 child: Padding(
                   padding: keyboardVisible
                       ? EdgeInsets.zero
-                      : const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                      : EdgeInsets.fromLTRB(
+                          12, 4, 12, MediaQuery.of(context).padding.bottom),
                   child: SearchBar(
                     shape: WidgetStatePropertyAll(
-                      RoundedRectangleBorder(
-                        borderRadius: BorderRadius.vertical(
-                          top: const Radius.circular(16),
-                          bottom: keyboardVisible
-                              ? Radius.zero
-                              : const Radius.circular(16),
-                        ),
-                      ),
+                      keyboardVisible
+                          ? const RoundedRectangleBorder(
+                              borderRadius: BorderRadius.vertical(
+                                top: Radius.circular(16),
+                              ),
+                            )
+                          : const StadiumBorder(),
                     ),
                     controller: _searchController,
-                    hintText: 'Search Recipes',
+                    hintText: 'Search recipes',
+                    leading: Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Icon(Icons.search,
+                          color: colorScheme.onSurfaceVariant),
+                    ),
                     onChanged: (value) {
                       searchQuery = value;
                       generateSearchedRecipes();
@@ -639,7 +650,7 @@ class _RecipePageState extends State<RecipePage> {
                   child: Container(
                     margin: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(16),
                       color: colorScheme.errorContainer.withAlpha(200),
                     ),
                     child: Center(
@@ -660,6 +671,50 @@ class _RecipePageState extends State<RecipePage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── RecipeOpenContainer ──────────────────────────────────────────────────────
+
+/// Wraps a recipe card so tapping it expands the card into the full
+/// [RecipeDetailPage] with a Material container transform.
+class _RecipeOpenContainer extends StatelessWidget {
+  const _RecipeOpenContainer({
+    required this.recipeId,
+    required this.groupId,
+    required this.groupDoc,
+    required this.aiEnabled,
+    required this.initialData,
+    required this.child,
+  });
+
+  final String recipeId;
+  final String groupId;
+  final DocumentReference<Map<String, dynamic>> groupDoc;
+  final bool aiEnabled;
+  final Map<String, dynamic>? initialData;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return OpenContainer(
+      tappable: false,
+      transitionType: ContainerTransitionType.fade,
+      transitionDuration: const Duration(milliseconds: 300),
+      closedElevation: 0,
+      closedColor: Colors.transparent,
+      openColor: Theme.of(context).scaffoldBackgroundColor,
+      closedShape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(16)),
+      ),
+      closedBuilder: (_, open) => GestureDetector(onTap: open, child: child),
+      openBuilder: (_, __) => RecipeDetailPage(
+        groupId: groupId,
+        recipeId: recipeId,
+        aiEnabled: aiEnabled,
+        initialData: initialData,
+      ),
     );
   }
 }
@@ -713,15 +768,15 @@ class RecipeCard extends StatelessWidget {
         child: Padding(
           padding: const EdgeInsets.all(4),
           child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(16),
             child: Container(
               decoration: (recipeId != null && groupCollection != null)
                   ? BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 color: containerColor.toColor(),
               )
                   : BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                   width: 2,
@@ -783,7 +838,7 @@ class RecipeCard extends StatelessWidget {
                           Align(
                             alignment: Alignment.bottomLeft,
                             child: Padding(
-                              padding: const EdgeInsets.all(4),
+                              padding: const EdgeInsets.symmetric(vertical:4, horizontal: 6),
                               child: Text(
                                 recipeData['name'] ?? 'Unnamed Recipe',
                                 style: Theme.of(context)

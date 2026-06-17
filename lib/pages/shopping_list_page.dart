@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ─── Categories ───────────────────────────────────────────────────────────────
 // Matches the `category` field stored on ingredient docs.
@@ -25,6 +26,7 @@ const List<String> kCategories = [
   'frozen_foods',
   'condiments_and_sauces',
   'spices_and_herbs',
+  'hygiene',
   'other',
 ];
 
@@ -58,6 +60,9 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
   final Set<String> _optimisticallyHidden = {};
 
+  /// Items created after this moment are highlighted as "new" for the session.
+  DateTime? _lastSeen;
+
   CollectionReference<Map<String, dynamic>> get _listRef =>
       _db.collection('groups').doc(widget.groupId).collection('shopping_list');
 
@@ -70,7 +75,18 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
       WidgetsBinding.instance.platformDispatcher.locale.languageCode,
     );
     UnitsCache.instance.ensureLoaded();
+    _loadLastSeen();
     _startListSubscription(); // also resolves any pre-existing pending items
+  }
+
+  Future<void> _loadLastSeen() async {
+    final prefs = await SharedPreferences.getInstance();
+    final key = 'shopping_last_seen_${widget.groupId}';
+    final stored = prefs.getInt(key);
+    if (mounted && stored != null) {
+      setState(() => _lastSeen = DateTime.fromMillisecondsSinceEpoch(stored));
+    }
+    await prefs.setInt(key, DateTime.now().millisecondsSinceEpoch);
   }
 
   @override
@@ -160,6 +176,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
     final showHeaders = groups.length > 1;
 
+    bool isNew(Map<String, dynamic> item) {
+      final created = item['createdAt'] as Timestamp?;
+      return _lastSeen != null &&
+          created != null &&
+          created.toDate().isAfter(_lastSeen!);
+    }
+
     return Column(
       children: [
         Expanded(
@@ -176,6 +199,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                     key: ValueKey(item['id']),
                     item: item,
                     lang: _lang,
+                    isNew: isNew(item),
                     onMarkDone: () => _markDone(item),
                     onQuantityChanged: (u, q) =>
                         _updateQuantity(item['id'] as String, u, q),
@@ -191,7 +215,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
               context,
               targetRef: _listRef,
               lang: _lang,
-              hintText: 'Add item to shopping list…',
+              hintText: 'Add item to shopping list',
             ),
           ),
         ),
@@ -239,24 +263,16 @@ class _AddItemBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-      child: Material(
-        color: cs.surfaceContainer,
-        borderRadius: BorderRadius.circular(16),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: Row(
-              children: [
-                Icon(Icons.search, color: cs.onSurfaceVariant),
-                const SizedBox(width: 12),
-                Text(
-                  'Add item to shopping list…',
-                  style: TextStyle(color: cs.onSurfaceVariant),
-                ),
-              ],
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AbsorbPointer(
+          child: SearchBar(
+            shape: const WidgetStatePropertyAll(StadiumBorder()),
+            hintText: 'Add item to shopping list',
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Icon(Icons.search, color: cs.onSurfaceVariant),
             ),
           ),
         ),
@@ -274,18 +290,21 @@ class _ShoppingItem extends StatelessWidget {
     super.key,
     required this.item,
     required this.lang,
+    required this.isNew,
     required this.onMarkDone,
     required this.onQuantityChanged,
   });
 
   final Map<String, dynamic> item;
   final String lang;
+  final bool isNew;
   final VoidCallback onMarkDone;
   final Future<void> Function(String unitId, num qty) onQuantityChanged;
 
   @override
   Widget build(BuildContext context) {
     final q = readQuantity(item['quantity']);
+    final cs = Theme.of(context).colorScheme;
 
     return Dismissible(
       key: ValueKey('dismiss_${item['id']}'),
@@ -296,13 +315,35 @@ class _ShoppingItem extends StatelessWidget {
         onMarkDone();
         return false;
       },
-      child: ListTile(
+      child: Container(
+        decoration: isNew
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                gradient: LinearGradient(
+                  colors: [
+                    cs.secondaryContainer.withValues(alpha: 0.0),
+                    cs.secondaryContainer.withValues(alpha: 0.55),
+                  ],
+                ),
+              )
+            : null,
+        child: ListTile(
         // When there's no quantity, tap the tile itself to set one.
         onTap: q == null ? () => _openQuantityEditor(context, null, null) : null,
         leading: Avatar(
           ingredientId: (item['ingredientId'] ?? kUnknownIngredient).toString(),
         ),
-        title: Text((item['displayName'] ?? item['id'] ?? '').toString()),
+        title: Row(
+          children: [
+            Flexible(
+              child: Text((item['displayName'] ?? item['id'] ?? '').toString()),
+            ),
+            if (isNew) ...[
+              const SizedBox(width: 8),
+              Text('new', style: TextStyle(color: cs.secondary)),
+            ],
+          ],
+        ),
         subtitle: (item['description'] as String?)?.isNotEmpty == true
             ? Text(item['description'] as String)
             : null,
@@ -320,6 +361,7 @@ class _ShoppingItem extends StatelessWidget {
             ),
           ),
         ),
+      ),
       ),
     );
   }

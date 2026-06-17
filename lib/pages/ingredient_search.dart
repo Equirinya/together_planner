@@ -573,11 +573,20 @@ class Avatar extends StatelessWidget {
           .snapshots(),
       builder: (context, snap) {
         final version = (snap.data?.data()?['avatarVersion'] ?? 0).toString();
+        // avatarVersion 0 means the icon is still being (re)generated.
+        if (version == '0') {
+          return CircleAvatar(
+            radius: radius,
+            backgroundColor: backgroundColor ?? cs.primaryContainer,
+            child: const CupertinoActivityIndicator(),
+          );
+        }
         return CircleAvatar(
           radius: radius,
           backgroundColor: backgroundColor ?? cs.primaryContainer,
           child: StorageImage(
             key: ValueKey('$ingredientId#$version'),
+            cacheKey: version,
             storagePath: 'ingredients/$ingredientId.png',
             fit: BoxFit.contain,
             memCacheWidth: 128,
@@ -760,16 +769,20 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   }
 
   List<Suggestion> _doneItemSuggestions() {
-    final done = _currentItems.where((i) => i['doneAt'] != null).toList()
+    final cutoff = DateTime.now().subtract(const Duration(days: 7));
+    final done = _currentItems.where((i) {
+      final t = i['doneAt'] as Timestamp?;
+      return t != null && t.toDate().isAfter(cutoff);
+    }).toList()
       ..sort((a, b) {
-        final ta = a['doneAt'] as Timestamp?;
-        final tb = b['doneAt'] as Timestamp?;
-        if (ta == null && tb == null) return 0;
-        if (ta == null) return 1;
-        if (tb == null) return -1;
+        final ta = a['doneAt'] as Timestamp;
+        final tb = b['doneAt'] as Timestamp;
         return tb.compareTo(ta); // newest first
       });
-    return done.map((i) => Suggestion.fromMap(i, isRestoreDone: true)).toList();
+    return done
+        .take(20)
+        .map((i) => Suggestion.fromMap(i, isRestoreDone: true))
+        .toList();
   }
 
   Future<List<Suggestion>> _buildLocalSuggestions(String input) async {

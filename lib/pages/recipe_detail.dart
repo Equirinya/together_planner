@@ -23,12 +23,17 @@ class RecipeDetailPage extends StatefulWidget {
     required this.recipeId,
     this.editMode = false,
     this.aiEnabled = false,
+    this.initialData,
   });
 
   final String groupId;
   final String recipeId;
   final bool editMode;
   final bool aiEnabled;
+
+  /// Already-loaded recipe data, used to paint the page (image, title) right
+  /// away during the open transition instead of flashing a loading spinner.
+  final Map<String, dynamic>? initialData;
 
   @override
   State<RecipeDetailPage> createState() => _RecipeDetailPageState();
@@ -96,6 +101,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         .doc(widget.recipeId);
     ingredientsRef = docRef.collection('ingredients');
 
+    if (widget.initialData != null) _applyData(widget.initialData!);
+
     _startIngredientsSubscription();
     _loadRecipe();
   }
@@ -114,31 +121,33 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   // ── data loading ──────────────────────────────────────────────────────────
 
-  Future<void> _loadRecipe() async {
-    final doc = await docRef.get();
-    if (!doc.exists || !mounted) return;
-    recipeData = doc.data();
+  void _applyData(Map<String, dynamic> data) {
+    recipeData = data;
 
-    images = List<String>.from(recipeData?['images'] ?? []);
-    steps = List<String>.from(recipeData?['steps'] ?? []);
+    images = List<String>.from(data['images'] ?? []);
+    steps = List<String>.from(data['steps'] ?? []);
     if (steps.isEmpty) steps = [''];
-    tags = List<String>.from(recipeData?['tags'] ?? []);
-    totalHour = ((recipeData?['time'] ?? 0) / 60).floor();
-    totalMinute = (recipeData?['time'] ?? 0) % 60;
-    prepHour = ((recipeData?['preparationTime'] ?? 0) / 60).floor();
-    prepMinute = (recipeData?['preparationTime'] ?? 0) % 60;
-    servings = ((recipeData?['servings'] ?? 1) as num).toInt().clamp(1, 999);
+    tags = List<String>.from(data['tags'] ?? []);
+    totalHour = ((data['time'] ?? 0) / 60).floor();
+    totalMinute = (data['time'] ?? 0) % 60;
+    prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
+    prepMinute = (data['preparationTime'] ?? 0) % 60;
+    servings = ((data['servings'] ?? 1) as num).toInt().clamp(1, 999);
     _baseServings ??= servings;
 
-    nameController ??= TextEditingController(text: recipeData?['name']);
+    nameController ??= TextEditingController(text: data['name']);
     descriptionController ??=
-        TextEditingController(text: recipeData?['description']);
+        TextEditingController(text: data['description']);
     stepsControllers ??=
         steps.map((s) => TextEditingController(text: s)).toList();
     tagsController ??=
         TextEditingController(text: tags.map((e) => '#$e ').join(''));
+  }
 
-    setState(() {});
+  Future<void> _loadRecipe() async {
+    final doc = await docRef.get();
+    if (!doc.exists || !mounted) return;
+    setState(() => _applyData(doc.data()!));
   }
 
   void _startIngredientsSubscription() {
@@ -471,7 +480,20 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             if (edit || images.isNotEmpty)
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.3,
-                child: edit ? _editImageCarousel() : _viewImageCarousel(),
+                child: edit
+                    ? _editImageCarousel()
+                    // Lay the carousel out at the final full-screen width even
+                    // while the open transition is still animating the page
+                    // width, so CarouselView.weighted doesn't reflow and shift
+                    // the first image.
+                    : ClipRect(
+                        child: OverflowBox(
+                          alignment: Alignment.centerLeft,
+                          minWidth: MediaQuery.of(context).size.width,
+                          maxWidth: MediaQuery.of(context).size.width,
+                          child: _viewImageCarousel(),
+                        ),
+                      ),
               ),
 
             const SizedBox(height: 16),
@@ -554,6 +576,9 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   // ── image carousels ───────────────────────────────────────────────────────
 
   Widget _viewImageCarousel() {
+    final cacheWidth =
+        (MediaQuery.of(context).size.width * MediaQuery.of(context).devicePixelRatio)
+            .round();
     return CarouselView.weighted(
       flexWeights: const <int>[1, 7, 1],
       enableSplash: false,
@@ -564,7 +589,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         ),
       ),
       children: images
-          .map((p) => StorageImage(storagePath: p, fit: BoxFit.cover))
+          .map((p) => StorageImage(
+                storagePath: p,
+                fit: BoxFit.cover,
+                memCacheWidth: cacheWidth,
+              ))
           .toList(),
     );
   }
