@@ -46,15 +46,27 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   SystemTheme.fallbackColor = const Color(0xFF2E7D5B);
-  await SystemTheme.accentColor.load();
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true, cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED);
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  @override
+  void initState() {
+    super.initState();
+    SystemTheme.accentColor.load().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -124,7 +136,9 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
+  final Set<int> _visitedIndices = {};
   String? _selectedGroup;
+  bool _groupDocReady = false;
 
   final db = FirebaseFirestore.instance;
 
@@ -157,7 +171,19 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _restoreCachedGroup();
     _testUserLoggedIn();
+  }
+
+  /// Subscribe to the last-used group's document straight away so its cached
+  /// pages render while auth and invite membership are verified in parallel.
+  Future<void> _restoreCachedGroup() async {
+    final prefs = await SharedPreferences.getInstance();
+    final cached = prefs.getString('selected_group');
+    if (cached != null && cached.isNotEmpty && _selectedGroup == null) {
+      setState(() => _selectedGroup = cached);
+      _subscribeToGroupDoc(cached);
+    }
   }
 
   @override
@@ -173,21 +199,35 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _testUserLoggedIn() async {
     final currentUser = FirebaseAuth.instance.currentUser;
-    final DocumentSnapshot? userDoc = currentUser == null ? null : await FirebaseFirestore.instance.collection('users').doc(currentUser.uid).get();
+
+    DocumentSnapshot<Map<String, dynamic>>? userDoc;
+    if (currentUser != null) {
+      final userRef = FirebaseFirestore.instance.collection('users').doc(currentUser.uid);
+      try {
+        userDoc = await userRef.get(const GetOptions(source: Source.cache));
+      } catch (_) {
+        userDoc = null;
+      }
+      if (userDoc == null || !userDoc.exists) {
+        userDoc = await userRef.get();
+      } else {
+        _refreshUserDoc(userRef);
+      }
+    }
 
     if (currentUser == null || !userDoc!.exists) {
-      await Future.delayed(const Duration(milliseconds: 100));
-      await Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (context) => WelcomePage(onFinished: _testUserLoggedIn, infoText: ""),
-        ),
-      );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => WelcomePage(onFinished: _testUserLoggedIn, infoText: ""),
+          ),
+        );
+      });
     } else {
       _canEditIngredients = (userDoc!.data() as Map<String, dynamic>?)?['editIngredients'] == true;
 
       if (Platform.isAndroid || Platform.isIOS) {
-        PackageInfo packageInfo = await PackageInfo.fromPlatform();
-
         final uid = FirebaseAuth.instance.currentUser!.uid;
 
         // Listen to the user's invite list
@@ -213,6 +253,7 @@ class _HomePageState extends State<HomePage> {
         });
 
         // Update user record
+        final packageInfo = await PackageInfo.fromPlatform();
         await db.collection('users').doc(uid).update({'lastLogin': FieldValue.serverTimestamp(), 'appVersion': packageInfo.version}).catchError((
           error,
         ) {
@@ -222,6 +263,20 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// Re-fetch the user doc from the server after the cached copy was used, so a
+  /// server-side change to the ingredient-edit flag is picked up this session.
+  Future<void> _refreshUserDoc(DocumentReference<Map<String, dynamic>> userRef) async {
+    try {
+      final fresh = await userRef.get(const GetOptions(source: Source.server));
+      if (!mounted || !fresh.exists) return;
+      final canEdit = fresh.data()?['editIngredients'] == true;
+      if (canEdit != _canEditIngredients) {
+        _canEditIngredients = canEdit;
+        _subscribeToGroupDoc(_selectedGroup);
+      }
+    } catch (_) {}
+  }
+
   // ---------------------------------------------------------------------------
   // Group document listener (features + defaultPage)
   // ---------------------------------------------------------------------------
@@ -229,8 +284,11 @@ class _HomePageState extends State<HomePage> {
   void _subscribeToGroupDoc(String? groupId) {
     _groupDocListener?.cancel();
     _groupDocListener = null;
+    _groupDocReady = false;
 
     if (groupId == null) return;
+
+    SharedPreferences.getInstance().then((p) => p.setString('selected_group', groupId));
 
     _groupDocListener = db.collection('groups').doc(groupId).snapshots().listen((snapshot) {
       if (!snapshot.exists) return;
@@ -253,6 +311,7 @@ class _HomePageState extends State<HomePage> {
       final bool aiEnabled = data['ai'] as bool? ?? false;
 
       setState(() {
+        _groupDocReady = true;
         _enabledFeatures = enabled;
         _groupDefaultPage = defaultPage;
         _aiEnabled = aiEnabled;
@@ -330,36 +389,20 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool groupReady = _selectedGroup != null && _selectedGroup!.isNotEmpty;
+    final bool groupReady = _selectedGroup != null && _selectedGroup!.isNotEmpty && _groupDocReady;
     final bool noGroups = acceptedGroups != null && acceptedGroups!.isEmpty;
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
     return Scaffold(
-      extendBody: true,
       bottomNavigationBar: groupReady && _enabledFeatures.length >= 2
-          ? ShaderMask(
-              shaderCallback: (bounds) => const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Colors.transparent, Colors.black],
-                stops: [0.0, 0.15],
-              ).createShader(bounds),
-              blendMode: BlendMode.dstIn,
-              child: ColoredBox(
-                color: Theme.of(context).colorScheme.surfaceContainer,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 16),
-                  child: NavigationBar(
-                    height: 50,
-                    destinations: _buildDestinations(),
-                    labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
-                    selectedIndex: _selectedIndex,
-                    onDestinationSelected: (int index) {
-                      setState(() => _selectedIndex = index);
-                    },
-                  ),
-                ),
-              ),
+          ? NavigationBar(
+              height: 60,
+              destinations: _buildDestinations(),
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+              selectedIndex: _selectedIndex,
+              onDestinationSelected: (int index) {
+                setState(() => _selectedIndex = index);
+              },
             )
           : null,
       body: Padding(
@@ -367,7 +410,12 @@ class _HomePageState extends State<HomePage> {
         child: groupReady
           ? IndexedStack(
               index: _selectedIndex,
-              children: _enabledFeatures.map((key) => _buildPage(key, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled)).toList(),
+              children: List.generate(_enabledFeatures.length, (i) {
+                if (i == _selectedIndex) _visitedIndices.add(i);
+                return _visitedIndices.contains(i)
+                    ? _buildPage(_enabledFeatures[i], shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled)
+                    : const SizedBox.shrink();
+              }),
             )
           : noGroups
           ? const Center(
