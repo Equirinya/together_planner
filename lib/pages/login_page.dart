@@ -10,6 +10,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:mesh_gradient/mesh_gradient.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -45,7 +46,8 @@ class WelcomePage extends StatelessWidget {
             width: smallerSide / 4,
             child: Image.asset("assets/icon/icon_transparent.png"),
           ),
-          Text("Welcome to Together Planner!", style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.black)),
+          Text("Together Planner", style: Theme.of(context).textTheme.headlineMedium?.copyWith(color: Colors.black, fontWeight: FontWeight.bold)),
+          Text("Gemeinsam planen, kochen und einkaufen.", style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.black87)),
         ],
       ),
     );
@@ -183,7 +185,7 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
 
     List<(String, List<Widget>)> loginPages = [
       (
-        "Willkommen zurück!\nMelde dich mit deinem Quiz Studio Account an.",
+        "Willkommen zurück!\nMelde dich mit deinem Together Planner Account an.",
         [
           StatefulBuilder(builder: (context, setState) {
             if (Firebase.apps.isEmpty) {
@@ -266,7 +268,7 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
                 });
               },
               decoration: const InputDecoration(
-                border: UnderlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
                 labelText: 'Username',
               ),
             ),
@@ -366,7 +368,23 @@ class _OnboardingFlowPageState extends State<OnboardingFlowPage> {
           data: ThemeData(
               colorScheme:
                   ColorScheme.fromSeed(seedColor: Colors.white, dynamicSchemeVariant: DynamicSchemeVariant.monochrome, brightness: Brightness.light).copyWith(onSurfaceVariant: Colors.black, onSurface: Colors.black, secondary: Colors.black, outline: Colors.black, onBackground: Colors.black),
-
+              inputDecorationTheme: InputDecorationTheme(
+                filled: true,
+                floatingLabelBehavior: FloatingLabelBehavior.never,
+                fillColor: Colors.white.withAlpha(230),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              ),
+              filledButtonTheme: FilledButtonThemeData(
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(56),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
           ),
           child: Stack(
             children: [
@@ -471,25 +489,11 @@ class OnboardingButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 12),
-      child: ElevatedButton(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
+      child: FilledButton(
         onPressed: onPressed,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 60),
-          child: Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  text,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 15),
-                ),
-              ],
-            ),
-          ),
-        ),
+        style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(60)),
+        child: Text(text, textAlign: TextAlign.center),
       ),
     );
   }
@@ -515,11 +519,12 @@ class LoginPage extends StatelessWidget {
           print(e);
           if (e.code == 'user-not-found') {
             return 'Kein Benutzer mit dieser E-Mail-Adresse gefunden.';
-          } else if (e.code == 'wrong-password') {
-            return 'Falsches Passwort.';
+          } else if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+            return 'Falsche E-Mail-Adresse oder falsches Passwort.';
           } else if(e.code == 'invalid-email'){
             return 'Ungültige E-Mail-Adresse.';
           }
+          return 'Anmeldung fehlgeschlagen. Bitte versuche es erneut.';
         }
         return null;
       },
@@ -551,11 +556,12 @@ class ReauthenticatePage extends StatelessWidget {
           } on FirebaseAuthException catch (e) {
             if (e.code == 'user-not-found') {
               return 'Kein Benutzer mit dieser E-Mail-Adresse gefunden.';
-            } else if (e.code == 'wrong-password') {
-              return 'Falsches Passwort.';
+            } else if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+              return 'Falsche E-Mail-Adresse oder falsches Passwort.';
             } else if(e.code == 'invalid-email'){
               return 'Ungültige E-Mail-Adresse.';
             }
+            return 'Anmeldung fehlgeschlagen. Bitte versuche es erneut.';
           }
           return null;
         },
@@ -661,23 +667,28 @@ class _EmailPasswordFormState extends State<EmailPasswordForm> {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 32.0),
-      child: Column(
+      child: AutofillGroup(
+        child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 10),
           TextField(
             controller: emailController,
             keyboardType: TextInputType.emailAddress,
+            autofillHints: const [AutofillHints.email],
             decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.email_outlined),
               labelText: "Email",
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           TextField(
             controller: passwordController,
             keyboardType: TextInputType.visiblePassword,
             obscureText: !passwordVisible,
+            autofillHints: [widget.confirmPassword ? AutofillHints.newPassword : AutofillHints.password],
             decoration: InputDecoration(
+              prefixIcon: const Icon(Icons.lock_outline),
               labelText: "Password",
               suffixIcon: ExcludeFocus(
                 child: IconButton(
@@ -692,12 +703,14 @@ class _EmailPasswordFormState extends State<EmailPasswordForm> {
             ),
           ),
           if (widget.confirmPassword) ...[
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             TextField(
               controller: password2Controller,
               obscureText: !password2Visible,
               keyboardType: TextInputType.visiblePassword,
+              autofillHints: const [AutofillHints.newPassword],
               decoration: InputDecoration(
+                prefixIcon: const Icon(Icons.lock_outline),
                 labelText: "Confirm Password",
                 suffixIcon: ExcludeFocus(
                   child: IconButton(
@@ -713,14 +726,20 @@ class _EmailPasswordFormState extends State<EmailPasswordForm> {
             ),
             const SizedBox(height: 10),
           ],
-          if (error != null && error!.isNotEmpty) ...[
-            Text(
-              error!,
-              style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.error),
+          SizedBox(
+            height: 44,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: (error != null && error!.isNotEmpty)
+                  ? Text(
+                      error!,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(color: Theme.of(context).colorScheme.error),
+                    )
+                  : null,
             ),
-            const SizedBox(height: 10),
-          ],
-          ElevatedButton(
+          ),
+          FilledButton(
             onPressed: () async {
               if (widget.confirmPassword && passwordController.text != password2Controller.text) {
                 setState(() {
@@ -729,12 +748,16 @@ class _EmailPasswordFormState extends State<EmailPasswordForm> {
                 return;
               }
               error = await widget.onSubmit(emailController.text, passwordController.text);
+              if (error == null) {
+                TextInput.finishAutofillContext();
+              }
               setState(() {});
             },
             child: Text(widget.submitText),
           ),
         ],
       ),
+    ),
     );
   }
 }

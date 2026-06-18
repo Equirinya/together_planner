@@ -788,6 +788,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   Future<List<Suggestion>> _buildLocalSuggestions(String input) async {
     final parsed = parseInput(input);
     final qty = parsed.quantity; // null when the user didn't type a number
+    final fullName = parsed.remaining.join(' ');
     final out = <Suggestion>[];
     final seen = <String>{};
 
@@ -795,16 +796,35 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
       final matches = await IngredientIndex.instance.match(c.name, _lang);
       for (final m in matches) {
         final unitId = parsed.unitId ?? m.defaultUnit;
-        if (!seen.add('${m.id}|${c.description}|$unitId|$qty')) continue;
-        out.add(Suggestion(
-          ingredientId: m.id,
-          // Canonical ingredient name so the user sees "Orange" when they typed "oran".
-          displayName: m.displayName(_lang),
-          description: c.description,
-          unitId: unitId,
-          quantity: qty,
-          category: m.category(_lang),
-        ));
+        final canonical = m.displayName(_lang);
+
+        // When the typed text isn't just a prefix of the canonical name — i.e.
+        // it matched via a synonym ("grüne Bohnen" → Prinzessbohne) or carries
+        // extra words ("veganer Speck" → Speck) — offer the literal typed name
+        // first, linked to the matched ingredient and without a description.
+        if (!canonical.toLowerCase().startsWith(fullName.toLowerCase()) &&
+            seen.add('${m.id}|$fullName|$unitId|$qty')) {
+          out.add(Suggestion(
+            ingredientId: m.id,
+            displayName: fullName,
+            description: '',
+            unitId: unitId,
+            quantity: qty,
+            category: m.category(_lang),
+          ));
+        }
+
+        if (seen.add('${m.id}|${c.description}|$unitId|$qty')) {
+          out.add(Suggestion(
+            ingredientId: m.id,
+            // Canonical ingredient name so the user sees "Orange" when they typed "oran".
+            displayName: canonical,
+            description: c.description,
+            unitId: unitId,
+            quantity: qty,
+            category: m.category(_lang),
+          ));
+        }
       }
     }
     return out;

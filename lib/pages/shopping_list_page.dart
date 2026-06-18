@@ -136,8 +136,9 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     }
   }
 
-  Future<void> _updateQuantity(String id, String unitId, num qty) =>
-      _listRef.doc(id).update({'quantity': {unitId: qty.toDouble()}});
+  Future<void> _updateQuantity(String id, String unitId, num? qty) =>
+      _listRef.doc(id).update(
+          {'quantity': qty == null ? null : {unitId: qty.toDouble()}});
 
   // ── build ──────────────────────────────────────────────────────────────────
 
@@ -183,13 +184,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
           created.toDate().isAfter(_lastSeen!);
     }
 
-    return Column(
+    return Stack(
       children: [
-        Expanded(
+        Positioned.fill(
           child: active.isEmpty
               ? const Center(child: Text('Your shopping list is empty.'))
               : ListView(
-            padding: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.only(bottom: 88),
             children: [
               for (final cat in sortedCats) ...[
                 if (showHeaders)
@@ -208,14 +209,19 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
             ],
           ),
         ),
-        SafeArea(
-          top: false,
-          child: _AddItemBar(
-            onTap: () => IngredientSearchSheet.show(
-              context,
-              targetRef: _listRef,
-              lang: _lang,
-              hintText: 'Add item to shopping list',
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 0,
+          child: SafeArea(
+            top: false,
+            child: _AddItemBar(
+              onTap: () => IngredientSearchSheet.show(
+                context,
+                targetRef: _listRef,
+                lang: _lang,
+                hintText: 'Add item to shopping list',
+              ),
             ),
           ),
         ),
@@ -255,26 +261,48 @@ class _CategoryHeader extends StatelessWidget {
 }
 
 /// Tappable bar at the bottom of the list that opens the search sheet.
-class _AddItemBar extends StatelessWidget {
+class _AddItemBar extends StatefulWidget {
   const _AddItemBar({required this.onTap});
-  final VoidCallback onTap;
+  final Future<void> Function() onTap;
+
+  @override
+  State<_AddItemBar> createState() => _AddItemBarState();
+}
+
+class _AddItemBarState extends State<_AddItemBar> {
+  // Keep the bar acting as a button: tapping fires onTap and shows the ink
+  // ripple, but never focuses the field or raises the keyboard.
+  final _focusNode = FocusNode(canRequestFocus: false);
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _handleTap() async {
+    await widget.onTap();
+    // The closing sheet restores focus to this bar on the next frame; clear it
+    // afterwards so the keyboard doesn't reopen here.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.unfocus();
+      FocusManager.instance.primaryFocus?.unfocus();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-      child: GestureDetector(
-        onTap: onTap,
-        child: AbsorbPointer(
-          child: SearchBar(
-            shape: const WidgetStatePropertyAll(StadiumBorder()),
-            hintText: 'Add item to shopping list',
-            leading: Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: Icon(Icons.search, color: cs.onSurfaceVariant),
-            ),
-          ),
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      child: SearchBar(
+        focusNode: _focusNode,
+        onTap: _handleTap,
+        shape: const WidgetStatePropertyAll(StadiumBorder()),
+        hintText: 'Add item to shopping list',
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: Icon(Icons.search, color: cs.onSurfaceVariant),
         ),
       ),
     );
@@ -299,7 +327,7 @@ class _ShoppingItem extends StatelessWidget {
   final String lang;
   final bool isNew;
   final VoidCallback onMarkDone;
-  final Future<void> Function(String unitId, num qty) onQuantityChanged;
+  final Future<void> Function(String unitId, num? qty) onQuantityChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -322,7 +350,7 @@ class _ShoppingItem extends StatelessWidget {
                 gradient: LinearGradient(
                   colors: [
                     cs.secondaryContainer.withValues(alpha: 0.0),
-                    cs.secondaryContainer.withValues(alpha: 0.55),
+                    cs.secondaryContainer.withValues(alpha: 0.3),
                   ],
                 ),
               )
@@ -381,7 +409,7 @@ class _ShoppingItem extends StatelessWidget {
       isScrollControlled: true,
       builder: (_) => QuantityEditor(
         initialUnitId: unitId ?? kDefaultUnitId,
-        initialQty: qty ?? 1, // start at 1 when no quantity was set
+        initialQty: qty ?? 0, // start at 0 when no quantity was set
         lang: lang,
         onChanged: onQuantityChanged,
       ),
@@ -406,7 +434,7 @@ class QuantityEditor extends StatefulWidget {
   final String lang;
   // Called immediately on every action so changes survive even if the sheet is
   // dismissed via the keyboard close gesture.
-  final Future<void> Function(String unitId, num qty) onChanged;
+  final Future<void> Function(String unitId, num? qty) onChanged;
 
   @override
   State<QuantityEditor> createState() => _QuantityEditorState();
@@ -445,6 +473,7 @@ class _QuantityEditorState extends State<QuantityEditor> {
   @override
   void dispose() {
     _kbSub?.cancel();
+    _push();
     _ctrl.dispose();
     super.dispose();
   }
@@ -455,7 +484,7 @@ class _QuantityEditorState extends State<QuantityEditor> {
     _push();
   }
 
-  void _push() => widget.onChanged(_unitId, _qty);
+  void _push() => widget.onChanged(_unitId, _qty == 0 ? null : _qty);
 
   @override
   Widget build(BuildContext context) {

@@ -517,10 +517,7 @@ class _RecipePageState extends State<RecipePage> {
             children: [
               GridView.count(
                 padding: EdgeInsets.only(
-                    bottom: MediaQuery.of(context).viewInsets.bottom +
-                        MediaQuery.of(context).padding.bottom +
-                        72 +
-                        32),
+                    bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
                 crossAxisCount: displaySize.width < displaySize.height
                     ? 3
                     : displaySize.width ~/ (displaySize.height / 3),
@@ -551,8 +548,7 @@ class _RecipePageState extends State<RecipePage> {
                 child: Padding(
                   padding: keyboardVisible
                       ? EdgeInsets.zero
-                      : EdgeInsets.fromLTRB(
-                          12, 4, 12, MediaQuery.of(context).padding.bottom),
+                      : const EdgeInsets.fromLTRB(12, 4, 12, 8),
                   child: SearchBar(
                     shape: WidgetStatePropertyAll(
                       keyboardVisible

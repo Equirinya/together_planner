@@ -62,13 +62,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   late int prepMinute;
 
   // ── servings / scaling ────────────────────────────────────────────────────
-  int servings = 1;
+  int servings = 2;
   int? _baseServings;
   bool _autoScale = false;
 
   // ── ingredients (live stream) ─────────────────────────────────────────────
   List<Map<String, dynamic>> ingredients = [];
   StreamSubscription? _ingredientsSub;
+
+  // ── image carousel ─────────────────────────────────────────────────────────
+  final PageController _imageController =
+      PageController(viewportFraction: 7 / 9);
 
   // ── image upload / generation placeholders ────────────────────────────────
   // Each in-flight upload gets a unique key so multiple concurrent uploads
@@ -110,6 +114,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   @override
   void dispose() {
     _ingredientsSub?.cancel();
+    _imageController.dispose();
     nameController?.dispose();
     descriptionController?.dispose();
     tagsController?.dispose();
@@ -132,7 +137,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     totalMinute = (data['time'] ?? 0) % 60;
     prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
     prepMinute = (data['preparationTime'] ?? 0) % 60;
-    servings = ((data['servings'] ?? 1) as num).toInt().clamp(1, 999);
+    servings = ((data['servings'] ?? 2) as num).toInt().clamp(1, 999);
     _baseServings ??= servings;
 
     nameController ??= TextEditingController(text: data['name']);
@@ -257,11 +262,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       useRootNavigator: true,
       builder: (_) => QuantityEditor(
         initialUnitId: q?.unitId ?? kDefaultUnitId,
-        initialQty: q?.qty ?? 1,
+        initialQty: q?.qty ?? 0,
         lang: lang,
         onChanged: (unitId, qty) => ingredientsRef
             .doc(ing['id'] as String)
-            .update({'quantity': {unitId: qty.toDouble()}}),
+            .update({'quantity': qty == null ? null : {unitId: qty.toDouble()}}),
       ),
     );
   }
@@ -306,6 +311,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           .toList() ??
           steps,
       'images': images,
+      'servings': servings,
       'ingredients': ingredients
           .map((ing) => {
         'name': ing['displayName'] ?? ing['ingredientId'] ?? '',
@@ -480,20 +486,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             if (edit || images.isNotEmpty)
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.3,
-                child: edit
-                    ? _editImageCarousel()
-                    // Lay the carousel out at the final full-screen width even
-                    // while the open transition is still animating the page
-                    // width, so CarouselView.weighted doesn't reflow and shift
-                    // the first image.
-                    : ClipRect(
-                        child: OverflowBox(
-                          alignment: Alignment.centerLeft,
-                          minWidth: MediaQuery.of(context).size.width,
-                          maxWidth: MediaQuery.of(context).size.width,
-                          child: _viewImageCarousel(),
-                        ),
-                      ),
+                child: edit ? _editImageCarousel() : _viewImageCarousel(),
               ),
 
             const SizedBox(height: 16),
@@ -574,27 +567,32 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   // ── image carousels ───────────────────────────────────────────────────────
-
   Widget _viewImageCarousel() {
     final cacheWidth =
         (MediaQuery.of(context).size.width * MediaQuery.of(context).devicePixelRatio)
             .round();
-    return CarouselView.weighted(
-      flexWeights: const <int>[1, 7, 1],
-      enableSplash: false,
-      onTap: (index) => Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) =>
-              _FullscreenImagePage(paths: images, initialIndex: index),
+    return PageView.builder(
+      controller: _imageController,
+      itemCount: images.length,
+      itemBuilder: (context, index) => GestureDetector(
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) =>
+                _FullscreenImagePage(paths: images, initialIndex: index),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(28),
+            child: StorageImage(
+              storagePath: images[index],
+              fit: BoxFit.cover,
+              memCacheWidth: cacheWidth,
+            ),
+          ),
         ),
       ),
-      children: images
-          .map((p) => StorageImage(
-                storagePath: p,
-                fit: BoxFit.cover,
-                memCacheWidth: cacheWidth,
-              ))
-          .toList(),
     );
   }
 
@@ -1217,7 +1215,7 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
         : null;
     final qtyLabel = q != null
         ? '${fmtQty(q.qty)} ${UnitsCache.instance.display(q.unitId, widget.lang, q.qty)}'
-        : '1';
+        : '';
 
     if (!widget.editMode) {
       return ListTile(
@@ -1226,8 +1224,10 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
         leading: Avatar(ingredientId: ingId),
         title: Text(name),
         subtitle: Text(description ?? ''),
-        trailing: Text(qtyLabel,
-            style: Theme.of(context).textTheme.titleMedium),
+        trailing: q == null
+            ? null
+            : Text(qtyLabel,
+                style: Theme.of(context).textTheme.titleMedium),
       );
     }
 
@@ -1266,20 +1266,23 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
               ],
             ),
           ),
-          GestureDetector(
-            onTap: widget.onQuantityTap,
-            child: Padding(
-              padding:
-              const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Text(
-                qtyLabel,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: q == null
-                        ? Theme.of(context).colorScheme.onSurfaceVariant
-                        : null),
-              ),
-            ),
-          ),
+          q == null
+              ? IconButton(
+                  icon: Icon(Icons.add,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  onPressed: widget.onQuantityTap,
+                )
+              : GestureDetector(
+                  onTap: widget.onQuantityTap,
+                  child: Padding(
+                    padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Text(
+                      qtyLabel,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                ),
           IconButton(
             icon: Icon(Icons.close,
                 color: Theme.of(context).colorScheme.onSurfaceVariant),
