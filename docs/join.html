@@ -1,0 +1,51 @@
+---
+layout: default
+title: Join a group
+description: Open this invite in the Together Planner app.
+---
+
+<style>
+.page-header { background-image: linear-gradient(120deg, #4CD85A, #FFA144); }
+.btn { display:inline-block; margin:6px 0; }
+#stores { display:none; }
+</style>
+
+<p id="status">Opening Together Planner…</p>
+
+<p>
+  <a id="openApp" class="btn" href="#">Open in the app</a>
+</p>
+
+<div id="stores">
+  <p>Don’t have the app yet? Install it, <strong>create your account</strong>, then open this invite link again to join:</p>
+  <p>
+    <a id="play" class="btn" href="https://play.google.com/store/apps/details?id=de.equirinya.couple_planner">Get it on Google Play</a><br/>
+    <a id="appstore" class="btn" href="https://apps.apple.com/app/idYOUR_APPSTORE_ID">Download on the App Store</a>
+  </p>
+</div>
+
+<script>
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var g = params.get('g');
+    var i = params.get('i');
+
+    if (!g || !i) {
+      document.getElementById('status').textContent = 'This invite link is incomplete.';
+      document.getElementById('openApp').style.display = 'none';
+      return;
+    }
+
+    var appUrl = 'coupleplanner://join?g=' + encodeURIComponent(g) + '&i=' + encodeURIComponent(i);
+    document.getElementById('openApp').setAttribute('href', appUrl);
+
+    // Try to open the app automatically.
+    window.location.href = appUrl;
+
+    // If we're still here a moment later, the app probably isn't installed.
+    setTimeout(function () {
+      document.getElementById('status').textContent = 'Tap below to open the invite.';
+      document.getElementById('stores').style.display = 'block';
+    }, 1500);
+  })();
+</script>
