@@ -1,51 +1,141 @@
----
-layout: default
-title: Join a group
-description: Open this invite in the Together Planner app.
----
-
-<style>
-.page-header { background-image: linear-gradient(120deg, #4CD85A, #FFA144); }
-.btn { display:inline-block; margin:6px 0; }
-#stores { display:none; }
-</style>
-
-<p id="status">Opening Together Planner…</p>
-
-<p>
-  <a id="openApp" class="btn" href="#">Open in the app</a>
-</p>
-
-<div id="stores">
-  <p>Don’t have the app yet? Install it, <strong>create your account</strong>, then open this invite link again to join:</p>
-  <p>
-    <a id="play" class="btn" href="https://play.google.com/store/apps/details?id=de.equirinya.couple_planner">Get it on Google Play</a><br/>
-    <a id="appstore" class="btn" href="https://apps.apple.com/app/idYOUR_APPSTORE_ID">Download on the App Store</a>
-  </p>
-</div>
-
-<script>
-  (function () {
-    var params = new URLSearchParams(window.location.search);
-    var g = params.get('g');
-    var i = params.get('i');
-
-    if (!g || !i) {
-      document.getElementById('status').textContent = 'This invite link is incomplete.';
-      document.getElementById('openApp').style.display = 'none';
-      return;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join a group · Together Planner</title>
+  <meta name="description" content="Open this invite in the Together Planner app." />
+  <style>
+    :root {
+      --green: #4CD85A;
+      --orange: #FFA144;
+      --ink: #1f2330;
+      --muted: #6b7280;
     }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: linear-gradient(135deg, var(--green), var(--orange));
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: #fff;
+      border-radius: 24px;
+      padding: 40px 28px;
+      text-align: center;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+    }
+    .badge {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 20px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      background: linear-gradient(135deg, var(--green), var(--orange));
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    #status { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px 18px;
+      margin: 10px 0;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform .05s ease, box-shadow .2s ease;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--orange));
+      box-shadow: 0 8px 20px rgba(76, 216, 90, 0.35);
+    }
+    .btn-store {
+      color: var(--ink);
+      border: 1px solid #e5e7eb;
+    }
+    .divider {
+      margin: 28px 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .stores-label { font-weight: 600; color: var(--ink); }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">🤝</div>
+    <h1>Join a group</h1>
+    <p id="status">Already have the app? Tap below to join the group.</p>
 
-    var appUrl = 'coupleplanner://join?g=' + encodeURIComponent(g) + '&i=' + encodeURIComponent(i);
-    document.getElementById('openApp').setAttribute('href', appUrl);
+    <a id="openApp" class="btn btn-primary" href="#">Open invite in the app</a>
 
-    // Try to open the app automatically.
-    window.location.href = appUrl;
+    <p class="divider">
+      <span class="stores-label">Don’t have the app yet?</span><br/>
+      Install it and create your account first, then come back to this link to join.
+    </p>
 
-    // If we're still here a moment later, the app probably isn't installed.
-    setTimeout(function () {
-      document.getElementById('status').textContent = 'Tap below to open the invite.';
-      document.getElementById('stores').style.display = 'block';
-    }, 1500);
-  })();
-</script>
+    <a id="play" class="btn btn-store" href="https://play.google.com/store/apps/details?id=de.equirinya.couple_planner">Get it on Google Play</a>
+    <a id="appstore" class="btn btn-store" href="#">Download on the App Store</a>
+  </main>
+
+  <script>
+    (function () {
+      // Apple's numeric App Store ID (the digits after "id" in the store URL).
+      // The bundle id won't work here — fill this in once the app is published.
+      var APPSTORE_ID = '';
+
+      var ua = navigator.userAgent || navigator.vendor || '';
+      var isAndroid = /android/i.test(ua);
+      var isIOS = /iphone|ipad|ipod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+
+      var play = document.getElementById('play');
+      var appstore = document.getElementById('appstore');
+
+      if (isAndroid) {
+        appstore.style.display = 'none';
+      } else if (isIOS) {
+        play.style.display = 'none';
+        appstore.setAttribute('href', 'https://apps.apple.com/app/id' + APPSTORE_ID);
+      } else {
+        appstore.setAttribute('href', 'https://apps.apple.com/app/id' + APPSTORE_ID);
+      }
+
+      var params = new URLSearchParams(window.location.search);
+      var g = params.get('g');
+      var i = params.get('i');
+
+      if (!g || !i) {
+        document.getElementById('status').textContent = 'This invite link is incomplete.';
+        document.getElementById('openApp').style.display = 'none';
+        return;
+      }
+
+      var appUrl = 'coupleplanner://join?g=' + encodeURIComponent(g) + '&i=' + encodeURIComponent(i);
+      document.getElementById('openApp').setAttribute('href', appUrl);
+
+      // Try to open the app automatically.
+      window.location.href = appUrl;
+
+      // If we're still here a moment later, the app probably isn't installed.
+      setTimeout(function () {
+        document.getElementById('status').textContent = 'Already have the app? Tap below to join the group. Otherwise install it first, then come back.';
+      }, 1500);
+    })();
+  </script>
+</body>
+</html>

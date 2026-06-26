@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -93,8 +94,9 @@ class Suggestion {
   Map<String, double>? get quantityMap =>
       quantity == null ? null : {unitId: quantity!.toDouble()};
 
-  factory Suggestion.fromMap(Map<String, dynamic> m, {bool isRestoreDone = false}) {
-    final q = readQuantity(m['quantity']);
+  factory Suggestion.fromMap(Map<String, dynamic> m,
+      {bool isRestoreDone = false, bool keepQuantity = true}) {
+    final q = keepQuantity ? readQuantity(m['quantity']) : null;
     return Suggestion(
       ingredientId: (m['ingredientId'] ?? kUnknownIngredient).toString(),
       displayName: (m['displayName'] ?? '').toString(),
@@ -333,9 +335,11 @@ class IngredientIndex extends ChangeNotifier {
         .httpsCallable(_kResolveFn)
         .call(<String, dynamic>{'query': query.trim()});
     final items = (res.data['items'] as List?) ?? const [];
+    final keepQty = parseInput(query).quantity != null;
     return [
       for (final e in items)
-        Suggestion.fromMap(Map<String, dynamic>.from(e as Map)),
+        Suggestion.fromMap(Map<String, dynamic>.from(e as Map),
+            keepQuantity: keepQty),
     ];
   }
 
@@ -688,6 +692,9 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
     // Closing the keyboard (e.g. Android back gesture) dismisses the sheet —
     // but only after it has actually opened, so the initial frame doesn't pop it.
+    // iOS reports a transient hide during the open animation, so this is
+    // Android-only to avoid the sheet popping itself the moment it opens.
+    if (defaultTargetPlatform == TargetPlatform.android) {
     _kbSub = KeyboardVisibilityController().onChange.listen((visible) {
       if (visible) {
         _keyboardWasVisible = true;
@@ -698,6 +705,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
         if (!closing) Navigator.of(context).maybePop();
       }
     });
+    }
   }
 
   @override
@@ -744,7 +752,19 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
         _functionRunning = false;
       });
 
-      if (local.isEmpty && text.trim().length >= 3) {
+      // A prefix match like "Olive oil" for "olive" isn't good enough — the user
+      // may want a distinct "Olive". Only suppress the cloud function when a
+      // suggestion equals the typed name, or extends it mid-word ("tomat" →
+      // "Tomato"). A whole extra word ("olive" → "Olive oil") still hands over.
+      final typedName = parseInput(text).remaining.join(' ').trim().toLowerCase();
+      bool matchesEnough(Suggestion s) {
+        final name = s.displayName.trim().toLowerCase();
+        if (name == typedName) return true;
+        return name.startsWith(typedName) && name[typedName.length] != ' ';
+      }
+      final unmatched = typedName.isNotEmpty && !local.any(matchesEnough);
+
+      if (unmatched && text.trim().length >= 3) {
         _functionTimer = Timer(_kFunctionDebounce, () async {
           if (!mounted || seq != _searchSeq) return;
           setState(() => _functionRunning = true);
@@ -760,7 +780,13 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
           }
           if (!mounted || seq != _searchSeq) return;
           setState(() {
-            _suggestions = fromFn;
+            // Keep the local prefix matches and prepend what the function
+            // resolved/created, deduping by ingredient.
+            final ids = fromFn.map((s) => s.ingredientId).toSet();
+            _suggestions = [
+              ...fromFn,
+              ..._suggestions.where((s) => !ids.contains(s.ingredientId)),
+            ];
             _functionRunning = false;
           });
         });
@@ -1012,6 +1038,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
                 isEmptyQuery && _suggestions.isNotEmpty ? 'Done' : null,
                 lang: _lang,
                 onTap: _tapSuggestion,
+                currentItems: _currentItems,
               ),
             ),
           ],
@@ -1025,6 +1052,26 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 // Suggestions list
 // =============================================================================
 
+bool _wouldCombine(Suggestion s, List<Map<String, dynamic>> currentItems) {
+  if (s.description.isNotEmpty || s.isRestoreDone) return false;
+  final unresolved =
+      s.ingredientId == kPendingIngredient || s.ingredientId == kUnknownIngredient;
+  final newUnitId = s.unitId;
+  for (final data in currentItems) {
+    if (data['doneAt'] != null) continue;
+    if ((data['ingredientId'] ?? '').toString() != s.ingredientId) continue;
+    if ((data['description'] ?? '').toString().isNotEmpty) continue;
+    if (unresolved &&
+        (data['displayName'] ?? '').toString().toLowerCase() !=
+            s.displayName.toLowerCase()) continue;
+    final existingUnitId =
+        readQuantity(data['quantity'])?.unitId ?? kDefaultUnitId;
+    if (existingUnitId != newUnitId) continue;
+    return true;
+  }
+  return false;
+}
+
 class _SuggestionsList extends StatelessWidget {
   const _SuggestionsList({
     required this.suggestions,
@@ -1032,6 +1079,7 @@ class _SuggestionsList extends StatelessWidget {
     required this.lang,
     required this.onTap,
     this.headerLabel,
+    this.currentItems = const [],
   });
 
   final List<Suggestion> suggestions;
@@ -1039,6 +1087,7 @@ class _SuggestionsList extends StatelessWidget {
   final String lang;
   final String? headerLabel;
   final ValueChanged<Suggestion> onTap;
+  final List<Map<String, dynamic>> currentItems;
 
   @override
   Widget build(BuildContext context) {
@@ -1061,12 +1110,18 @@ class _SuggestionsList extends StatelessWidget {
             child: Text(headerLabel!, style: Theme.of(context).textTheme.labelMedium),
           ),
         for (final s in suggestions)
-          _SuggestionTile(suggestion: s, lang: lang, onTap: () => onTap(s)),
+          _SuggestionTile(
+            suggestion: s,
+            lang: lang,
+            onTap: () => onTap(s),
+            isAdditive: _wouldCombine(s, currentItems),
+          ),
         if (effectiveFallback != null)
           _SuggestionTile(
             suggestion: effectiveFallback,
             lang: lang,
             onTap: () => onTap(effectiveFallback),
+            isAdditive: _wouldCombine(effectiveFallback, currentItems),
           ),
         if (isEmpty)
           const Padding(
@@ -1083,11 +1138,13 @@ class _SuggestionTile extends StatelessWidget {
     required this.suggestion,
     required this.lang,
     required this.onTap,
+    this.isAdditive = false,
   });
 
   final Suggestion suggestion;
   final String lang;
   final VoidCallback onTap;
+  final bool isAdditive;
 
   @override
   Widget build(BuildContext context) {
@@ -1117,13 +1174,24 @@ class _SuggestionTile extends StatelessWidget {
       ),
       subtitle:
       suggestion.description.isNotEmpty ? Text(suggestion.description) : null,
-      trailing: suggestion.quantity == null
-          ? null
-          : Text(
-        '${fmtQty(suggestion.quantity!)} '
-            '${UnitsCache.instance.display(suggestion.unitId, lang, suggestion.quantity!)}',
-        style: Theme.of(context).textTheme.bodyMedium,
-      ),
+      trailing: () {
+        final qty = suggestion.quantity;
+        if (qty == null && !isAdditive) return null;
+        final effectiveQty = qty ?? 1;
+        final qtyText =
+            '${isAdditive ? '+' : ''}${fmtQty(effectiveQty)} '
+            '${UnitsCache.instance.display(suggestion.unitId, lang, effectiveQty)}';
+        final textWidget = Text(qtyText, style: Theme.of(context).textTheme.bodyMedium);
+        if (!isAdditive) return textWidget;
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: cs.primary.withOpacity(0.1),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: textWidget,
+        );
+      }(),
     );
   }
 }

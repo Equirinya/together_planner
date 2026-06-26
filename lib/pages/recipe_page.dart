@@ -16,7 +16,7 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ingredient_search.dart' show UnitsCache, sanitizeLang, Avatar;
+import 'ingredient_search.dart' show UnitsCache, sanitizeLang, Avatar, kDefaultUnitId;
 import 'recipe_detail.dart';
 import 'shopping_list_page.dart' show categoryRank;
 
@@ -124,6 +124,7 @@ class _RecipePageState extends State<RecipePage> {
 
     final keyboardVisibilityController = KeyboardVisibilityController();
     keyboardSubscription = keyboardVisibilityController.onChange.listen((visible) {
+      if (!visible) FocusManager.instance.primaryFocus?.unfocus();
       setState(() => keyboardVisible = visible);
     });
   }
@@ -286,21 +287,24 @@ class _RecipePageState extends State<RecipePage> {
       });
       data.reference.update({'lastUsedAt': FieldValue.serverTimestamp()});
       if (widget.shoppingListEnabled && mounted) {
-        // Use the rows preloaded when dragging started (falling back to a fresh
-        // load). The dialog opens immediately showing a loading indicator and
-        // closes itself if the recipe has no ingredients to add.
+        // Resolve the rows first (preloaded when dragging started, or a fresh
+        // load) so the dialog only opens when the recipe actually has
+        // ingredients to add — no loading dialog flashes for empty recipes.
         final rowsFuture = _ingredientPreload[data.id] ?? _preloadIngredients(data.id);
         _ingredientPreload.remove(data.id); // avoid serving stale preference data
-        showDialog(
-          context: context,
-          builder: (_) => _ShoppingListDialog(
-            group: groupDoc,
-            recipeId: data.id,
-            planRef: planRef,
-            recipeServings: servings.toInt(),
-            rowsFuture: rowsFuture,
-          ),
-        );
+        final rows = await rowsFuture;
+        if (rows.isNotEmpty && mounted) {
+          showDialog(
+            context: context,
+            builder: (_) => _ShoppingListDialog(
+              group: groupDoc,
+              recipeId: data.id,
+              planRef: planRef,
+              recipeServings: servings.toInt(),
+              preloadedRows: rows,
+            ),
+          );
+        }
       }
     } else if (data.reference.parent.id == 'cooking_plan') {
       data.reference.update({'plannedFor': ts});
@@ -870,8 +874,9 @@ class _IngPreload {
   final Map<String, num?> base;
   final bool added;
   final String category;
+  final String unit; // default unit to seed a quantity from when there is none
   const _IngPreload(this.id, this.name, this.description, this.base, this.added,
-      this.category);
+      this.category, this.unit);
 }
 
 class _IngRow {
@@ -882,8 +887,10 @@ class _IngRow {
   Map<String, num?> cur; // amounts scaled to the current servings selector
   bool added;
   final String category;
+  final String unit; // default unit to seed a quantity from when there is none
 
-  _IngRow(this.id, this.name, this.description, this.base, this.added, this.category)
+  _IngRow(this.id, this.name, this.description, this.base, this.added,
+      this.category, this.unit)
       : cur = Map.of(base);
 }
 
@@ -892,14 +899,14 @@ class _ShoppingListDialog extends StatefulWidget {
   final String recipeId;
   final DocumentReference<Map<String, dynamic>> planRef;
   final int recipeServings;
-  final Future<List<_IngPreload>> rowsFuture;
+  final List<_IngPreload> preloadedRows;
 
   const _ShoppingListDialog({
     required this.group,
     required this.recipeId,
     required this.planRef,
     required this.recipeServings,
-    required this.rowsFuture,
+    required this.preloadedRows,
   });
 
   @override
@@ -907,7 +914,6 @@ class _ShoppingListDialog extends StatefulWidget {
 }
 
 class _ShoppingListDialogState extends State<_ShoppingListDialog> {
-  bool loading = true;
   bool saving = false;
   late int servings = widget.recipeServings < 1 ? 1 : widget.recipeServings;
   final List<_IngRow> rows = [];
@@ -915,26 +921,11 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
   @override
   void initState() {
     super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    try {
-      final preload = await widget.rowsFuture;
-      // Recipe has no ingredients to add: close the dialog instead of showing
-      // an empty list.
-      if (preload.isEmpty) {
-        if (mounted) Navigator.pop(context);
-        return;
-      }
-      for (final p in preload) {
-        rows.add(_IngRow(p.id, p.name, p.description, p.base, p.added, p.category));
-      }
-      _rescale();
-      if (mounted) setState(() => loading = false);
-    } catch (_) {
-      if (mounted) Navigator.pop(context);
+    for (final p in widget.preloadedRows) {
+      rows.add(_IngRow(
+          p.id, p.name, p.description, p.base, p.added, p.category, p.unit));
     }
+    _rescale();
   }
 
   /// Loads the shopping-list rows for [recipeId]: each recipe ingredient with
@@ -1006,20 +997,20 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
       await FirebaseFirestore.instance.collection('ingredients').doc(id).get();
       final ingData = ingDoc.data();
       final category = (ingData?['category'] ?? '').toString();
-      final defaultUnit = (ingData?['defaultUnit'] ?? '').toString();
+      final rawUnit = (ingData?['defaultUnit'] ?? '').toString();
+      final unit = rawUnit.isEmpty ? kDefaultUnitId : rawUnit;
       final name = (ing.data()['displayName'] ?? ingData?['name']?['en'] ?? id).toString();
 
-      // A missing/empty quantity map falls back to a single unit of the
-      // ingredient's default unit, and a null amount for a present unit is
-      // treated as 1.
+      // A quantity map with a real amount is used as-is (a null amount for a
+      // present unit is treated as 1). A missing, empty, or zero quantity is
+      // kept as no quantity — the ingredient is still added to the shopping
+      // list, just without an amount.
       final base = <String, num?>{};
       final rawQuantity = ing.data()['quantity'] as Map?;
       if (rawQuantity != null && rawQuantity.isNotEmpty) {
         rawQuantity.forEach(
               (k, v) => base[k.toString()] = v == null ? 1 : v as num,
         );
-      } else {
-        base[defaultUnit] = 1;
       }
 
       final bool added;
@@ -1032,7 +1023,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
         final addCount = recentAdded.where((s) => s.contains(id)).length;
         added = addCount * 2 >= recent.length;
       }
-      return _IngPreload(id, name, description, base, added, category);
+      return _IngPreload(id, name, description, base, added, category, unit);
     }).toList());
 
     await unitsFuture;
@@ -1060,22 +1051,22 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     // empty when nothing was added — so the plan is marked as having gone
     // through the add flow. Skipped plans (and plans from older app versions)
     // keep these fields absent instead, and are ignored by the heuristic.
-    // Collect the rows that contribute a quantity, then look up their existing
-    // shopping-list entries in parallel (reads can't go in a batch).
+    // Collect the kept rows (with their positive amounts, if any), then look up
+    // their existing shopping-list entries in parallel (reads can't go in a
+    // batch). A kept row with no positive amount is added without a quantity.
     final pending = <(_IngRow, Map<String, num>)>[];
     for (final row in rows.where((r) => r.added)) {
       final q = <String, num>{};
       row.cur.forEach((k, v) {
         if (v != null && v > 0) q[k] = v;
       });
-      if (q.isNotEmpty) pending.add((row, q));
+      pending.add((row, q));
     }
     final existing = await Future.wait([
       for (final p in pending)
         widget.group
             .collection('shopping_list')
             .where('ingredientId', isEqualTo: p.$1.id)
-            .limit(1)
             .get(),
     ]);
 
@@ -1086,13 +1077,16 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
     for (int i = 0; i < pending.length; i++) {
       final row = pending[i].$1;
       final q = pending[i].$2;
-      final docs = existing[i].docs;
+      // Ignore completed entries: merge only into an active one, otherwise
+      // create a fresh item so the ingredient reappears on the list.
+      final active =
+          existing[i].docs.where((d) => d.data()['doneAt'] == null).toList();
       final DocumentReference<Map<String, dynamic>> itemRef;
-      if (docs.isNotEmpty) {
-        itemRef = docs.first.reference;
-        final cur = Map<String, dynamic>.from(docs.first['quantity'] ?? {});
+      if (active.isNotEmpty) {
+        itemRef = active.first.reference;
+        final cur = Map<String, dynamic>.from(active.first['quantity'] ?? {});
         q.forEach((k, v) => cur[k] = ((cur[k] ?? 0) as num) + v);
-        batch.update(itemRef, {'quantity': cur});
+        batch.update(itemRef, {'quantity': cur.isEmpty ? null : cur});
       } else {
         itemRef = widget.group.collection('shopping_list').doc();
         batch.set(itemRef, {
@@ -1100,7 +1094,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
           'displayName': row.name,
           'description': '',
           'createdAt': FieldValue.serverTimestamp(),
-          'quantity': q,
+          'quantity': q.isEmpty ? null : q,
           'doneAt': null,
           'category': row.category,
         });
@@ -1131,12 +1125,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
 
     return Dialog(
       insetPadding: const EdgeInsets.all(16),
-      child: loading
-          ? const SizedBox(
-        height: 160,
-        child: Center(child: CupertinoActivityIndicator()),
-      )
-          : Column(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           // ── Servings selector ───────────────────────────────────
@@ -1252,14 +1241,23 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                                 minWidth: 40, minHeight: 40),
                             icon: const Icon(Icons.add),
                             onPressed: () => setState(() {
-                              row.cur = row.cur.map(
-                                    (k, v) => MapEntry(
-                                  k,
-                                  v == null
-                                      ? null
-                                      : v + UnitsCache.instance.increment(k),
-                                ),
-                              );
+                              // Seed a quantity for a no-amount row from the
+                              // ingredient's default unit, so + works on items
+                              // that were added without a quantity.
+                              if (!row.cur.values.any((v) => v != null && v > 0)) {
+                                row.cur = {
+                                  row.unit: UnitsCache.instance.increment(row.unit)
+                                };
+                              } else {
+                                row.cur = row.cur.map(
+                                      (k, v) => MapEntry(
+                                    k,
+                                    v == null
+                                        ? null
+                                        : v + UnitsCache.instance.increment(k),
+                                  ),
+                                );
+                              }
                             }),
                           ),
                         ],

@@ -47,5 +47,18 @@
 		<true/>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>CFBundleURLTypes</key>
+		<array>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>coupleplanner.invite</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>coupleplanner</string>
+				</array>
+			</dict>
+		</array>
 	</dict>
 </plist>

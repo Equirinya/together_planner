@@ -86,12 +86,20 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     if (mounted && stored != null) {
       setState(() => _lastSeen = DateTime.fromMillisecondsSinceEpoch(stored));
     }
-    await prefs.setInt(key, DateTime.now().millisecondsSinceEpoch);
+  }
+
+  Future<void> _saveLastSeen() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+      'shopping_last_seen_${widget.groupId}',
+      DateTime.now().millisecondsSinceEpoch,
+    );
   }
 
   @override
   void dispose() {
     _listSub?.cancel();
+    _saveLastSeen();
     super.dispose();
   }
 
@@ -295,15 +303,32 @@ class _AddItemBarState extends State<_AddItemBar> {
     final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-      child: SearchBar(
-        focusNode: _focusNode,
-        onTap: _handleTap,
-        shape: const WidgetStatePropertyAll(StadiumBorder()),
-        hintText: 'Add item to shopping list',
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 8),
-          child: Icon(Icons.search, color: cs.onSurfaceVariant),
-        ),
+      // The bar is purely a button: absorbing pointers stops the underlying
+      // field from focusing or showing the selection toolbar on long press.
+      // The InkWell overlay restores the tap ripple on top of the bar.
+      child: Stack(
+        children: [
+          AbsorbPointer(
+            child: SearchBar(
+              focusNode: _focusNode,
+              shape: const WidgetStatePropertyAll(StadiumBorder()),
+              hintText: 'Add item to shopping list',
+              leading: Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: Icon(Icons.search, color: cs.onSurfaceVariant),
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: Material(
+              type: MaterialType.transparency,
+              child: InkWell(
+                customBorder: const StadiumBorder(),
+                onTap: _handleTap,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

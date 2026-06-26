@@ -16,9 +16,17 @@ import 'firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import 'pages/login_page.dart';
+import 'package:app_links/app_links.dart';
+
+import 'invite_links.dart';
+import 'pages/onboarding_page.dart';
 import 'pages/shopping_list_page.dart';
 import 'pages/ingredient_admin_page.dart';
+import 'pages/join_group_page.dart';
+import 'pages/group_overview_page.dart';
+import 'pages/create_group_page.dart';
+import 'pages/settings_page.dart';
+import 'pages/login_page.dart' show animatedBackground;
 
 // ---------------------------------------------------------------------------
 // Feature registry
@@ -36,7 +44,7 @@ const _featureMeta = <String, ({IconData icon, String label})>{
   'recipes': (icon: Icons.restaurant_menu, label: 'Recipes'),
   'todos': (icon: Icons.checklist, label: 'To-Do\'s'),
   'calendar': (icon: Icons.calendar_month, label: 'Calendar'),
-  'money': (icon: Icons.account_balance_wallet, label: 'Money'),
+  'money': (icon: Icons.account_balance_wallet, label: 'Money splitting'),
   'ingredients_admin': (icon: Icons.fact_check, label: 'Ingredients'),
 };
 
@@ -96,8 +104,6 @@ ThemeData _buildTheme(Color seed, Brightness brightness) {
     ),
     appBarTheme: const AppBarThemeData(
       centerTitle: true,
-      scrolledUnderElevation: 0,
-      backgroundColor: Colors.transparent,
     ),
     navigationBarTheme: NavigationBarThemeData(
       elevation: 0,
@@ -110,9 +116,6 @@ ThemeData _buildTheme(Color seed, Brightness brightness) {
     chipTheme: ChipThemeData(
       side: BorderSide.none,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-    ),
-    dialogTheme: DialogThemeData(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
     ),
     bottomSheetTheme: const BottomSheetThemeData(
       showDragHandle: true,
@@ -138,7 +141,20 @@ class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final Set<int> _visitedIndices = {};
   String? _selectedGroup;
+  String? _cachedGroupId;
   bool _groupDocReady = false;
+
+  // ── deep links (invite links) ──────────────────────────────────────────────
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSub;
+
+  /// An invite tapped while signed-out, held until the account exists so we can
+  /// open the join screen right after onboarding.
+  ({String groupId, String inviteId})? _pendingInvite;
+
+  // ── session ────────────────────────────────────────────────────────────────
+  StreamSubscription<User?>? _authStateSub;
+  bool _wasAuthed = false;
 
   final db = FirebaseFirestore.instance;
 
@@ -147,7 +163,6 @@ class _HomePageState extends State<HomePage> {
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _groupListener;
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>>? acceptedGroups;
-  List<QueryDocumentSnapshot<Map<String, dynamic>>>? pendingGroups;
 
   // ── group-document stream (features + default page) ────────────────────────
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _groupDocListener;
@@ -173,6 +188,97 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _restoreCachedGroup();
     _testUserLoggedIn();
+    _initDeepLinks();
+    _watchSession();
+  }
+
+  /// Detect a mid-session logout (token revoked — e.g. password changed
+  /// elsewhere or the account was disabled) and route back to sign in.
+  void _watchSession() {
+    _authStateSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      final isAuthed = user != null;
+      if (_wasAuthed && !isAuthed && mounted) {
+        _testUserLoggedIn();
+      }
+      _wasAuthed = isAuthed;
+    });
+  }
+
+  /// Listen for invite links (initial launch + while running) and open the
+  /// join screen.
+  Future<void> _initDeepLinks() async {
+    _linkSub = _appLinks.uriLinkStream.listen(_handleUri, onError: (_) {});
+    try {
+      final initial = await _appLinks.getInitialLink();
+      if (initial != null) _handleUri(initial);
+    } catch (_) {}
+  }
+
+  void _handleUri(Uri uri) {
+    final invite = parseInviteUri(uri);
+    if (invite == null || !mounted) return;
+    if (FirebaseAuth.instance.currentUser == null) {
+      // Not signed in yet: remember the invite and switch onboarding into join
+      // mode (no group creation). The join screen opens automatically once the
+      // account exists (see _testUserLoggedIn).
+      _pendingInvite = invite;
+      _openOnboarding();
+    } else {
+      _openJoinPage(invite);
+    }
+  }
+
+  void _openJoinPage(({String groupId, String inviteId}) invite) {
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => JoinGroupPage(
+        groupId: invite.groupId,
+        inviteId: invite.inviteId,
+        onJoined: _selectGroup,
+      ),
+    ));
+  }
+
+  /// Shows the onboarding flow, replacing anything currently above HomePage.
+  /// Runs in join mode when an invite is pending.
+  void _openOnboarding() {
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    nav.popUntil((r) => r.isFirst);
+    nav.push(MaterialPageRoute(
+      builder: (_) => WelcomePage(onFinished: _testUserLoggedIn, joinMode: _pendingInvite != null),
+    ));
+  }
+
+  /// Make a group the active one (from the overview or after joining a link).
+  void _selectGroup(String groupId) {
+    if (_selectedGroup == groupId) return;
+    setState(() {
+      _selectedGroup = groupId;
+      _cachedGroupId = groupId;
+    });
+    _subscribeToGroupDoc(groupId);
+  }
+
+  Future<void> _createGroup() async {
+    final newId = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const CreateGroupPage()),
+    );
+    if (newId != null && mounted) _selectGroup(newId);
+  }
+
+  void _openSettings() {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+  }
+
+  void _openOverview() {
+    final ids = acceptedGroups?.map((d) => d.id).toList() ?? <String>[];
+    if (_selectedGroup != null && _selectedGroup!.isNotEmpty && !ids.contains(_selectedGroup)) {
+      ids.insert(0, _selectedGroup!);
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => GroupOverviewPage(groupIds: ids, selectedGroup: _selectedGroup, onSelect: _selectGroup),
+    ));
   }
 
   /// Subscribe to the last-used group's document straight away so its cached
@@ -180,6 +286,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _restoreCachedGroup() async {
     final prefs = await SharedPreferences.getInstance();
     final cached = prefs.getString('selected_group');
+    _cachedGroupId = (cached != null && cached.isNotEmpty) ? cached : null;
     if (cached != null && cached.isNotEmpty && _selectedGroup == null) {
       setState(() => _selectedGroup = cached);
       _subscribeToGroupDoc(cached);
@@ -190,6 +297,8 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _groupListener?.cancel();
     _groupDocListener?.cancel();
+    _linkSub?.cancel();
+    _authStateSub?.cancel();
     super.dispose();
   }
 
@@ -216,35 +325,47 @@ class _HomePageState extends State<HomePage> {
     }
 
     if (currentUser == null || !userDoc!.exists) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => WelcomePage(onFinished: _testUserLoggedIn, infoText: ""),
-          ),
-        );
-      });
+      WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
     } else {
-      _canEditIngredients = (userDoc!.data() as Map<String, dynamic>?)?['editIngredients'] == true;
+      _canEditIngredients = (userDoc.data())?['editIngredients'] == true;
+
+      // If the user just signed up/in after tapping an invite link, open the
+      // join screen now that they have an account.
+      if (_pendingInvite != null) {
+        final invite = _pendingInvite!;
+        _pendingInvite = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) => _openJoinPage(invite));
+      }
+
+      // Adopt a group created during onboarding (cached but not yet mirrored
+      // by the membership function below).
+      await _restoreCachedGroup();
 
       if (Platform.isAndroid || Platform.isIOS) {
         final uid = FirebaseAuth.instance.currentUser!.uid;
 
-        // Listen to the user's invite list
-        _groupsStream = db.collection('users').doc(uid).collection("invites").snapshots();
+        // Listen to the user's group memberships (server-maintained mirror at
+        // users/{uid}/groups). One doc per group the user belongs to.
+        _groupsStream = db.collection('users').doc(uid).collection("groups").snapshots();
         _groupListener?.cancel();
         _groupListener = _groupsStream!.listen((snapshot) {
-          final groups = snapshot.docs;
-          acceptedGroups = groups.where((d) => d.data()['status'] == 'accepted').toList();
-          pendingGroups = groups.where((d) => d.data()['status'] == 'pending').toList();
+          acceptedGroups = snapshot.docs;
 
-          final newGroupId = acceptedGroups!.firstOrNull?.id;
+          final ids = acceptedGroups!.map((d) => d.id).toList();
 
-          // Re-subscribe to the group document when the selected group changes
+          // Keep the current group if we're still a member (or it's the freshly
+          // cached/onboarded group whose mirror may not have synced yet);
+          // otherwise fall back to the first membership, then the cached group.
+          String? newGroupId;
+          if (_selectedGroup != null && (ids.contains(_selectedGroup) || _selectedGroup == _cachedGroupId)) {
+            newGroupId = _selectedGroup;
+          } else if (ids.isNotEmpty) {
+            newGroupId = ids.first;
+          } else {
+            newGroupId = _cachedGroupId;
+          }
+
           if (_selectedGroup != newGroupId) {
-            _selectedGroup = newGroupId;
-            _subscribeToGroupDoc(_selectedGroup);
-          } else if (!acceptedGroups!.any((e) => e.id == _selectedGroup)) {
             _selectedGroup = newGroupId;
             _subscribeToGroupDoc(_selectedGroup);
           }
@@ -277,6 +398,14 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
   }
 
+  /// Record the group as the most recently used one for this user. Updates the
+  /// membership mirror only when it exists (never creates a stray doc).
+  void _touchGroupLastUsed(String groupId) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    db.collection('users').doc(uid).collection('groups').doc(groupId).update({'lastUsed': FieldValue.serverTimestamp()}).catchError((_) {});
+  }
+
   // ---------------------------------------------------------------------------
   // Group document listener (features + defaultPage)
   // ---------------------------------------------------------------------------
@@ -288,10 +417,24 @@ class _HomePageState extends State<HomePage> {
 
     if (groupId == null) return;
 
+    _touchGroupLastUsed(groupId);
     SharedPreferences.getInstance().then((p) => p.setString('selected_group', groupId));
 
     _groupDocListener = db.collection('groups').doc(groupId).snapshots().listen((snapshot) {
-      if (!snapshot.exists) return;
+      if (!snapshot.exists) {
+        // The selected/cached group no longer exists. If it isn't among our
+        // memberships either, drop the selection so the no-group screen shows
+        // instead of hanging on the loading spinner.
+        final ids = acceptedGroups?.map((d) => d.id).toList() ?? const <String>[];
+        if (!ids.contains(groupId)) {
+          setState(() {
+            _selectedGroup = null;
+            _cachedGroupId = null;
+            _groupDocReady = false;
+          });
+        }
+        return;
+      }
 
       final data = snapshot.data()!;
 
@@ -355,10 +498,13 @@ class _HomePageState extends State<HomePage> {
   // ---------------------------------------------------------------------------
 
   List<NavigationDestination> _buildDestinations() {
-    return _enabledFeatures.map((key) {
+    final dests = _enabledFeatures.map((key) {
       final meta = _featureMeta[key]!;
       return NavigationDestination(icon: Icon(meta.icon), label: meta.label);
     }).toList();
+    // Trailing entry for group switching + app settings (replaces the app bar).
+    dests.add(const NavigationDestination(icon: Icon(Icons.menu), label: 'More'));
+    return dests;
   }
 
   Widget _buildPage(String featureKey, {required bool shoppingListEnabled, required bool aiEnabled}) {
@@ -375,7 +521,7 @@ class _HomePageState extends State<HomePage> {
         return const _PlaceholderPage(label: 'Calendar');
       case 'money':
         // Replace with your real MoneyPage when ready
-        return const _PlaceholderPage(label: 'Money');
+        return const _PlaceholderPage(label: 'Money splitting');
       case 'ingredients_admin':
         return const IngredientAdminPage();
       default:
@@ -390,23 +536,26 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final bool groupReady = _selectedGroup != null && _selectedGroup!.isNotEmpty && _groupDocReady;
-    final bool noGroups = acceptedGroups != null && acceptedGroups!.isEmpty;
+    final bool noGroups = acceptedGroups != null && acceptedGroups!.isEmpty && (_selectedGroup == null || _selectedGroup!.isEmpty);
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
     return Scaffold(
-      bottomNavigationBar: groupReady && _enabledFeatures.length >= 2
+      bottomNavigationBar: groupReady
           ? NavigationBar(
               height: 60,
               destinations: _buildDestinations(),
               labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
               selectedIndex: _selectedIndex,
               onDestinationSelected: (int index) {
-                setState(() => _selectedIndex = index);
+                if (index < _enabledFeatures.length) {
+                  setState(() => _selectedIndex = index);
+                } else {
+                  _openOverview(); // trailing "More" entry → groups + settings
+                }
               },
             )
           : null,
-      body: Padding(
-        padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
+      body: SafeArea(
         child: groupReady
           ? IndexedStack(
               index: _selectedIndex,
@@ -418,18 +567,54 @@ class _HomePageState extends State<HomePage> {
               }),
             )
           : noGroups
-          ? const Center(
+          ? Center(
               child: Padding(
-                padding: EdgeInsets.all(64.0),
+                padding: const EdgeInsets.all(48.0),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.group_off, size: 32),
-                    SizedBox(height: 16),
-                    Text(
-                      'You are not a member of any groups yet. Ask Jacob to invite you!',
+                    const Icon(Icons.group_off, size: 32),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'You are not a member of any group yet. Ask someone to send you an invite link to their group — or create your own below.',
                       style: TextStyle(fontSize: 18),
                       textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 32),
+                    SizedBox(
+                      width: 260,
+                      height: 72,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            animatedBackground(),
+                            Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: _createGroup,
+                                child: const Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.add, color: Colors.white, size: 28),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'New group',
+                                      style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _openSettings,
+                      child: const Text('App Settings'),
                     ),
                   ],
                 ),

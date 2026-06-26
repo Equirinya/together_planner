@@ -11,6 +11,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 // =============================================================================
 // Page
@@ -56,6 +57,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   late List<String> images;
   late List<String> steps;
   late List<String> tags;
+  String? attribution;
   late int totalHour;
   late int totalMinute;
   late int prepHour;
@@ -133,6 +135,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     steps = List<String>.from(data['steps'] ?? []);
     if (steps.isEmpty) steps = [''];
     tags = List<String>.from(data['tags'] ?? []);
+    attribution = data['attribution'] as String?;
     totalHour = ((data['time'] ?? 0) / 60).floor();
     totalMinute = (data['time'] ?? 0) % 60;
     prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
@@ -392,6 +395,49 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
+  bool _isRecipeEmpty() {
+    final name = nameController?.text.trim() ?? '';
+    final desc = descriptionController?.text.trim() ?? '';
+    final hasSteps = stepsControllers?.any((c) => c.text.trim().isNotEmpty) ?? false;
+    final hasTags = tagsController?.text
+            .split('#')
+            .map((t) => t.trim())
+            .any((t) => t.isNotEmpty) ??
+        false;
+    return name.isEmpty && desc.isEmpty && !hasSteps && !hasTags && ingredients.isEmpty && images.isEmpty;
+  }
+
+  Future<void> _saveAndExit() async {
+    var name = nameController!.text.trim();
+    if (name.isEmpty) name = 'New Recipe';
+    await docRef.update({
+      'name': name,
+      'description': descriptionController!.text,
+      'steps': stepsControllers!
+          .map((c) => c.text.trim())
+          .where((s) => s.isNotEmpty)
+          .toList(),
+      'tags': tagsController!.text
+          .split('#')
+          .map((t) => t.trim())
+          .where((t) => t.isNotEmpty)
+          .toList(),
+      'servings': servings,
+    });
+    if (_isRecipeEmpty()) {
+      await docRef.delete();
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      edit = false;
+      _autoScale = false;
+      _baseServings = servings;
+    });
+    _loadRecipe();
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -408,8 +454,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final bool hasIngredients = ingredients.isNotEmpty;
     final bool hasSteps = steps.any((s) => s.isNotEmpty);
 
-    return Scaffold(
+    return PopScope(
+      canPop: !edit,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && edit) {
+          _saveAndExit();
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
+        leading: edit
+            ? IconButton(
+                icon: const Icon(Icons.save),
+                onPressed: _saveAndExit,
+              )
+            : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.delete),
@@ -428,9 +487,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                     style: FilledButton.styleFrom(
                         backgroundColor: Theme.of(ctx).colorScheme.error),
                     onPressed: () async {
-                      for (final p in images) {
-                        await FirebaseStorage.instance.ref().child(p).delete();
-                      }
                       await docRef.delete();
                       Navigator.of(ctx).pop();
                       Navigator.of(context).pop();
@@ -441,41 +497,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
           ),
-          IconButton(
-            icon: Icon(edit ? Icons.check : Icons.edit),
-            onPressed: () {
-              if (edit) {
-                var name = nameController!.text.trim();
-                if (name.isEmpty) name = 'New Recipe';
-                docRef.update({
-                  'name': name,
-                  'description': descriptionController!.text,
-                  'steps': stepsControllers!
-                      .map((c) => c.text.trim())
-                      .where((s) => s.isNotEmpty)
-                      .toList(),
-                  'tags': tagsController!.text
-                      .split('#')
-                      .map((t) => t.trim())
-                      .where((t) => t.isNotEmpty)
-                      .toList(),
-                  'servings': servings,
-                });
-                setState(() {
-                  edit = false;
-                  _autoScale = false;
-                  _baseServings = servings;
-                });
-                _loadRecipe();
-              } else {
+          if (!edit)
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () {
                 setState(() {
                   edit = true;
                   _autoScale = false;
                   _baseServings = servings;
                 });
-              }
-            },
-          ),
+              },
+            ),
         ],
       ),
       body: SingleChildScrollView(
@@ -549,6 +581,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
 
+            if (attribution != null && attribution!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: _AttributionText(attribution!),
+              ),
+
             const SizedBox(height: 20),
 
             // ── Ingredients + servings (hidden in view mode when empty) ──
@@ -562,6 +600,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             const SizedBox(height: 32),
           ],
         ),
+      ),
       ),
     );
   }
@@ -1291,6 +1330,53 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
         ],
       ),
     );
+  }
+}
+
+// =============================================================================
+// Attribution text with clickable links
+// =============================================================================
+
+class _AttributionText extends StatelessWidget {
+  const _AttributionText(this.text);
+  final String text;
+
+  static final _urlRegex = RegExp(
+    r'https?://[^\s]+',
+    caseSensitive: false,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final style = Theme.of(context).textTheme.bodySmall;
+    final linkStyle = style?.copyWith(
+      color: Theme.of(context).colorScheme.primary,
+      decoration: TextDecoration.underline,
+      decorationColor: Theme.of(context).colorScheme.primary,
+    );
+
+    final spans = <InlineSpan>[];
+    int last = 0;
+    for (final match in _urlRegex.allMatches(text)) {
+      if (match.start > last) {
+        spans.add(TextSpan(text: text.substring(last, match.start), style: style));
+      }
+      final url = match.group(0)!;
+      spans.add(WidgetSpan(
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        child: GestureDetector(
+          onTap: () => launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication),
+          child: Text(url, style: linkStyle),
+        ),
+      ));
+      last = match.end;
+    }
+    if (last < text.length) {
+      spans.add(TextSpan(text: text.substring(last), style: style));
+    }
+
+    return Text.rich(TextSpan(children: spans));
   }
 }
 
