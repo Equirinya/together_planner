@@ -429,7 +429,7 @@ Future<void> resolvePendingItem(
   try {
     final parsed = parseInput(displayName);
     final cleanName =
-        parsed.remaining.isNotEmpty ? parsed.remaining.join(' ') : displayName;
+    parsed.remaining.isNotEmpty ? parsed.remaining.join(' ') : displayName;
     final id = await IngredientIndex.instance.resolveByName(cleanName, lang);
     final updates = <String, dynamic>{
       'ingredientId': id,
@@ -561,6 +561,8 @@ class Avatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final defaultBg = isDark ? cs.primaryContainer : cs.primary;
 
     if (ingredientId == kPendingIngredient) {
       return CircleAvatar(
@@ -581,13 +583,13 @@ class Avatar extends StatelessWidget {
         if (version == '0') {
           return CircleAvatar(
             radius: radius,
-            backgroundColor: backgroundColor ?? cs.primaryContainer,
+            backgroundColor: backgroundColor ?? defaultBg,
             child: const CupertinoActivityIndicator(),
           );
         }
         return CircleAvatar(
           radius: radius,
-          backgroundColor: backgroundColor ?? cs.primaryContainer,
+          backgroundColor: backgroundColor ?? defaultBg,
           child: StorageImage(
             key: ValueKey('$ingredientId#$version'),
             cacheKey: version,
@@ -612,7 +614,7 @@ class Avatar extends StatelessWidget {
 /// `{ingredientId, displayName, description, quantity, doneAt, createdAt}`
 /// to [targetRef]. Works for the shopping list, recipe ingredient lists, etc.
 ///
-///  * same ingredient + same single unit + no description → quantities merge,
+///  * same display name + same single unit + no description → quantities merge,
 ///  * unmatched input is added as `kPendingIngredient` and resolved afterwards
 ///    (the host's snapshot listener should call [resolvePendingItem] so
 ///    pre-existing pending items are covered too),
@@ -695,16 +697,16 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
     // iOS reports a transient hide during the open animation, so this is
     // Android-only to avoid the sheet popping itself the moment it opens.
     if (defaultTargetPlatform == TargetPlatform.android) {
-    _kbSub = KeyboardVisibilityController().onChange.listen((visible) {
-      if (visible) {
-        _keyboardWasVisible = true;
-      } else if (_keyboardWasVisible && mounted) {
-        final animation = ModalRoute.of(context)?.animation;
-        final closing = animation?.status == AnimationStatus.reverse
-            || animation?.status == AnimationStatus.dismissed;
-        if (!closing) Navigator.of(context).maybePop();
-      }
-    });
+      _kbSub = KeyboardVisibilityController().onChange.listen((visible) {
+        if (visible) {
+          _keyboardWasVisible = true;
+        } else if (_keyboardWasVisible && mounted) {
+          final animation = ModalRoute.of(context)?.animation;
+          final closing = animation?.status == AnimationStatus.reverse
+              || animation?.status == AnimationStatus.dismissed;
+          if (!closing) Navigator.of(context).maybePop();
+        }
+      });
     }
   }
 
@@ -752,19 +754,16 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
         _functionRunning = false;
       });
 
-      // A prefix match like "Olive oil" for "olive" isn't good enough — the user
-      // may want a distinct "Olive". Only suppress the cloud function when a
-      // suggestion equals the typed name, or extends it mid-word ("tomat" →
-      // "Tomato"). A whole extra word ("olive" → "Olive oil") still hands over.
+      // A prefix match like "Olivenöl" for "olive" isn't good enough — the user
+      // may want a distinct "Olive". Only an exact name match suppresses the
+      // cloud function; anything else hands over. A still-incomplete fragment
+      // ("tomat") is harmless: the function canonicalises it back to the
+      // existing "Tomato" instead of creating junk.
       final typedName = parseInput(text).remaining.join(' ').trim().toLowerCase();
-      bool matchesEnough(Suggestion s) {
-        final name = s.displayName.trim().toLowerCase();
-        if (name == typedName) return true;
-        return name.startsWith(typedName) && name[typedName.length] != ' ';
-      }
-      final unmatched = typedName.isNotEmpty && !local.any(matchesEnough);
+      final hasExact =
+      local.any((s) => s.displayName.trim().toLowerCase() == typedName);
 
-      if (unmatched && text.trim().length >= 3) {
+      if (typedName.isNotEmpty && !hasExact && text.trim().length >= 3) {
         _functionTimer = Timer(_kFunctionDebounce, () async {
           if (!mounted || seq != _searchSeq) return;
           setState(() => _functionRunning = true);
@@ -919,20 +918,16 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
   Future<bool> _combineWithExisting(Suggestion s) async {
     if (s.description.isNotEmpty) return false;
-    final unresolved =
-        s.ingredientId == kPendingIngredient || s.ingredientId == kUnknownIngredient;
 
-    // Null quantity counts as 1 piece in kDefaultUnit for combining.
+    // Null quantity counts as 1 piece in the default unit for combining.
     final newQty = s.quantity ?? 1;
-    final newUnitId = s.unitId; // always kDefaultUnitId when quantity was null
+    final newUnitId = s.quantity == null ? kDefaultUnitId : s.unitId;
 
     for (final data in _currentItems) {
       if (data['doneAt'] != null) continue;
-      if ((data['ingredientId'] ?? '').toString() != s.ingredientId) continue;
       if ((data['description'] ?? '').toString().isNotEmpty) continue;
-      if (unresolved &&
-          (data['displayName'] ?? '').toString().toLowerCase() !=
-              s.displayName.toLowerCase()) continue;
+      if ((data['displayName'] ?? '').toString().toLowerCase() !=
+          s.displayName.toLowerCase()) continue;
 
       final eq = readQuantity(data['quantity']);
       final existingQty = eq?.qty ?? 1;
@@ -1054,16 +1049,12 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
 bool _wouldCombine(Suggestion s, List<Map<String, dynamic>> currentItems) {
   if (s.description.isNotEmpty || s.isRestoreDone) return false;
-  final unresolved =
-      s.ingredientId == kPendingIngredient || s.ingredientId == kUnknownIngredient;
-  final newUnitId = s.unitId;
+  final newUnitId = s.quantity == null ? kDefaultUnitId : s.unitId;
   for (final data in currentItems) {
     if (data['doneAt'] != null) continue;
-    if ((data['ingredientId'] ?? '').toString() != s.ingredientId) continue;
     if ((data['description'] ?? '').toString().isNotEmpty) continue;
-    if (unresolved &&
-        (data['displayName'] ?? '').toString().toLowerCase() !=
-            s.displayName.toLowerCase()) continue;
+    if ((data['displayName'] ?? '').toString().toLowerCase() !=
+        s.displayName.toLowerCase()) continue;
     final existingUnitId =
         readQuantity(data['quantity'])?.unitId ?? kDefaultUnitId;
     if (existingUnitId != newUnitId) continue;

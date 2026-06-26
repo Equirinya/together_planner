@@ -1,0 +1,142 @@
+# Takes login-gated screenshots of the Recipe and Shopping List pages on an
+# iPhone and an iPad simulator, using a Flutter integration_test driven by
+# `flutter drive`. Unlike ios.yml this needs no signing: simulator builds are
+# unsigned, so there are no certificates or provisioning profiles involved.
+# (A release IPA from a GitHub release is a signed device build and cannot run
+# on a simulator, which is why we build from source for the simulator here.)
+
+### necessary github action repository secrets:
+#TESTER_EMAIL     #email of the tester account used to log in
+#TESTER_PASSWORD  #password of the tester account
+
+###necessary github action repository variables:
+#FLUTTER_VERSION
+
+name: Screenshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipe_name:
+        description: 'Recipe to open for the detail screenshot (blank = most recently used)'
+        required: false
+        default: ''
+
+jobs:
+  # A single macOS runner captures both the iPhone and the iPad screenshots
+  # sequentially. macOS minutes are billed at 10x, so doing checkout / Flutter
+  # setup / pub get once (instead of once per device on parallel runners) saves
+  # credits, at the cost of a longer wall-clock time.
+  screenshots:
+    runs-on: macos-26
+
+    steps:
+      # Step 1: Checkout Code
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      # Step 2: Set up Flutter SDK
+      - name: Set up Flutter SDK
+        uses: flutter-actions/setup-flutter@v4
+        env:
+          FLUTTER_VERSION: ${{ vars.FLUTTER_VERSION }}
+        with:
+          channel: stable
+          version: ${{ env.FLUTTER_VERSION }}
+
+      # Step 3: Install Dependencies
+      - name: Install Dependencies
+        run: flutter pub get
+
+      # Step 4: Boot each simulator and run the screenshot integration test on it.
+      # The screenshots dir is cleared first so the uploaded artifact contains
+      # only screenshots produced by this run (the repo ships committed ones for
+      # both devices, which would otherwise be carried along stale).
+      - name: Capture Screenshots
+        env:
+          SCREENSHOT_DIR: screenshots
+          TESTER_EMAIL: ${{ secrets.TESTER_EMAIL }}
+          TESTER_PASSWORD: ${{ secrets.TESTER_PASSWORD }}
+        run: |
+          rm -f screenshots/*.png
+          for entry in "iphone:iPhone" "ipad:iPad"; do
+            label="${entry%%:*}"
+            device="${entry##*:}"
+            UDID=$(xcrun simctl list devices available --json \
+              | jq -r --arg n "$device" \
+                '[.devices[][] | select(.name | startswith($n))][0].udid')
+            if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+              echo "No available $device simulator found"; exit 1
+            fi
+            # Keep only one simulator booted at a time: flutter drive hangs on
+            # VM-service discovery when several simulators are booted at once.
+            echo "Shutting down any booted simulators"
+            xcrun simctl shutdown all || true
+            echo "Booting $device simulator $UDID"
+            xcrun simctl boot "$UDID" || true
+            xcrun simctl bootstatus "$UDID" -b
+            flutter drive \
+              --driver=test_driver/integration_test.dart \
+              --target=integration_test/screenshot_test.dart \
+              -d "$UDID" \
+              --dart-define=TESTER_EMAIL="$TESTER_EMAIL" \
+              --dart-define=TESTER_PASSWORD="$TESTER_PASSWORD" \
+              --dart-define=DEVICE_LABEL="$label" \
+              --dart-define=RECIPE_NAME="${{ inputs.recipe_name }}"
+          done
+        timeout-minutes: 40
+
+      # Step 5: Upload the screenshots so the commit job can collect them
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-all
+          path: screenshots/
+          if-no-files-found: error
+
+  # Collect both runners' screenshots and commit them to screenshots/ in the repo.
+  commit:
+    needs: screenshots
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Download Screenshots
+        uses: actions/download-artifact@v4
+        with:
+          path: screenshots
+          pattern: screenshots-*
+          merge-multiple: true
+
+      - name: Upload Raw Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-raw
+          path: screenshots/
+          if-no-files-found: error
+
+      - name: Install Fonts
+        run: |
+          sudo apt-get install -y fonts-google-fonts || true
+          fc-cache -fv
+
+      - name: Frame Screenshots
+        run: |
+          pip install Pillow numpy
+          python .github/scripts/frame_screenshots.py screenshots
+
+      - name: Commit Screenshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add screenshots
+          if git diff --staged --quiet; then
+            echo "No screenshot changes to commit."
+          else
+            git commit -m "generate new Screenshots"
+            git pull --rebase
+            git push
+          fi

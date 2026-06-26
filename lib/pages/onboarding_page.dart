@@ -249,7 +249,7 @@ class _WelcomePageState extends State<WelcomePage> {
         title: const Text('Almost there!'),
         content: const Text(
           'To join a group, one of your friends has to invite you. '
-          'Ask them to send you an invite link, then open it to join their group.',
+              'Ask them to send you an invite link, then open it to join their group.',
         ),
         actions: [
           FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Got it')),
@@ -526,7 +526,7 @@ class _WelcomePageState extends State<WelcomePage> {
         padding: const EdgeInsets.symmetric(horizontal: 32),
         child: const Text(
           "You can later create more groups — with friends, family or anyone else. "
-          "But let's start with your first one:",
+              "But let's start with your first one:",
           style: TextStyle(color: Colors.black87, fontSize: 14),
         ),
       ),
@@ -719,9 +719,9 @@ class _WelcomePageState extends State<WelcomePage> {
               child: OutlinedButton.icon(
                 onPressed: enabled
                     ? () => setState(() {
-                          _joinOnly = true;
-                          step = _Step.register;
-                        })
+                  _joinOnly = true;
+                  step = _Step.register;
+                })
                     : null,
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size.fromHeight(56),
@@ -729,7 +729,7 @@ class _WelcomePageState extends State<WelcomePage> {
                   foregroundColor: Colors.black,
                 ).copyWith(
                   side: WidgetStateProperty.resolveWith(
-                    (states) => states.contains(WidgetState.disabled)
+                        (states) => states.contains(WidgetState.disabled)
                         ? BorderSide(color: Colors.black.withOpacity(0.12))
                         : const BorderSide(color: Colors.black),
                   ),
@@ -743,9 +743,9 @@ class _WelcomePageState extends State<WelcomePage> {
               child: FilledButton.icon(
                 onPressed: enabled
                     ? () => setState(() {
-                          _joinOnly = false;
-                          step = _Step.createGroup;
-                        })
+                  _joinOnly = false;
+                  step = _Step.createGroup;
+                })
                     : null,
                 icon: const Icon(Icons.add),
                 label: const Text('New group'),
@@ -821,14 +821,14 @@ class _WelcomePageState extends State<WelcomePage> {
             child: _loading
                 ? const Center(child: CupertinoActivityIndicator())
                 : AnimatedOpacity(
-                    opacity: forwardVisible ? 1 : 0,
-                    duration: const Duration(milliseconds: 250),
-                    child: IconButton(
-                      onPressed: forwardVisible ? _forward : null,
-                      icon: const Icon(Icons.arrow_forward, color: Colors.black),
-                      tooltip: 'Continue',
-                    ),
-                  ),
+              opacity: forwardVisible ? 1 : 0,
+              duration: const Duration(milliseconds: 250),
+              child: IconButton(
+                onPressed: forwardVisible ? _forward : null,
+                icon: const Icon(Icons.arrow_forward, color: Colors.black),
+                tooltip: 'Continue',
+              ),
+            ),
           ),
         ],
       ),
@@ -936,45 +936,45 @@ class _FeaturePill extends StatelessWidget {
               border: Border.all(color: Colors.white.withOpacity(0.4), width: 1.5),
             ),
             child: Row(
-          children: [
-            Container(
-              width: 52,
-              height: 52,
-              decoration: BoxDecoration(color: Colors.black.withOpacity(enabled ? 0.06 : 0.04), shape: BoxShape.circle),
-              child: Icon(feature.icon, color: iconColor, size: 28),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(color: Colors.black.withOpacity(enabled ? 0.06 : 0.04), shape: BoxShape.circle),
+                  child: Icon(feature.icon, color: iconColor, size: 28),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Flexible(
-                        child: Text(
-                          feature.label,
-                          style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w600,
-                            color: enabled ? Colors.black : Colors.black54,
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              feature.label,
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: enabled ? Colors.black : Colors.black54,
+                              ),
+                            ),
                           ),
-                        ),
+                          if (!enabled) ...[
+                            const SizedBox(width: 8),
+                            _comingSoonChip(),
+                          ],
+                        ],
                       ),
-                      if (!enabled) ...[
-                        const SizedBox(width: 8),
-                        _comingSoonChip(),
-                      ],
+                      if (blurb.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Text(blurb, style: TextStyle(fontSize: 13, color: enabled ? Colors.black54 : Colors.black38)),
+                        ),
                     ],
                   ),
-                  if (blurb.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(blurb, style: TextStyle(fontSize: 13, color: enabled ? Colors.black54 : Colors.black38)),
-                    ),
-                ],
-              ),
-            ),
-          ],
+                ),
+              ],
             ),
           ),
         ),
@@ -1045,10 +1045,11 @@ class _FeatureBubbleFieldState extends State<FeatureBubbleField> with SingleTick
   @override
   void initState() {
     super.initState();
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     _ticker = createTicker(_onTick)..start();
     try {
       _accSub = accelerometerEventStream().listen(
-        (e) {
+            (e) {
           // low-pass filter to keep motion smooth
           _ax = _ax * 0.2 + e.x * 0.8;
           _ay = _ay * 0.2 + e.y * 0.8;
@@ -1061,6 +1062,7 @@ class _FeatureBubbleFieldState extends State<FeatureBubbleField> with SingleTick
 
   @override
   void dispose() {
+    SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     _ticker.dispose();
     _accSub?.cancel();
     super.dispose();

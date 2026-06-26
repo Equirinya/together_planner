@@ -355,6 +355,18 @@ class _RecipePageState extends State<RecipePage> {
   Widget build(BuildContext context) {
     final displaySize = MediaQuery.of(context).size;
     final colorScheme = Theme.of(context).colorScheme;
+    final isTablet = displaySize.shortestSide >= 600;
+    final crossAxisCount = isTablet
+        ? (displaySize.width < displaySize.height
+        ? 5
+        : displaySize.width ~/ (displaySize.height / 5))
+        : (displaySize.width < displaySize.height
+        ? 3
+        : displaySize.width ~/ (displaySize.height / 3));
+    final carouselWeights =
+    isTablet ? const <int>[1, 2, 2, 2, 2, 1] : const <int>[1, 3, 3, 1];
+    final planCrossAxisCount =
+    isTablet && displaySize.width < displaySize.height ? 5 : 3;
 
     return Column(
       mainAxisSize: MainAxisSize.max,
@@ -369,7 +381,7 @@ class _RecipePageState extends State<RecipePage> {
               minHeight: displaySize.height / 4,
             ),
             child: CarouselView.weighted(
-              flexWeights: const <int>[1, 3, 3, 1],
+              flexWeights: carouselWeights,
               enableSplash: false,
               controller: CarouselController(initialItem: daysToShowPrior),
               children: List.generate(
@@ -472,6 +484,7 @@ class _RecipePageState extends State<RecipePage> {
                                           feedback: RecipeCard(
                                             recipeId: dayPlans[i]['recipe'],
                                             groupCollection: groupDoc,
+                                            crossAxisCount: planCrossAxisCount,
                                           ),
                                           childWhenDragging: const SizedBox.shrink(),
                                           child: _RecipeOpenContainer(
@@ -480,11 +493,12 @@ class _RecipePageState extends State<RecipePage> {
                                             groupDoc: groupDoc,
                                             aiEnabled: widget.aiEnabled,
                                             initialData:
-                                                _recipeDataFor(dayPlans[i]['recipe']),
+                                            _recipeDataFor(dayPlans[i]['recipe']),
                                             child: RecipeCard(
                                               recipeId: dayPlans[i]['recipe'],
                                               groupCollection: groupDoc,
                                               cropContent: true,
+                                              crossAxisCount: planCrossAxisCount,
                                             ),
                                           ),
                                         ),
@@ -522,25 +536,23 @@ class _RecipePageState extends State<RecipePage> {
               GridView.count(
                 padding: EdgeInsets.only(
                     bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
-                crossAxisCount: displaySize.width < displaySize.height
-                    ? 3
-                    : displaySize.width ~/ (displaySize.height / 3),
+                crossAxisCount: crossAxisCount,
                 children: searchedRecipes
                     .map(
                       (e) => LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
                     key: ValueKey(e.id),
                     data: e,
                     onDragStarted: () => _preloadIngredients(e.id),
-                    feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
+                    feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, crossAxisCount: crossAxisCount),
                     childWhenDragging:
-                    RecipeCard(recipeId: e.id, groupCollection: groupDoc),
+                    RecipeCard(recipeId: e.id, groupCollection: groupDoc, crossAxisCount: crossAxisCount),
                     child: _RecipeOpenContainer(
                       recipeId: e.id,
                       groupId: widget.groupId,
                       groupDoc: groupDoc,
                       aiEnabled: widget.aiEnabled,
                       initialData: e.data(),
-                      child: RecipeCard(recipeId: e.id, groupCollection: groupDoc),
+                      child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, crossAxisCount: crossAxisCount),
                     ),
                   ),
                 )
@@ -557,10 +569,10 @@ class _RecipePageState extends State<RecipePage> {
                     shape: WidgetStatePropertyAll(
                       keyboardVisible
                           ? const RoundedRectangleBorder(
-                              borderRadius: BorderRadius.vertical(
-                                top: Radius.circular(16),
-                              ),
-                            )
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(16),
+                        ),
+                      )
                           : const StadiumBorder(),
                     ),
                     controller: _searchController,
@@ -727,6 +739,7 @@ class RecipeCard extends StatelessWidget {
     required this.recipeId,
     required this.groupCollection,
     this.cropContent = false,
+    this.crossAxisCount = 3,
   });
 
   final String? recipeId;
@@ -736,6 +749,7 @@ class RecipeCard extends StatelessWidget {
   /// cropped by the rounded frame instead of shrinking with the available
   /// width (used inside the calendar carousel).
   final bool cropContent;
+  final int crossAxisCount;
 
   @override
   Widget build(BuildContext context) {
@@ -743,8 +757,8 @@ class RecipeCard extends StatelessWidget {
     final smallerdim = size.width < size.height ? size.width : size.height;
     // Full inner size of the card at its unconstrained width, used to keep the
     // content at a fixed size and crop it when [cropContent] is set.
-    final fullContentWidth = smallerdim / 3 - 8;
-    final fullContentHeight = smallerdim / 4 - 8;
+    final fullContentWidth = smallerdim / crossAxisCount - 8;
+    final fullContentHeight = smallerdim / crossAxisCount * 3 / 4 - 8;
     final primaryColor = HSVColor.fromColor(Theme.of(context).colorScheme.primary);
     final primaryContainerColor =
     HSVColor.fromColor(Theme.of(context).colorScheme.primaryContainer);
@@ -759,9 +773,9 @@ class RecipeCard extends StatelessWidget {
 
     return ConstrainedBox(
       constraints: BoxConstraints(
-        maxWidth: smallerdim / 3,
-        minHeight: smallerdim / 4,
-        minWidth: smallerdim / 3,
+        maxWidth: smallerdim / crossAxisCount,
+        minHeight: smallerdim / crossAxisCount * 3 / 4,
+        minWidth: smallerdim / crossAxisCount,
       ),
       child: AspectRatio(
         aspectRatio: 4 / 3,
@@ -803,61 +817,61 @@ class RecipeCard extends StatelessWidget {
     final size = MediaQuery.of(context).size;
     final smallerdim = size.width < size.height ? size.width : size.height;
     return (recipeId != null && groupCollection != null)
-                  ? LoadDocumentBuilder(
-                docRef: groupCollection!.collection('recipes').doc(recipeId),
-                builder: (recipeData) {
-                  final images = List<String>.from(recipeData['images'] ?? []);
-                  return LayoutBuilder(
-                    builder: (context, constraints) {
-                      final double sd =
-                      constraints.maxWidth < constraints.maxHeight
-                          ? constraints.maxWidth
-                          : constraints.maxHeight;
-                      final dpr = MediaQuery.of(context).devicePixelRatio;
-                      return Stack(
-                        children: [
-                          if (images.isNotEmpty) ...[
-                            SizedBox.expand(
-                              child: StorageImage(
-                                storagePath: images.first,
-                                fit: BoxFit.cover,
-                                memCacheHeight:
-                                (constraints.maxHeight * dpr).toInt(),
-                              ),
-                            ),
-                            Container(color: Colors.black26),
-                          ] else
-                            Align(
-                              alignment: const Alignment(0, -0.3),
-                              child: Icon(
-                                Icons.restaurant_menu,
-                                size: sd / 2,
-                                color: color.toColor(),
-                              ),
-                            ),
-                          Align(
-                            alignment: Alignment.bottomLeft,
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical:4, horizontal: 6),
-                              child: Text(
-                                recipeData['name'] ?? 'Unnamed Recipe',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .titleMedium
-                                    ?.copyWith(
-                                    color: Colors.white, height: 1.2),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  );
-                },
-              )
-                  : null;
+        ? LoadDocumentBuilder(
+      docRef: groupCollection!.collection('recipes').doc(recipeId),
+      builder: (recipeData) {
+        final images = List<String>.from(recipeData['images'] ?? []);
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final double sd =
+            constraints.maxWidth < constraints.maxHeight
+                ? constraints.maxWidth
+                : constraints.maxHeight;
+            final dpr = MediaQuery.of(context).devicePixelRatio;
+            return Stack(
+              children: [
+                if (images.isNotEmpty) ...[
+                  SizedBox.expand(
+                    child: StorageImage(
+                      storagePath: images.first,
+                      fit: BoxFit.cover,
+                      memCacheHeight:
+                      (constraints.maxHeight * dpr).toInt(),
+                    ),
+                  ),
+                  Container(color: Colors.black26),
+                ] else
+                  Align(
+                    alignment: const Alignment(0, -0.3),
+                    child: Icon(
+                      Icons.restaurant_menu,
+                      size: sd / 2,
+                      color: color.toColor(),
+                    ),
+                  ),
+                Align(
+                  alignment: Alignment.bottomLeft,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical:4, horizontal: 6),
+                    child: Text(
+                      recipeData['name'] ?? 'Unnamed Recipe',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(
+                          color: Colors.white, height: 1.2),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    )
+        : null;
   }
 }
 
@@ -1080,7 +1094,7 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
       // Ignore completed entries: merge only into an active one, otherwise
       // create a fresh item so the ingredient reappears on the list.
       final active =
-          existing[i].docs.where((d) => d.data()['doneAt'] == null).toList();
+      existing[i].docs.where((d) => d.data()['doneAt'] == null).toList();
       final DocumentReference<Map<String, dynamic>> itemRef;
       if (active.isNotEmpty) {
         itemRef = active.first.reference;
@@ -1215,25 +1229,28 @@ class _ShoppingListDialogState extends State<_ShoppingListDialog> {
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          IconButton(
-                            iconSize: 18,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                                minWidth: 40, minHeight: 40),
-                            icon: const Icon(Icons.remove),
-                            onPressed: () => setState(() {
-                              row.cur = row.cur.map(
-                                    (k, v) => MapEntry(
-                                  k,
-                                  v == null
-                                      ? null
-                                      : (v - UnitsCache.instance.increment(k))
-                                      .clamp(0.0, double.infinity),
-                                ),
-                              );
-                            }),
-                          ),
-                          Text(quantityText, style: Theme.of(context).textTheme.bodyLarge),
+                          if (quantityText.isNotEmpty)
+                            IconButton(
+                              iconSize: 18,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                  minWidth: 40, minHeight: 40),
+                              icon: const Icon(Icons.remove),
+                              onPressed: () => setState(() {
+                                row.cur = row.cur.map(
+                                      (k, v) => MapEntry(
+                                    k,
+                                    v == null
+                                        ? null
+                                        : (v - UnitsCache.instance.increment(k))
+                                        .clamp(0.0, double.infinity),
+                                  ),
+                                );
+                              }),
+                            ),
+                          quantityText.isNotEmpty
+                              ? Text(quantityText, style: Theme.of(context).textTheme.bodyLarge)
+                              : Text('—', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: colorScheme.outline)),
                           IconButton(
                             iconSize: 18,
                             padding: EdgeInsets.zero,

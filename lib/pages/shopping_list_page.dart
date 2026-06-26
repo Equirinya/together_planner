@@ -115,7 +115,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
         // search sheet would stay hidden.
         final byId = {for (final i in _currentItems) i['id'] as String: i};
         _optimisticallyHidden.removeWhere(
-          (id) => byId[id] == null || byId[id]!['doneAt'] != null,
+              (id) => byId[id] == null || byId[id]!['doneAt'] != null,
         );
       });
       // Resolve any pending items (new arrivals and pre-existing ones).
@@ -251,6 +251,9 @@ class _CategoryHeader extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 12,
+            backgroundColor: Theme.of(context).brightness == Brightness.dark
+                ? Theme.of(context).colorScheme.primaryContainer
+                : Theme.of(context).colorScheme.primary,
             child: StorageImage(
               storagePath: 'categories/$category.png',
               fit: BoxFit.contain,
@@ -311,6 +314,7 @@ class _AddItemBarState extends State<_AddItemBar> {
           AbsorbPointer(
             child: SearchBar(
               focusNode: _focusNode,
+              constraints: const BoxConstraints(minWidth: double.infinity, minHeight: 56),
               shape: const WidgetStatePropertyAll(StadiumBorder()),
               hintText: 'Add item to shopping list',
               leading: Padding(
@@ -371,50 +375,50 @@ class _ShoppingItem extends StatelessWidget {
       child: Container(
         decoration: isNew
             ? BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                gradient: LinearGradient(
-                  colors: [
-                    cs.secondaryContainer.withValues(alpha: 0.0),
-                    cs.secondaryContainer.withValues(alpha: 0.3),
-                  ],
-                ),
-              )
+          borderRadius: BorderRadius.circular(16),
+          gradient: LinearGradient(
+            colors: [
+              cs.secondaryContainer.withValues(alpha: 0.0),
+              cs.secondaryContainer.withValues(alpha: 0.3),
+            ],
+          ),
+        )
             : null,
         child: ListTile(
-        // When there's no quantity, tap the tile itself to set one.
-        onTap: q == null ? () => _openQuantityEditor(context, null, null) : null,
-        leading: Avatar(
-          ingredientId: (item['ingredientId'] ?? kUnknownIngredient).toString(),
-        ),
-        title: Row(
-          children: [
-            Flexible(
-              child: Text((item['displayName'] ?? item['id'] ?? '').toString()),
-            ),
-            if (isNew) ...[
-              const SizedBox(width: 8),
-              Text('new', style: TextStyle(color: cs.secondary)),
+          // When there's no quantity, tap the tile itself to set one.
+          onTap: q == null ? () => _openQuantityEditor(context, null, null) : null,
+          leading: Avatar(
+            ingredientId: (item['ingredientId'] ?? kUnknownIngredient).toString(),
+          ),
+          title: Row(
+            children: [
+              Flexible(
+                child: Text((item['displayName'] ?? item['id'] ?? '').toString()),
+              ),
+              if (isNew) ...[
+                const SizedBox(width: 8),
+                Text('new', style: TextStyle(color: cs.secondary)),
+              ],
             ],
-          ],
-        ),
-        subtitle: (item['description'] as String?)?.isNotEmpty == true
-            ? Text(item['description'] as String)
-            : null,
-        trailing: q == null
-            ? null
-            : GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => _openQuantityEditor(context, q.unitId, q.qty),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Text(
-              '${fmtQty(q.qty)} '
-                  '${UnitsCache.instance.display(q.unitId, lang, q.qty)}',
-              style: Theme.of(context).textTheme.titleMedium,
+          ),
+          subtitle: (item['description'] as String?)?.isNotEmpty == true
+              ? Text(item['description'] as String)
+              : null,
+          trailing: q == null
+              ? null
+              : GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _openQuantityEditor(context, q.unitId, q.qty),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Text(
+                '${fmtQty(q.qty)} '
+                    '${UnitsCache.instance.display(q.unitId, lang, q.qty)}',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
             ),
           ),
         ),
-      ),
       ),
     );
   }

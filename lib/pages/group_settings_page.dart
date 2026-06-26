@@ -74,6 +74,8 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
 
   // ── actions ──────────────────────────────────────────────────────────────--
 
+  Future<void> _setDefaultPage(String key) => _groupRef.update({'defaultPage': key});
+
   Future<void> _toggleFeature(String key) async {
     final enabled = List<String>.from(_enabledFeatures);
     if (enabled.contains(key)) {
@@ -252,6 +254,32 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
     );
   }
 
+  Widget _featureTile(FeatureSpec f) {
+    final enabled = _enabledFeatures.contains(f.key);
+    final isDefault = (_group?['defaultPage'] as String? ?? _enabledFeatures.firstOrNull) == f.key;
+    return ListTile(
+      leading: Icon(f.icon),
+      title: Text(f.label),
+      subtitle: f.implemented ? null : const Text('coming soon'),
+      onTap: (f.implemented && _canEditFeatures) ? () => _toggleFeature(f.key) : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (enabled)
+            IconButton(
+              icon: Icon(isDefault ? Icons.home : Icons.home_outlined),
+              tooltip: 'Set as default page',
+              onPressed: (_canEditFeatures && !isDefault) ? () => _setDefaultPage(f.key) : () {},
+            ),
+          Checkbox(
+            value: enabled,
+            onChanged: (f.implemented && _canEditFeatures) ? (_) => _toggleFeature(f.key) : null,
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _buildFeatures() {
     return [
       const _SectionHeader('Features'),
@@ -260,14 +288,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: Text('Only admins can change features in this group.', style: TextStyle(fontSize: 13)),
         ),
-      for (final f in kOnboardingFeatures)
-        CheckboxListTile(
-          value: _enabledFeatures.contains(f.key),
-          onChanged: (f.implemented && _canEditFeatures) ? (_) => _toggleFeature(f.key) : null,
-          secondary: Icon(f.icon),
-          title: Text(f.label),
-          subtitle: f.implemented ? null : const Text('coming soon'),
-        ),
+      for (final f in kOnboardingFeatures) _featureTile(f),
     ];
   }
 
@@ -379,7 +400,10 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
 
     Widget? trailing;
     if (isMe) {
-      trailing = const Text('You');
+      trailing = const SizedBox(
+        width: 48,
+        child: Center(child: Text('You')),
+      );
     } else if (_isAdmin) {
       trailing = PopupMenuButton<String>(
         onSelected: (v) {

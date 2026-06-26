@@ -135,7 +135,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     steps = List<String>.from(data['steps'] ?? []);
     if (steps.isEmpty) steps = [''];
     tags = List<String>.from(data['tags'] ?? []);
-    attribution = data['attribution'] as String?;
+    attribution = data['attribution']?.toString();
     totalHour = ((data['time'] ?? 0) / 60).floor();
     totalMinute = (data['time'] ?? 0) % 60;
     prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
