@@ -65,7 +65,7 @@ MESH_BLOBS = (
 DARK_WASH = 0.12
 
 # The pages, in the order they should flow across the gradient.
-PAGE_ORDER = ["shopping_list", "recipe", "recipe_detail"]
+PAGE_ORDER = ["recipe", "shopping_list", "recipe_detail"]
 
 # headline + subtitle per page.
 CAPTIONS = {

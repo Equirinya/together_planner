@@ -59,20 +59,27 @@ description: Plan your recipes, chores and appointments together.
 .tp-roadmap {
   max-width: 640px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
-.tp-roadmap li { margin: 0.4rem 0; }
+.tp-roadmap-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: #f6f8f7;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+}
+.tp-roadmap-item .tp-badge { margin-left: auto; flex-shrink: 0; }
 .tp-cta { text-align: center; margin: 3rem 0; }
 </style>
-
-<p class="tp-lead">
-Together Planner keeps couples, families and friends on the same page: shared recipes, a meal plan, and a shopping list that updates for everyone the moment something is added or ticked off.
-</p>
 
 <div class="tp-feature">
   <div class="tp-shot"><img src="./screenshots/shopping_list.png" alt="Shared shopping list"></div>
   <div class="tp-text">
     <h3>🛒 Shopping List</h3>
-    <p>One shared list for the whole group. Add an item on your phone and it appears on everyone else's instantly. Tick things off in the store and watch the list stay in sync, neatly grouped by category.</p>
+    <p>Add an item and it appears on everyone's phone instantly. Tick things off while shopping and the list stays in sync, grouped by category.</p>
   </div>
 </div>
 
@@ -80,7 +87,7 @@ Together Planner keeps couples, families and friends on the same page: shared re
   <div class="tp-shot"><img src="./screenshots/recipe.png" alt="Meal planner"></div>
   <div class="tp-text">
     <h3>🍳 Recipes &amp; Meal Plan</h3>
-    <p>Collect all your recipes in one beautiful place and plan what's for dinner together. Drag meals onto your shared cooking plan and send their ingredients straight to the shopping list.</p>
+    <p>Save your recipes and plan meals together. Add ingredients straight to the shopping list with one tap.</p>
   </div>
 </div>
 
@@ -88,7 +95,7 @@ Together Planner keeps couples, families and friends on the same page: shared re
   <div class="tp-shot"><img src="./screenshots/recipe_detail.png" alt="Recipe detail"></div>
   <div class="tp-text">
     <h3>📖 Every Recipe at Hand</h3>
-    <p>Ingredients, servings, prep and cook times, laid out clearly and always available. Scale servings and the quantities adjust for you.</p>
+    <p>Ingredients, times and servings — always at hand. Scale a recipe and quantities adjust automatically.</p>
   </div>
 </div>
 
@@ -96,13 +103,15 @@ Together Planner keeps couples, families and friends on the same page: shared re
 ## On the roadmap
 
 <div class="tp-roadmap">
-
-We're just getting started. Coming soon to Together Planner:
-
-- ✅ **To-Do's** <span class="tp-badge">coming soon</span>: split chores and tasks with your group.
-- 📅 **Calendar** <span class="tp-badge">coming soon</span>: keep shared events and appointments in one place.
-- 💸 **Money Splitting** <span class="tp-badge">coming soon</span>: track and split shared expenses fairly.
-
+  <div class="tp-roadmap-item">
+    <span>✅</span><strong>To-Do's</strong> — split chores and tasks with your group.<span class="tp-badge">coming soon</span>
+  </div>
+  <div class="tp-roadmap-item">
+    <span>📅</span><strong>Calendar</strong> — shared events and appointments in one place.<span class="tp-badge">coming soon</span>
+  </div>
+  <div class="tp-roadmap-item">
+    <span>💸</span><strong>Money Splitting</strong> — track and split shared expenses fairly.<span class="tp-badge">coming soon</span>
+  </div>
 </div>
 
 
