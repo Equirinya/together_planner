@@ -91,4 +91,4 @@ If you have any questions regarding privacy while using the Application, or have
 * * *
 
 ---
-[Return Home](./index.md)
+[Return Home](./index.html) | [Impressum](./impressum.md)

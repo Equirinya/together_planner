@@ -53,4 +53,4 @@ If you have any questions or suggestions about the Terms and Conditions, please 
 * * *
 
 ---
-[Return Home](./index.md)
+[Return Home](./index.html) | [Impressum](./impressum.md)

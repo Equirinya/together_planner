@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Together Planner</title>
+  <meta name="description" content="Plan recipes, shopping and meals together. Everything stays in sync across your group." />
+  <link rel="icon" href="./logo.png" />
+  <script>
+    (function () {
+      if (new URLSearchParams(window.location.search).get('download') !== 'true') return;
+      var ua = navigator.userAgent || navigator.vendor || '';
+      if (/android/i.test(ua)) {
+        window.location.replace('https://play.google.com/store/apps/details?id=de.equirinya.couple_planner');
+      } else if (/iphone|ipad|ipod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document)) {
+        window.location.replace('https://apps.apple.com/app/id6758244336');
+      }
+    })();
+  </script>
+
+  <!-- Open Graph -->
+  <meta property="og:type"        content="website" />
+  <meta property="og:url"         content="https://equirinya.github.io/together_planner/" />
+  <meta property="og:title"       content="Together Planner" />
+  <meta property="og:description" content="Plan recipes, shopping and meals together. Everything stays in sync across your group." />
+  <meta property="og:image"       content="https://equirinya.github.io/together_planner/logo.png" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card"        content="summary" />
+  <meta name="twitter:title"       content="Together Planner" />
+  <meta name="twitter:description" content="Plan recipes, shopping and meals together. Everything stays in sync across your group." />
+  <meta name="twitter:image"       content="https://equirinya.github.io/together_planner/logo.png" />
+  <style>
+    :root {
+      --green: #4CD85A;
+      --orange: #FFA144;
+      --ink: #1f2330;
+      --muted: #6b7280;
+      --line: #ececf1;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(60% 50% at 50% -8%, rgba(76,216,90,0.18), transparent 70%),
+        radial-gradient(50% 40% at 100% 0%, rgba(255,161,68,0.16), transparent 70%),
+        #ffffff;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 40px 22px 28px;
+    }
+
+    .hero { text-align: center; }
+    .logo {
+      width: 92px;
+      height: 92px;
+      margin: 0 auto 14px;
+      display: block;
+      filter: drop-shadow(0 10px 22px rgba(76,216,90,0.28));
+    }
+    h1 {
+      font-size: clamp(30px, 6vw, 46px);
+      margin: 0 0 10px;
+      letter-spacing: -0.02em;
+    }
+    .tagline {
+      font-size: clamp(16px, 2.4vw, 19px);
+      color: var(--muted);
+      max-width: 540px;
+      margin: 0 auto 26px;
+    }
+
+    .stores {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 12px 20px;
+      border-radius: 14px;
+      font-size: 15.5px;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 4px 14px rgba(31,35,48,0.06);
+      transition: transform .05s ease, box-shadow .2s ease;
+    }
+    .btn:hover { box-shadow: 0 8px 22px rgba(31,35,48,0.12); }
+    .btn:active { transform: scale(.98); }
+    .btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+
+    .features {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 26px;
+      margin: 52px 0 8px;
+    }
+    .feature { text-align: center; }
+    .shot {
+      width: 100%;
+      max-width: 240px;
+      margin: 0 auto 16px;
+      border-radius: 26px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      box-shadow: 0 14px 34px rgba(31,35,48,0.14);
+    }
+    .shot img {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .feature h3 { font-size: 19px; margin: 0 0 5px; }
+    .feature p { color: var(--muted); margin: 0 auto; max-width: 280px; font-size: 15px; }
+
+    .roadmap {
+      text-align: center;
+      color: var(--muted);
+      font-size: 15px;
+      margin: 46px auto 0;
+      max-width: 560px;
+    }
+    .roadmap b { color: var(--ink); font-weight: 600; }
+
+    footer {
+      margin-top: 44px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      text-align: center;
+      font-size: 13.5px;
+      color: var(--muted);
+    }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { text-decoration: underline; color: var(--ink); }
+    footer span { margin: 0 8px; opacity: .5; }
+
+    @media (max-width: 720px) {
+      .features { grid-template-columns: 1fr; gap: 34px; }
+      .shot { max-width: 220px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <img class="logo" src="./logo.png" alt="Together Planner logo" />
+      <h1>Together Planner</h1>
+      <p class="tagline">Plan recipes, shopping and meals together. Everything stays in sync across your whole group.</p>
+
+      <div class="stores">
+        <a class="btn" href="https://apps.apple.com/app/id6758244336">
+          <svg viewBox="0 0 384 512" fill="currentColor" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zM256.6 93.5c30-35.6 27.3-68 26.4-79.5-26.5 1.5-57.2 18-74.7 38.3-19.3 21.8-30.6 48.7-28.2 78.9 28.6 2.2 54.7-12.5 76.5-37.7z"/></svg>
+          App Store
+        </a>
+        <a class="btn" href="https://play.google.com/store/apps/details?id=de.equirinya.couple_planner">
+          <svg viewBox="0 0 512 512" aria-hidden="true"><path fill="#4CD85A" d="M48 59.5C42 65.3 38.5 74.3 38.5 86v340c0 11.7 3.5 20.7 9.5 26.5l1.9 1.8 190.5-190.5v-4.5L49.9 57.7 48 59.5z"/><path fill="#FFA144" d="M303.8 327.9l-63.4-63.6v-4.5l63.5-63.6 1.4.8 75.2 42.7c21.5 12.2 21.5 32.2 0 44.5l-75.2 42.7-1.5.8z"/><path fill="#34A853" d="M305.2 327.1L240.4 262 48 454.3c7.1 7.5 18.8 8.4 32 1L305.2 327.1"/><path fill="#4285F4" d="M305.2 196.9L80 69.6c-13.2-7.5-24.9-6.5-32 1l192.4 192.3 64.8-65.9z"/></svg>
+          Google Play
+        </a>
+        <a class="btn" href="https://github.com/Equirinya/together_planner">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </section>
+
+    <section class="features">
+      <div class="feature">
+        <div class="shot"><img src="./ss_shopping.png" alt="Shared shopping list" /></div>
+        <h3>One shared list</h3>
+        <p>Add something and it appears on everyone's phone right away.</p>
+      </div>
+      <div class="feature">
+        <div class="shot"><img src="./ss_recipe.png" alt="Meal plan" /></div>
+        <h3>Plan meals together</h3>
+        <p>Save your recipes and decide what's for dinner as a group.</p>
+      </div>
+      <div class="feature">
+        <div class="shot"><img src="./ss_recipe_detail.png" alt="Recipe detail" /></div>
+        <h3>Recipes at hand</h3>
+        <p>Ingredients, times and servings, ready the moment you cook.</p>
+      </div>
+    </section>
+
+    <p class="roadmap"><b>Coming soon:</b> shared to-dos, a group calendar and fair expense splitting.</p>
+
+    <footer>
+      <a href="./privacy.md">Privacy</a><span>·</span>
+      <a href="./terms.md">Terms</a><span>·</span>
+      <a href="./delete-account.md">Delete account</a><span>·</span>
+      <a href="mailto:equirinya@gmail.com?subject=Together%20Planner%20Support%20Question">Support</a><span>·</span>
+      <a href="./impressum.md">Impressum</a>
+    </footer>
+  </main>
+</body>
+</html>

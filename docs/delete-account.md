@@ -36,4 +36,4 @@ Please send the deletion request from the email address linked to your account s
 *(If the link above doesn't work, manually send an email to **equirinya@gmail.com** with the subject "Account Deletion Request" and include the text confirming you want your account and all your content deleted).*
 
 ---
-[Return Home](./index.md)
+[Return Home](./index.html) | [Impressum](./impressum.md)

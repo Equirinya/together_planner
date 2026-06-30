@@ -13,9 +13,9 @@ and shopping list, kept in sync for everyone in the group.
 [![Firebase](https://img.shields.io/badge/Firebase-FFCA28?logo=firebase&logoColor=black)](https://firebase.google.com)
 ![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20Android-4CD85A)
 
-<img src="screenshots/framed/appstore_iphone_6_9/shopping_list.png" width="200" alt="Shopping list">
-<img src="screenshots/framed/appstore_iphone_6_9/recipe.png" width="200" alt="Meal plan">
-<img src="screenshots/framed/appstore_iphone_6_9/recipe_detail.png" width="200" alt="Recipe detail">
+<img src="screenshots/framed/appstore_iphone_6_5/shopping_list.png" width="200" alt="Shopping list">
+<img src="screenshots/framed/appstore_iphone_6_5/recipe.png" width="200" alt="Meal plan">
+<img src="screenshots/framed/appstore_iphone_6_5/recipe_detail.png" width="200" alt="Recipe detail">
 
 </div>
 

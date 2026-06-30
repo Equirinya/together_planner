@@ -305,6 +305,7 @@ firebase.json
 
 
 #firebase
+/firebase
 firestore.indexes.json
 firestore.rules
 storage.rules
