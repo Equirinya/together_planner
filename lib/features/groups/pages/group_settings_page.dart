@@ -6,9 +6,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../invite_links.dart' as invites;
-import '../utils.dart';
-import 'onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
+import 'package:couple_planner/features/groups/invite_links.dart' as invites;
+import 'package:couple_planner/core/utils.dart';
+import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
 
 class GroupSettingsPage extends StatefulWidget {
   const GroupSettingsPage({super.key, required this.groupId});

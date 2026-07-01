@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../invite_links.dart' as account;
-import 'dietary_preferences_page.dart';
+import 'package:couple_planner/features/groups/invite_links.dart' as account;
+import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
 
 // GitHub Pages (see /docs).
 const String _homeUrl = 'https://equirinya.github.io/together_planner/';

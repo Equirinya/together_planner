@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/core/utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 
@@ -16,9 +16,9 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'ingredient_search.dart' show UnitsCache, sanitizeLang, Avatar, kDefaultUnitId;
-import 'recipe_detail.dart';
-import 'shopping_list_page.dart' show categoryRank;
+import 'package:couple_planner/features/recipes/ingredient_search.dart' show UnitsCache, sanitizeLang, Avatar, kDefaultUnitId;
+import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart' show categoryRank;
 
 class RecipePage extends StatefulWidget {
   final String groupId;

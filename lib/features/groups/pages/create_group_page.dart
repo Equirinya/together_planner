@@ -2,8 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'login_page.dart' show animatedBackground;
-import 'onboarding_page.dart' show onboardingTheme, FeatureBubbleField, kOnboardingFeatures;
+import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
+import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show onboardingTheme, FeatureBubbleField, kOnboardingFeatures;
 
 /// Onboarding-styled screen for creating an additional group: the animated
 /// background and the floating feature bubbles, reused from onboarding. Pops

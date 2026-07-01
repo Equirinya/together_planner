@@ -1,7 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'login_page.dart' show animatedBackground;
+import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
 
 /// Asks the signed-in user to confirm their password. Firebase requires a
 /// recent login before sensitive operations (changing email/password, deleting

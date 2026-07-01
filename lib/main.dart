@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:couple_planner/pages/recipe_page.dart';
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
+import 'package:couple_planner/core/utils.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 // import 'package:firebase_messaging/firebase_messaging.dart';
@@ -12,21 +12,21 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:system_theme/system_theme.dart';
-import 'firebase_options.dart';
+import 'package:couple_planner/firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:app_links/app_links.dart';
 
-import 'invite_links.dart';
-import 'pages/onboarding_page.dart';
-import 'pages/shopping_list_page.dart';
-import 'pages/ingredient_admin_page.dart';
-import 'pages/join_group_page.dart';
-import 'pages/group_overview_page.dart';
-import 'pages/create_group_page.dart';
-import 'pages/settings_page.dart';
-import 'pages/login_page.dart' show animatedBackground;
+import 'package:couple_planner/features/groups/invite_links.dart';
+import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
+import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
+import 'package:couple_planner/features/recipes/pages/ingredient_admin_page.dart';
+import 'package:couple_planner/features/groups/pages/join_group_page.dart';
+import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
+import 'package:couple_planner/features/groups/pages/create_group_page.dart';
+import 'package:couple_planner/features/settings/pages/settings_page.dart';
+import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
 
 // ---------------------------------------------------------------------------
 // Feature registry
@@ -571,81 +571,3 @@ class _HomePageState extends State<HomePage> {
               child: Padding(
                 padding: const EdgeInsets.all(48.0),
                 child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.group_off, size: 32),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'You are not a member of any group yet. Ask someone to send you an invite link to their group — or create your own below.',
-                      style: TextStyle(fontSize: 18),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 32),
-                    SizedBox(
-                      width: 260,
-                      height: 72,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(20),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            animatedBackground(),
-                            Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                onTap: _createGroup,
-                                child: const Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(Icons.add, color: Colors.white, size: 28),
-                                    SizedBox(width: 8),
-                                    Text(
-                                      'New group',
-                                      style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: _openSettings,
-                      child: const Text('App Settings'),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : const Center(child: CupertinoActivityIndicator()),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Placeholder page for features not yet implemented
-// ---------------------------------------------------------------------------
-
-class _PlaceholderPage extends StatelessWidget {
-  const _PlaceholderPage({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.construction, size: 40),
-          const SizedBox(height: 12),
-          Text('$label coming soon', style: Theme.of(context).textTheme.titleMedium),
-        ],
-      ),
-    );
-  }
-}

@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:couple_planner/pages/ingredient_search.dart';
-import 'package:couple_planner/pages/shopping_list_page.dart' show QuantityEditor, categoryRank;
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/features/recipes/ingredient_search.dart';
+import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart' show QuantityEditor, categoryRank;
+import 'package:couple_planner/core/utils.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 

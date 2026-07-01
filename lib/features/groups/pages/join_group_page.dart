@@ -2,8 +2,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../invite_links.dart';
-import 'onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
+import 'package:couple_planner/features/groups/invite_links.dart';
+import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
 
 /// Landing screen shown when a user opens an invite link. It previews the group
 /// (name, features, members) without joining, then lets the user join.

@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:couple_planner/pages/ingredient_search.dart';
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/features/recipes/ingredient_search.dart';
+import 'package:couple_planner/core/utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 

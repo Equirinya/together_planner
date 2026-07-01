@@ -8,7 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 
-import 'package:couple_planner/utils.dart'; // StorageImage
+import 'package:couple_planner/core/utils.dart'; // StorageImage
 
 // ─── Configure these ─────────────────────────────────────────────────────────
 const String kDefaultUnitId = 'QDXQ6Du2gQgEOoRIRsqJ'; // pcs / Stk unit doc id
