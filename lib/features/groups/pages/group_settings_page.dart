@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'package:couple_planner/features/groups/invite_links.dart' as invites;
-import 'package:couple_planner/core/utils.dart';
+import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
 
 class GroupSettingsPage extends StatefulWidget {

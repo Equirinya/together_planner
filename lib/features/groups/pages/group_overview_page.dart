@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import 'package:couple_planner/core/utils.dart';
+import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_settings_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
