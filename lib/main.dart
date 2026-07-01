@@ -2,8 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:couple_planner/pages/recipe_page.dart';
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 // import 'package:firebase_messaging/firebase_messaging.dart';
@@ -12,21 +11,21 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:system_theme/system_theme.dart';
-import 'firebase_options.dart';
+import 'package:couple_planner/firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:app_links/app_links.dart';
 
-import 'invite_links.dart';
-import 'pages/onboarding_page.dart';
-import 'pages/shopping_list_page.dart';
-import 'pages/ingredient_admin_page.dart';
-import 'pages/join_group_page.dart';
-import 'pages/group_overview_page.dart';
-import 'pages/create_group_page.dart';
-import 'pages/settings_page.dart';
-import 'pages/login_page.dart' show animatedBackground;
+import 'package:couple_planner/features/groups/invite_links.dart';
+import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
+import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
+import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.dart';
+import 'package:couple_planner/features/groups/pages/join_group_page.dart';
+import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
+import 'package:couple_planner/features/groups/pages/create_group_page.dart';
+import 'package:couple_planner/features/settings/pages/settings_page.dart';
+import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
 
 // ---------------------------------------------------------------------------
 // Feature registry

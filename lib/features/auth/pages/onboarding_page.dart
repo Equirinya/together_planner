@@ -14,9 +14,9 @@ import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../dietary_preferences.dart';
-import '../firebase_options.dart';
-import 'login_page.dart';
+import 'package:couple_planner/features/settings/dietary_preferences.dart';
+import 'package:couple_planner/firebase_options.dart';
+import 'package:couple_planner/features/auth/pages/login_page.dart';
 
 // Hosted on GitHub Pages (see /docs). jekyll-relative-links serves these as .html.
 const String _termsUrl = 'https://equirinya.github.io/together_planner/terms.html';

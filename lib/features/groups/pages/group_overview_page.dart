@@ -1,10 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import '../utils.dart';
-import 'create_group_page.dart';
-import 'group_settings_page.dart';
-import 'settings_page.dart';
+import 'package:couple_planner/core/widgets/load_builders.dart';
+import 'package:couple_planner/features/groups/pages/create_group_page.dart';
+import 'package:couple_planner/features/groups/pages/group_settings_page.dart';
+import 'package:couple_planner/features/settings/pages/settings_page.dart';
 
 /// Lists the groups the user belongs to: tap to make one active, open its
 /// settings, or create a new group.

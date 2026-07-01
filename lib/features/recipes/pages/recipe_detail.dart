@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:couple_planner/pages/ingredient_search.dart';
-import 'package:couple_planner/pages/shopping_list_page.dart' show QuantityEditor, categoryRank;
-import 'package:couple_planner/utils.dart';
+import 'package:couple_planner/features/ingredients/models/ingredients.dart';
+import 'package:couple_planner/features/ingredients/models/categories.dart' show categoryRank;
+import 'package:couple_planner/features/ingredients/services/units_cache.dart';
+import 'package:couple_planner/features/ingredients/services/ingredient_index.dart';
+import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
+import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sheet.dart';
+import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart' show QuantityEditor;
+import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 

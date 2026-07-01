@@ -3,7 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-import '../dietary_preferences.dart';
+import 'package:couple_planner/features/settings/dietary_preferences.dart';
 
 /// Settings screen to view and edit the user's dietary preferences, stored in
 /// their private profile (users/{uid}.dietaryPreferences).

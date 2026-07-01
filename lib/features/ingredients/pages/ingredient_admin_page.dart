@@ -2,10 +2,12 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 
-import 'package:couple_planner/utils.dart'; // StorageImage
+import 'package:couple_planner/core/widgets/storage_image.dart';
 
-import 'ingredient_search.dart'; // Avatar, UnitsCache, sanitizeLang
-import 'shopping_list_page.dart' show kCategories;
+import 'package:couple_planner/features/ingredients/models/ingredients.dart' show sanitizeLang;
+import 'package:couple_planner/features/ingredients/models/categories.dart' show kCategories;
+import 'package:couple_planner/features/ingredients/services/units_cache.dart' show UnitsCache;
+import 'package:couple_planner/features/ingredients/widgets/avatar.dart' show Avatar;
 
 DocumentReference<Map<String, dynamic>> _ingRef(String id) =>
     FirebaseFirestore.instance.collection('ingredients').doc(id);
