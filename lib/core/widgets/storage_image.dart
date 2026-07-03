@@ -228,9 +228,14 @@ class StorageImage extends StatefulWidget {
 }
 
 class _StorageImageState extends State<StorageImage> {
+  /// How many times to re-attempt decoding the same file (evicting Flutter's
+  /// cached failure) before giving up and re-downloading it.
+  static const int _maxDecodeRetries = 2;
+
   File? _file;
   bool _failed = false;
   bool _triedRedownload = false;
+  int _decodeAttempt = 0;
 
   @override
   void initState() {
@@ -246,6 +251,7 @@ class _StorageImageState extends State<StorageImage> {
       _file = null;
       _failed = false;
       _triedRedownload = false;
+      _decodeAttempt = 0;
       _resolve();
     }
   }
@@ -273,6 +279,7 @@ class _StorageImageState extends State<StorageImage> {
       setState(() {
         _file = file;
         _failed = false;
+        _decodeAttempt = 0;
       });
     } catch (e, st) {
       if (kDebugMode) debugPrint('StorageImage load error: $e\n$st');
@@ -283,22 +290,44 @@ class _StorageImageState extends State<StorageImage> {
     }
   }
 
-  /// A cached file that fails to decode is corrupt: drop it and re-download once.
+  /// Handles a failed decode. The file on disk is usually fine — the decode was
+  /// just attempted too early and Flutter cached the failure — so first evict
+  /// that cached failure and retry the same file after a short settle. Only if
+  /// retries are exhausted is the file treated as corrupt and re-downloaded.
   void _onDecodeError() {
+    final file = _file;
+    if (file == null) return;
+
+    if (_decodeAttempt < _maxDecodeRetries) {
+      _decodeAttempt++;
+      FileImage(file).evict();
+      Future.delayed(const Duration(milliseconds: 150), () {
+        if (mounted) setState(() {});
+      });
+      return;
+    }
+
     if (_triedRedownload) return;
     _triedRedownload = true;
     StorageImageCache.instance
         .invalidate(widget.storagePath, widget.cacheKey)
         .whenComplete(() {
-      if (mounted) _load(force: true);
+      if (mounted) {
+        _decodeAttempt = 0;
+        _load(force: true);
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_file != null) {
+    final file = _file;
+    if (file != null) {
       return Image.file(
-        _file!,
+        file,
+        // Attempt is part of the key so an evict + rebuild produces a fresh
+        // image element that re-resolves instead of reusing the failed stream.
+        key: ValueKey('${file.path}#$_decodeAttempt'),
         fit: widget.fit,
         cacheWidth: (widget.memCacheWidth ?? 0) > 0 ? widget.memCacheWidth : null,
         cacheHeight: (widget.memCacheWidth ?? 0) > 0

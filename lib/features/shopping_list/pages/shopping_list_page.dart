@@ -8,6 +8,7 @@ import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
 import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sheet.dart';
 import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
+import 'package:couple_planner/core/language.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -37,7 +38,8 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
   final Set<String> _optimisticallyHidden = {};
 
-  /// Items created after this moment are highlighted as "new" for the session.
+  /// Items created before this session opened are not "new".
+  /// Null until loaded — during the async gap nothing shows as new.
   DateTime? _lastSeen;
 
   CollectionReference<Map<String, dynamic>> get _listRef =>
@@ -48,24 +50,24 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
   @override
   void initState() {
     super.initState();
-    _lang = sanitizeLang(
-      WidgetsBinding.instance.platformDispatcher.locale.languageCode,
-    );
+    _lang = LanguageService.instance.code.value;
     UnitsCache.instance.ensureLoaded();
-    _loadLastSeen();
+    _initLastSeen();
     _startListSubscription(); // also resolves any pre-existing pending items
   }
 
-  Future<void> _loadLastSeen() async {
+  Future<void> _initLastSeen() async {
     final prefs = await SharedPreferences.getInstance();
-    final key = 'shopping_last_seen_${widget.groupId}';
-    final stored = prefs.getInt(key);
+    final stored = prefs.getInt('shopping_last_seen_${widget.groupId}');
     if (mounted && stored != null) {
       setState(() => _lastSeen = DateTime.fromMillisecondsSinceEpoch(stored));
     }
   }
 
-  Future<void> _saveLastSeen() async {
+  /// Called after every Firestore snapshot so the saved timestamp is always
+  /// >= any createdAt we've actually seen. Even if the app is killed, the next
+  /// session won't treat already-visible items as new.
+  Future<void> _persistSeenNow() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(
       'shopping_last_seen_${widget.groupId}',
@@ -76,7 +78,6 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
   @override
   void dispose() {
     _listSub?.cancel();
-    _saveLastSeen();
     super.dispose();
   }
 
@@ -95,6 +96,9 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
               (id) => byId[id] == null || byId[id]!['doneAt'] != null,
         );
       });
+      // Persist "now" after each confirmed snapshot so the saved timestamp is
+      // always >= any createdAt the user has actually seen on screen.
+      _persistSeenNow();
       // Resolve any pending items (new arrivals and pre-existing ones).
       // De-duplication is handled inside resolvePendingItem.
       for (final item in _currentItems) {
@@ -160,7 +164,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     final sortedCats = groups.keys.toList()
       ..sort((a, b) => catRank(a).compareTo(catRank(b)));
 
-    final showHeaders = groups.length > 1;
+    const showHeaders = true;
 
     bool isNew(Map<String, dynamic> item) {
       final created = item['createdAt'] as Timestamp?;

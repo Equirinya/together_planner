@@ -16,7 +16,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'package:app_links/app_links.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
+import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
 import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
@@ -25,6 +28,7 @@ import 'package:couple_planner/features/groups/pages/join_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
+import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
 
 // ---------------------------------------------------------------------------
@@ -56,6 +60,7 @@ void main() async {
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true, cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED);
+  await LanguageService.instance.load();
   runApp(const MyApp());
 }
 
@@ -147,6 +152,10 @@ class _HomePageState extends State<HomePage> {
   final AppLinks _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSub;
 
+  // ── shared recipe links (from other apps' share sheet) ─────────────────────
+  StreamSubscription<List<SharedMediaFile>>? _shareSub;
+  static final RegExp _urlRe = RegExp(r'https?://\S+', caseSensitive: false);
+
   /// An invite tapped while signed-out, held until the account exists so we can
   /// open the join screen right after onboarding.
   ({String groupId, String inviteId})? _pendingInvite;
@@ -189,6 +198,15 @@ class _HomePageState extends State<HomePage> {
     _testUserLoggedIn();
     _initDeepLinks();
     _watchSession();
+    LanguageService.instance.code.addListener(_persistLanguage);
+  }
+
+  /// Mirror the effective language to the user document so the backend can use
+  /// it for future operations. No-op while signed out.
+  void _persistLanguage() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    db.collection('users').doc(uid).update({'language': LanguageService.instance.code.value}).catchError((_) {});
   }
 
   /// Detect a mid-session logout (token revoked — e.g. password changed
@@ -204,18 +222,100 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// Listen for invite links (initial launch + while running) and open the
-  /// join screen.
+  /// join screen. Also listen for recipe links shared from other apps.
   Future<void> _initDeepLinks() async {
     _linkSub = _appLinks.uriLinkStream.listen(_handleUri, onError: (_) {});
     try {
       final initial = await _appLinks.getInitialLink();
       if (initial != null) _handleUri(initial);
     } catch (_) {}
+
+    // A recipe link shared into the app via the OS share sheet.
+    _shareSub = ReceiveSharingIntent.instance
+        .getMediaStream()
+        .listen(_handleSharedMedia, onError: (_) {});
+    try {
+      final initialShare = await ReceiveSharingIntent.instance.getInitialMedia();
+      _handleSharedMedia(initialShare);
+      ReceiveSharingIntent.instance.reset();
+    } catch (_) {}
+  }
+
+  /// Extracts the first URL from a shared payload and starts a recipe from it.
+  void _handleSharedMedia(List<SharedMediaFile> shared) {
+    if (shared.isEmpty || !mounted) return;
+    for (final file in shared) {
+      final url = _urlRe.firstMatch(file.path)?.group(0);
+      if (url != null) {
+        _openRecipeFromUrl(url);
+        return;
+      }
+    }
+  }
+
+  /// Creates a recipe in the active group from a shared link and opens it in
+  /// generating mode while the backend fills it in. Requires a signed-in user,
+  /// a selected group, and AI enabled for that group.
+  Future<void> _openRecipeFromUrl(String url) async {
+    if (!mounted || _selectedGroup == null || !_aiEnabled) return;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final recipes = db.collection('groups').doc(_selectedGroup).collection('recipes');
+    final ref = await recipes.add({
+      'name': '',
+      'description': '',
+      'creator': uid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastUsedAt': null,
+      'preparationTime': 0,
+      'time': 0,
+      'servings': 2,
+      'tags': <String>[],
+      'images': <String>[],
+      'steps': <String>[],
+      'attribution': url,
+    });
+    if (!mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => RecipeDetailPage(
+        groupId: _selectedGroup!,
+        recipeId: ref.id,
+        aiEnabled: true,
+        generating: true,
+        initialData: {
+          'name': '',
+          'description': '',
+          'images': const <String>[],
+          'steps': const <String>[],
+          'tags': const <String>[],
+          'servings': 2,
+          'time': 0,
+          'preparationTime': 0,
+          'attribution': url,
+        },
+      ),
+    ));
+    FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('recipes-generateRecipeStaged')
+        .call(<String, dynamic>{
+      'groupId': _selectedGroup,
+      'recipeId': ref.id,
+      'source': 'url',
+      'url': url,
+      'lang': LanguageService.instance.code.value,
+    }).ignore();
   }
 
   void _handleUri(Uri uri) {
     final invite = parseInviteUri(uri);
-    if (invite == null || !mounted) return;
+    if (invite == null) {
+      // Not an invite — a shared/opened http(s) link becomes a recipe.
+      if (uri.scheme == 'http' || uri.scheme == 'https') {
+        _openRecipeFromUrl(uri.toString());
+      }
+      return;
+    }
+    if (!mounted) return;
     if (FirebaseAuth.instance.currentUser == null) {
       // Not signed in yet: remember the invite and switch onboarding into join
       // mode (no group creation). The join screen opens automatically once the
@@ -297,7 +397,9 @@ class _HomePageState extends State<HomePage> {
     _groupListener?.cancel();
     _groupDocListener?.cancel();
     _linkSub?.cancel();
+    _shareSub?.cancel();
     _authStateSub?.cancel();
+    LanguageService.instance.code.removeListener(_persistLanguage);
     super.dispose();
   }
 
@@ -374,7 +476,7 @@ class _HomePageState extends State<HomePage> {
 
         // Update user record
         final packageInfo = await PackageInfo.fromPlatform();
-        await db.collection('users').doc(uid).update({'lastLogin': FieldValue.serverTimestamp(), 'appVersion': packageInfo.version}).catchError((
+        await db.collection('users').doc(uid).update({'lastLogin': FieldValue.serverTimestamp(), 'appVersion': packageInfo.version, 'language': LanguageService.instance.code.value}).catchError((
           error,
         ) {
           if (kDebugMode) print("Failed to update user: $error");
