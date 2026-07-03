@@ -90,7 +90,7 @@ class IngredientIndex extends ChangeNotifier {
       if (matches.isNotEmpty) return matches.first.id;
     }
     try {
-      final fromFn = await resolveViaFunction(displayName);
+      final fromFn = await resolveViaFunction(displayName, lang);
       final id = fromFn.isEmpty ? '' : fromFn.first.ingredientId;
       if (id.isNotEmpty &&
           id != kPendingIngredient &&
@@ -114,10 +114,10 @@ class IngredientIndex extends ChangeNotifier {
   }
 
   /// Cloud-function resolution; throws on failure so callers can react.
-  Future<List<Suggestion>> resolveViaFunction(String query) async {
+  Future<List<Suggestion>> resolveViaFunction(String query, String lang) async {
     final res = await FirebaseFunctions.instanceFor(region: _kFunctionsRegion)
         .httpsCallable(_kResolveFn)
-        .call(<String, dynamic>{'query': query.trim()});
+        .call(<String, dynamic>{'query': query.trim(), 'lang': lang});
     final items = (res.data['items'] as List?) ?? const [];
     final keepQty = parseInput(query).quantity != null;
     return [

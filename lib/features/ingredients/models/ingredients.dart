@@ -26,9 +26,6 @@ String capitalize(String s) =>
 String fmtQty(num q) =>
     q == q.roundToDouble() ? q.toInt().toString() : q.toString();
 
-String sanitizeLang(String code) =>
-    RegExp(r'^[a-z]{2}').firstMatch(code.toLowerCase())?.group(0) ?? 'en';
-
 // =============================================================================
 // Models
 // =============================================================================

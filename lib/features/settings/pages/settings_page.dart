@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as account;
 import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
+import 'package:couple_planner/features/settings/pages/language_page.dart';
 
 // GitHub Pages (see /docs).
 const String _homeUrl = 'https://equirinya.github.io/together_planner/';
@@ -104,6 +106,23 @@ class SettingsPage extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 128),
         children: [
           _SectionHeader('Preferences'),
+          ValueListenableBuilder<String>(
+            valueListenable: LanguageService.instance.code,
+            builder: (context, code, _) {
+              final service = LanguageService.instance;
+              final option = languageOptionFor(code);
+              final name = option?.english ?? code;
+              return ListTile(
+                leading: const Icon(Icons.language_outlined),
+                title: const Text('Language'),
+                subtitle: Text(service.isFollowingDevice ? 'System default ($name)' : name),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const LanguagePage()),
+                ),
+              );
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.restaurant_outlined),
             title: const Text('Dietary preferences'),

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:couple_planner/core/widgets/storage_image.dart';
 
-import 'package:couple_planner/features/ingredients/models/ingredients.dart' show sanitizeLang;
+import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/ingredients/models/categories.dart' show kCategories;
 import 'package:couple_planner/features/ingredients/services/units_cache.dart' show UnitsCache;
 import 'package:couple_planner/features/ingredients/widgets/avatar.dart' show Avatar;
@@ -175,7 +175,7 @@ class _IngredientEditPageState extends State<IngredientEditPage> {
 
   @override
   Widget build(BuildContext context) {
-    final lang = sanitizeLang(WidgetsBinding.instance.platformDispatcher.locale.languageCode);
+    final lang = LanguageService.instance.code.value;
     final units = UnitsCache.instance.all;
     return Scaffold(
       appBar: AppBar(

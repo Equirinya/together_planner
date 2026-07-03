@@ -59,6 +59,16 @@
 					<string>coupleplanner</string>
 				</array>
 			</dict>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>coupleplanner.sharemedia</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>ShareMedia-$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+				</array>
+			</dict>
 		</array>
 	</dict>
 </plist>

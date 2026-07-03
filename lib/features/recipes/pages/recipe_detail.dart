@@ -9,6 +9,7 @@ import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
 import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sheet.dart';
 import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart' show QuantityEditor;
 import 'package:couple_planner/core/widgets/storage_image.dart';
+import 'package:couple_planner/core/language.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -29,6 +30,7 @@ class RecipeDetailPage extends StatefulWidget {
     required this.recipeId,
     this.editMode = false,
     this.aiEnabled = false,
+    this.generating = false,
     this.initialData,
   });
 
@@ -36,6 +38,11 @@ class RecipeDetailPage extends StatefulWidget {
   final String recipeId;
   final bool editMode;
   final bool aiEnabled;
+
+  /// When true the recipe is being generated in the background: the page
+  /// streams the document and shows shimmering placeholders for each part
+  /// (title, steps, ingredients, image) until it arrives.
+  final bool generating;
 
   /// Already-loaded recipe data, used to paint the page (image, title) right
   /// away during the open transition instead of flashing a loading spinner.
@@ -77,6 +84,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   List<Map<String, dynamic>> ingredients = [];
   StreamSubscription? _ingredientsSub;
 
+  // ── staged generation ─────────────────────────────────────────────────────
+  // The set of parts still being generated, mirrored from the doc's `pending`
+  // field. While non-empty the page streams the doc and shimmers those parts.
+  Set<String> _pending = {};
+  StreamSubscription? _docSub;
+  bool get _isGenerating => _pending.isNotEmpty;
+
   // ── image carousel ─────────────────────────────────────────────────────────
   final PageController _imageController =
       PageController(viewportFraction: 7 / 9);
@@ -100,8 +114,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   void initState() {
     super.initState();
     edit = widget.editMode;
-    lang = sanitizeLang(
-        WidgetsBinding.instance.platformDispatcher.locale.languageCode);
+    lang = LanguageService.instance.code.value;
     UnitsCache.instance.ensureLoaded();
 
     final db = FirebaseFirestore.instance;
@@ -115,12 +128,20 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     if (widget.initialData != null) _applyData(widget.initialData!);
 
     _startIngredientsSubscription();
-    _loadRecipe();
+    if (widget.generating) {
+      // Show every part as pending up front so shimmers appear immediately,
+      // then let the document stream clear them one by one.
+      _pending = {'title', 'steps', 'ingredients', 'image'};
+      _docSub = docRef.snapshots().listen(_onDocSnap);
+    } else {
+      _loadRecipe();
+    }
   }
 
   @override
   void dispose() {
     _ingredientsSub?.cancel();
+    _docSub?.cancel();
     _imageController.dispose();
     nameController?.dispose();
     descriptionController?.dispose();
@@ -161,6 +182,53 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final doc = await docRef.get();
     if (!doc.exists || !mounted) return;
     setState(() => _applyData(doc.data()!));
+  }
+
+  /// Live document updates while the recipe is being generated. Each snapshot
+  /// fills in whatever parts have arrived and clears the matching shimmer.
+  void _onDocSnap(DocumentSnapshot<Map<String, dynamic>> snap) {
+    if (!mounted) return;
+    final data = snap.data();
+    if (data == null) return;
+    // Until the backend writes the `pending` field, keep the initial shimmers
+    // (set in initState) — the client's own just-created doc has no `pending`
+    // yet, and clearing it here would cancel the stream too early.
+    final hasPending = data.containsKey('pending');
+    setState(() {
+      _applyStreamData(data);
+      if (hasPending) {
+        _pending = (data['pending'] as List?)
+                ?.map((e) => e.toString())
+                .toSet() ??
+            <String>{};
+      }
+    });
+    if (data['generationError'] == true) {
+      _snack('Could not finish generating this recipe.');
+    }
+    if (hasPending && _pending.isEmpty) {
+      _docSub?.cancel();
+      _docSub = null;
+    }
+  }
+
+  /// Like [_applyData] but always refreshes the editing controllers from the
+  /// incoming data — used during generation, where fields stream in over time
+  /// and the one-shot `??=` initialisation in [_applyData] would go stale.
+  void _applyStreamData(Map<String, dynamic> data) {
+    _applyData(data);
+    nameController?.text = data['name'] ?? '';
+    descriptionController?.text = data['description'] ?? '';
+    final newTags = List<String>.from(data['tags'] ?? []);
+    tagsController?.text = newTags.map((e) => '#$e ').join('');
+    final newSteps = List<String>.from(data['steps'] ?? []);
+    if (newSteps.isNotEmpty) {
+      for (final c in stepsControllers ?? const <TextEditingController>[]) {
+        c.dispose();
+      }
+      stepsControllers =
+          newSteps.map((s) => TextEditingController(text: s)).toList();
+    }
   }
 
   void _startIngredientsSubscription() {
@@ -305,6 +373,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   Map<String, dynamic> _buildRecipeContext() {
     return {
+      'lang': lang,
       'name': nameController?.text ?? recipeData?['name'] ?? '',
       'description': descriptionController?.text ?? recipeData?['description'] ?? '',
       'tags': tagsController?.text
@@ -502,7 +571,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
           ),
-          if (!edit)
+          if (!edit && !_isGenerating)
             IconButton(
               icon: const Icon(Icons.edit),
               onPressed: () {
@@ -520,10 +589,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── Images ──────────────────────────────────────────────────
-            if (edit || images.isNotEmpty)
+            if (edit || images.isNotEmpty || _pending.contains('image'))
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.3,
-                child: edit ? _editImageCarousel() : _viewImageCarousel(),
+                child: edit
+                    ? _editImageCarousel()
+                    : (images.isEmpty && _pending.contains('image'))
+                        ? _generatingImagePlaceholder()
+                        : _viewImageCarousel(),
               ),
 
             const SizedBox(height: 16),
@@ -538,7 +611,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 decoration: const InputDecoration(hintText: 'Recipe name'),
               ),
             )
-                : Padding(
+                : (_pending.contains('title') &&
+                        (recipeData?['name'] ?? '').toString().isEmpty)
+                    ? _titleShimmer()
+                    : Padding(
               padding: const EdgeInsets.symmetric(
                   horizontal: 16, vertical: 8),
               child: Text(
@@ -595,12 +671,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             const SizedBox(height: 20),
 
             // ── Ingredients + servings (hidden in view mode when empty) ──
-            if (edit || hasIngredients) _ingredientsSection(),
+            if (edit || hasIngredients || _pending.contains('ingredients'))
+              _ingredientsSection(),
 
-            if (edit || hasIngredients) const SizedBox(height: 20),
+            if (edit || hasIngredients || _pending.contains('ingredients'))
+              const SizedBox(height: 20),
 
             // ── Steps (hidden in view mode when empty) ───────────────────
-            if (edit || hasSteps) _stepsSection(),
+            if (edit || hasSteps || _pending.contains('steps')) _stepsSection(),
 
             const SizedBox(height: 32),
           ],
@@ -826,7 +904,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   ),
 
                 // ── Ingredient list ──────────────────────────────────────
-                if (_loadingIngredients)
+                if (_loadingIngredients || _pending.contains('ingredients'))
                   _skeletonInCard(3)
                 else if (ingredients.isNotEmpty) ...[
                   Divider(
@@ -906,7 +984,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             ],
           ),
         ),
-        if (_loadingSteps)
+        if (_loadingSteps || _pending.contains('steps'))
           _skeleton(3)
         else ...[
           for (var (index, step) in steps.indexed)
@@ -1082,6 +1160,38 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           child: _Shimmer(
             child: Container(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Full-width shimmer standing in for the title while it is generated.
+  Widget _titleShimmer() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: _Shimmer(
+        child: Container(
+          height: 28,
+          width: MediaQuery.of(context).size.width * 0.6,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Shimmer filling the image area while the recipe image is generated.
+  Widget _generatingImagePlaceholder() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: _Shimmer(
+          child: Container(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
         ),
       ),

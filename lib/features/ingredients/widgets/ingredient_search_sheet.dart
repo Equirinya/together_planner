@@ -178,7 +178,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
           setState(() => _functionRunning = true);
           List<Suggestion> fromFn = const [];
           try {
-            fromFn = await IngredientIndex.instance.resolveViaFunction(text);
+            fromFn = await IngredientIndex.instance.resolveViaFunction(text, _lang);
           } catch (_) {
             if (mounted && seq == _searchSeq) {
               ScaffoldMessenger.of(context).showSnackBar(
