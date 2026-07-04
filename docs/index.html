@@ -9,6 +9,7 @@
   <script>
     (function () {
       if (new URLSearchParams(window.location.search).get('download') !== 'true') return;
+      history.replaceState(null, '', window.location.pathname);
       var ua = navigator.userAgent || navigator.vendor || '';
       if (/android/i.test(ua)) {
         window.location.replace('https://play.google.com/store/apps/details?id=de.equirinya.couple_planner');
