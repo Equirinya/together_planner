@@ -63,7 +63,6 @@ class _RecipePageState extends State<RecipePage> {
   int _aiSeq = 0;
 
   // ── "Suggested for you" row (shown when not searching) ─────────────────────
-  List<RecipeSuggestion> _suggestedRow = [];
   List<RecipeSuggestion> _suggestedPool = [];
   Map<String, int> _dismissed = {};
   static const String _kDismissedKey = 'dismissed_public_recipes';
@@ -231,21 +230,33 @@ class _RecipePageState extends State<RecipePage> {
         docs.addAll(plain.docs);
       }
 
+      final prefs = _dietary.map((e) => e.toLowerCase()).toSet();
       final seen = <String>{};
-      final weighted = <MapEntry<double, RecipeSuggestion>>[];
+      final scored = <({
+        int matches,
+        int dismissed,
+        double base,
+        bool seasonal,
+        RecipeSuggestion s
+      })>[];
       for (final d in docs) {
         if (!seen.add(d.id)) continue;
         final data = d.data();
-        final recipeDietary = List<String>.from(data['dietary'] ?? []);
-        if (!_dietary.every(recipeDietary.contains)) continue;
-        // Deterministic per-recipe key (identical for every group member),
-        // multiplied up by this user's own dismiss count so it sorts later.
-        final count = _dismissed[d.id] ?? 0;
-        final base = (_stableHash('$seed-${d.id}') % 100000) / 100000.0;
-        final key = base * (1 + count * 3);
-        weighted.add(MapEntry(
-          key,
-          RecipeSuggestion(
+        final recipeDietary = List<String>.from(data['dietary'] ?? [])
+            .map((e) => e.toLowerCase())
+            .toSet();
+        // A recipe is in season when its suitable months (1–12) include the
+        // current month; a null/empty list means it fits any time of year.
+        final suitableMonths = data['suitableMonths'];
+        // Nothing is filtered out: recipes are ranked so the row always fills,
+        // even for a custom diet that matches no recipe or after dismissals.
+        scored.add((
+          matches: prefs.where(recipeDietary.contains).length,
+          dismissed: _dismissed[d.id] ?? 0,
+          // Deterministic per-recipe value, identical for every group member.
+          base: (_stableHash('$seed-${d.id}') % 100000) / 100000.0,
+          seasonal: suitableMonths is List && suitableMonths.contains(now.month),
+          s: RecipeSuggestion(
             kind: SuggestionKind.public,
             title: (data['name'] ?? '').toString(),
             publicId: d.id,
@@ -253,16 +264,30 @@ class _RecipePageState extends State<RecipePage> {
           ),
         ));
       }
-      weighted.sort((a, b) => a.key.compareTo(b.key));
-      final ordered = weighted.map((e) => e.value).toList();
+      // Most matching dietary tags first, then least dismissed, then a stable
+      // shuffle for variety.
+      scored.sort((a, b) {
+        if (a.matches != b.matches) return b.matches.compareTo(a.matches);
+        if (a.dismissed != b.dismissed) {
+          return a.dismissed.compareTo(b.dismissed);
+        }
+        return a.base.compareTo(b.base);
+      });
+      // Interleave in-season and any-time recipes so roughly half of the shown
+      // suggestions fit the current season, while each stream keeps the ranking
+      // above. When one stream runs out the rest are simply appended.
+      final seasonal = [for (final e in scored) if (e.seasonal) e.s];
+      final anytime = [for (final e in scored) if (!e.seasonal) e.s];
+      final ordered = <RecipeSuggestion>[];
+      for (var i = 0; i < seasonal.length || i < anytime.length; i++) {
+        if (i < seasonal.length) ordered.add(seasonal[i]);
+        if (i < anytime.length) ordered.add(anytime[i]);
+      }
       if (!mounted) return;
       setState(() {
-        _suggestedRow = ordered.take(8).toList();
-        _suggestedPool = ordered.skip(8).toList();
+        _suggestedPool = ordered.toList();
       });
-    } catch (e) {
-      debugPrint('loadSuggestedRow failed: $e');
-    }
+    } catch (_) {}
   }
 
   void _dismissSuggested(RecipeSuggestion s) {
@@ -270,72 +295,8 @@ class _RecipePageState extends State<RecipePage> {
     if (id == null) return;
     _dismissed[id] = (_dismissed[id] ?? 0) + 1;
     _saveDismissed();
-    setState(() {
-      _suggestedRow.remove(s);
-      if (_suggestedPool.isNotEmpty) _suggestedRow.add(_suggestedPool.removeAt(0));
-    });
   }
 
-  Widget _suggestedRowSection(int crossAxisCount) {
-    final size = MediaQuery.of(context).size;
-    final smallerdim = size.width < size.height ? size.width : size.height;
-    final tileW = smallerdim / crossAxisCount;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: Text('Suggested for you',
-              style: Theme.of(context).textTheme.labelLarge),
-        ),
-        SizedBox(
-          height: tileW * 3 / 4,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            children: [
-              for (final s in _suggestedRow) _suggestedTile(s, tileW, crossAxisCount),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _suggestedTile(RecipeSuggestion s, double tileW, int crossAxisCount) {
-    return SizedBox(
-      width: tileW,
-      child: Stack(
-        children: [
-          LongPressDraggable<RecipeSuggestion>(
-            data: s,
-            feedback: RecipeSuggestionCard(
-                suggestion: s, crossAxisCount: crossAxisCount),
-            childWhenDragging: RecipeSuggestionCard(
-                suggestion: s, crossAxisCount: crossAxisCount),
-            child: GestureDetector(
-              onTap: () => _openSuggestion(s),
-              child: RecipeSuggestionCard(
-                  suggestion: s, crossAxisCount: crossAxisCount),
-            ),
-          ),
-          Positioned(
-            top: 6,
-            right: 10,
-            child: GestureDetector(
-              onTap: () => _dismissSuggested(s),
-              child: Container(
-                decoration:
-                    const BoxDecoration(color: Colors.black45, shape: BoxShape.circle),
-                padding: const EdgeInsets.all(2),
-                child: const Icon(Icons.close, size: 16, color: Colors.white),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   @override
   void dispose() {
@@ -561,10 +522,12 @@ class _RecipePageState extends State<RecipePage> {
       final english = <RecipeSuggestion>[];
       for (final d in snap.docs) {
         final data = d.data();
-        final recipeDietary = List<String>.from(data['dietary'] ?? []);
+        final recipeDietary = List<String>.from(data['dietary'] ?? [])
+            .map((e) => e.toLowerCase())
+            .toList();
         // Only offer a public recipe when it satisfies every one of the user's
         // dietary preferences.
-        if (!_dietary.every(recipeDietary.contains)) continue;
+        if (!_dietary.every((d) => recipeDietary.contains(d.toLowerCase()))) continue;
         final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
         final hasOwn = lang != 'en' && languages.contains(lang);
         var title = (data['name'] ?? '').toString();
@@ -924,6 +887,17 @@ class _RecipePageState extends State<RecipePage> {
     final planCrossAxisCount =
     isTablet && displaySize.width < displaySize.height ? 5 : 3;
 
+    // Drop suggestions for public recipes already adopted into this group so
+    // they are not offered again. Adopted recipes carry the source id.
+    final adoptedPublicIds = {
+      for (final r in recipes)
+        if (r.data()['sourcePublicId'] != null)
+          r.data()['sourcePublicId'] as String,
+    };
+    final suggestedPool = _suggestedPool
+        .where((s) => !adoptedPublicIds.contains(s.publicId))
+        .toList();
+
     return Column(
       mainAxisSize: MainAxisSize.max,
       children: [
@@ -1101,51 +1075,61 @@ class _RecipePageState extends State<RecipePage> {
         Expanded(
           child: Stack(
             children: [
-              Column(
-                children: [
-                  // ── "Suggested for you" row (only when not searching) ──────
-                  if (searchQuery.trim().isEmpty && _suggestedRow.isNotEmpty)
-                    _suggestedRowSection(crossAxisCount),
-                  Expanded(
-                    child: GridView.count(
-                padding: EdgeInsets.only(
-                    bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
-                crossAxisCount: crossAxisCount,
-                children: [
-                  // AI suggestion tiles first, then matching recipes.
-                  if (widget.aiEnabled && searchQuery.trim().isNotEmpty)
-                    for (final s in _suggestions)
-                      LongPressDraggable<RecipeSuggestion>(
-                        data: s,
-                        feedback: RecipeSuggestionCard(
-                            suggestion: s, crossAxisCount: crossAxisCount),
-                        childWhenDragging: RecipeSuggestionCard(
-                            suggestion: s, crossAxisCount: crossAxisCount),
-                        child: GestureDetector(
-                          onTap: () => _openSuggestion(s),
-                          child: RecipeSuggestionCard(
-                              suggestion: s, crossAxisCount: crossAxisCount),
-                        ),
+              CustomScrollView(
+                slivers: [
+                  if (searchQuery.trim().isEmpty && suggestedPool.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: _SuggestedRowWidget(
+                        key: ValueKey(
+                            Object.hashAll(suggestedPool.map((s) => s.publicId))),
+                        pool: suggestedPool,
+                        onDismiss: _dismissSuggested,
+                        onTap: _openSuggestion,
+                        crossAxisCount: crossAxisCount,
                       ),
-                  ...searchedRecipes.map(
-                      (e) => LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
-                    key: ValueKey(e.id),
-                    data: e,
-                    onDragStarted: () => _preloadIngredients(e.id),
-                    feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                    childWhenDragging:
-                    RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                    child: _RecipeOpenContainer(
-                      recipeId: e.id,
-                      groupId: widget.groupId,
-                      groupDoc: groupDoc,
-                      aiEnabled: widget.aiEnabled,
-                      initialData: e.data(),
-                      child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
                     ),
-                  ),
-                ),
-                ],
+                  if (searchQuery.trim().isEmpty && suggestedPool.isNotEmpty)
+                    const SliverToBoxAdapter(child: Divider(height: 1)),
+                  SliverPadding(
+                    padding: EdgeInsets.only(
+                        bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
+                    sliver: SliverGrid(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: crossAxisCount),
+                      delegate: SliverChildListDelegate([
+                        // AI suggestion tiles first, then matching recipes.
+                        if (widget.aiEnabled && searchQuery.trim().isNotEmpty)
+                          for (final s in _suggestions)
+                            LongPressDraggable<RecipeSuggestion>(
+                              data: s,
+                              feedback: RecipeSuggestionCard(
+                                  suggestion: s, crossAxisCount: crossAxisCount),
+                              childWhenDragging: RecipeSuggestionCard(
+                                  suggestion: s, crossAxisCount: crossAxisCount),
+                              child: GestureDetector(
+                                onTap: () => _openSuggestion(s),
+                                child: RecipeSuggestionCard(
+                                    suggestion: s, crossAxisCount: crossAxisCount),
+                              ),
+                            ),
+                        for (final e in searchedRecipes)
+                          LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
+                            key: ValueKey(e.id),
+                            data: e,
+                            onDragStarted: () => _preloadIngredients(e.id),
+                            feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            childWhenDragging:
+                            RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            child: _RecipeOpenContainer(
+                              recipeId: e.id,
+                              groupId: widget.groupId,
+                              groupDoc: groupDoc,
+                              aiEnabled: widget.aiEnabled,
+                              initialData: e.data(),
+                              child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            ),
+                          ),
+                      ]),
                     ),
                   ),
                 ],
@@ -1225,6 +1209,137 @@ class _RecipePageState extends State<RecipePage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── SuggestedRowWidget ───────────────────────────────────────────────────────
+
+class _SuggestedRowWidget extends StatefulWidget {
+  final List<RecipeSuggestion> pool;
+  final void Function(RecipeSuggestion) onDismiss;
+  final void Function(RecipeSuggestion) onTap;
+  final int crossAxisCount;
+
+  const _SuggestedRowWidget({
+    super.key,
+    required this.pool,
+    required this.onDismiss,
+    required this.onTap,
+    required this.crossAxisCount,
+  });
+
+  @override
+  State<_SuggestedRowWidget> createState() => _SuggestedRowWidgetState();
+}
+
+class _SuggestedRowWidgetState extends State<_SuggestedRowWidget> {
+  final GlobalKey<AnimatedListState> _listKey = GlobalKey();
+  late List<RecipeSuggestion> _visible;
+  late List<RecipeSuggestion> _remaining;
+  bool _opening = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _visible = widget.pool.take(3).toList();
+    _remaining = widget.pool.skip(3).toList();
+  }
+
+  void _dismiss(int index) {
+    final removed = _visible[index];
+    _visible.removeAt(index);
+    _listKey.currentState?.removeItem(
+      index,
+      (context, animation) => _tile(removed, -1, animation, interactive: false),
+      duration: const Duration(milliseconds: 300),
+    );
+    if (_remaining.isNotEmpty) {
+      final next = _remaining.removeAt(0);
+      _visible.add(next);
+      _listKey.currentState?.insertItem(
+        _visible.length - 1,
+        duration: const Duration(milliseconds: 300),
+      );
+    }
+    widget.onDismiss(removed);
+  }
+
+  Widget _tile(
+    RecipeSuggestion s,
+    int index,
+    Animation<double> animation, {
+    bool interactive = true,
+  }) {
+    final size = MediaQuery.of(context).size;
+    final smallerdim = size.width < size.height ? size.width : size.height;
+    final tileW = smallerdim / widget.crossAxisCount;
+    final card = RecipeSuggestionCard(suggestion: s, crossAxisCount: widget.crossAxisCount);
+    return SizeTransition(
+      sizeFactor: animation,
+      axis: Axis.horizontal,
+      child: SizedBox(
+        width: tileW,
+        child: Stack(
+          children: [
+            interactive
+                ? LongPressDraggable<RecipeSuggestion>(
+                    data: s,
+                    feedback: RecipeSuggestionCard(
+                        suggestion: s, crossAxisCount: widget.crossAxisCount),
+                    childWhenDragging: RecipeSuggestionCard(
+                        suggestion: s, crossAxisCount: widget.crossAxisCount),
+                    child: GestureDetector(
+                      onTap: _opening ? null : () {
+                        setState(() => _opening = true);
+                        widget.onTap(s);
+                        Future.delayed(const Duration(seconds: 2),
+                            () { if (mounted) setState(() => _opening = false); });
+                      },
+                      child: card,
+                    ),
+                  )
+                : card,
+            if (interactive)
+              Positioned(
+                top: 0,
+                right: 4,
+                child: GestureDetector(
+                  onTap: () => _dismiss(index),
+                  behavior: HitTestBehavior.opaque,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Container(
+                      decoration: const BoxDecoration(
+                          color: Colors.black45, shape: BoxShape.circle),
+                      padding: const EdgeInsets.all(2),
+                      child: const Icon(Icons.close, size: 16, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_visible.isEmpty) return const SizedBox.shrink();
+    final size = MediaQuery.of(context).size;
+    final smallerdim = size.width < size.height ? size.width : size.height;
+    final tileW = smallerdim / widget.crossAxisCount;
+    return SizedBox(
+      height: tileW * 3 / 4,
+      child: AnimatedList(
+        key: _listKey,
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        initialItemCount: _visible.length,
+        itemBuilder: (context, index, animation) =>
+            _tile(_visible[index], index, animation),
+      ),
     );
   }
 }
