@@ -156,6 +156,10 @@ class _HomePageState extends State<HomePage> {
   StreamSubscription<List<SharedMediaFile>>? _shareSub;
   static final RegExp _urlRe = RegExp(r'https?://\S+', caseSensitive: false);
 
+  /// A recipe URL shared before the group/AI were ready (e.g. cold start), held
+  /// in memory and replayed once the group document loads.
+  String? _pendingSharedUrl;
+
   /// An invite tapped while signed-out, held until the account exists so we can
   /// open the join screen right after onboarding.
   ({String groupId, String inviteId})? _pendingInvite;
@@ -257,9 +261,13 @@ class _HomePageState extends State<HomePage> {
   /// generating mode while the backend fills it in. Requires a signed-in user,
   /// a selected group, and AI enabled for that group.
   Future<void> _openRecipeFromUrl(String url) async {
-    if (!mounted || _selectedGroup == null || !_aiEnabled) return;
+    if (!mounted) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
+    if (_selectedGroup == null || !_aiEnabled || uid == null) {
+      // Not ready yet (cold start): remember it and replay once the group loads.
+      _pendingSharedUrl = url;
+      return;
+    }
     final recipes = db.collection('groups').doc(_selectedGroup).collection('recipes');
     final ref = await recipes.add({
       'name': '',
@@ -564,6 +572,13 @@ class _HomePageState extends State<HomePage> {
         // feature if it's still available, else fall back to 0.
         _selectedIndex = _resolveSelectedIndex(preferredFeature: _groupDefaultPage, currentFeature: _currentFeatureKey, features: _enabledFeatures);
       });
+
+      // Replay a recipe link that was shared before the group was ready.
+      if (_aiEnabled && _pendingSharedUrl != null) {
+        final url = _pendingSharedUrl!;
+        _pendingSharedUrl = null;
+        _openRecipeFromUrl(url);
+      }
     });
   }
 

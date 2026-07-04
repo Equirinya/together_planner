@@ -2,6 +2,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/core/language.dart';
@@ -131,6 +132,19 @@ class SettingsPage extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const DietaryPreferencesPage()),
             ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.refresh),
+            title: const Text('Reset dismissed recipe suggestions'),
+            onTap: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.remove('dismissed_public_recipes');
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Dismissed suggestions reset')),
+                );
+              }
+            },
           ),
           const Divider(),
           _SectionHeader('Account'),
