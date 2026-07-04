@@ -9,6 +9,7 @@ import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as account;
 import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
 import 'package:couple_planner/features/settings/pages/language_page.dart';
+import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
 // GitHub Pages (see /docs).
 const String _homeUrl = 'https://equirinya.github.io/together_planner/';
@@ -133,19 +134,7 @@ class SettingsPage extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const DietaryPreferencesPage()),
             ),
           ),
-          ListTile(
-            leading: const Icon(Icons.refresh),
-            title: const Text('Reset dismissed recipe suggestions'),
-            onTap: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.remove('dismissed_public_recipes');
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Dismissed suggestions reset')),
-                );
-              }
-            },
-          ),
+          const _RecipeSuggestionToggle(),
           const Divider(),
           _SectionHeader('Account'),
           ListTile(
@@ -215,6 +204,61 @@ class SettingsPage extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _RecipeSuggestionToggle extends StatefulWidget {
+  const _RecipeSuggestionToggle();
+
+  @override
+  State<_RecipeSuggestionToggle> createState() => _RecipeSuggestionToggleState();
+}
+
+class _RecipeSuggestionToggleState extends State<_RecipeSuggestionToggle> {
+  static const _key = 'recipe_suggestions_enabled';
+  bool _enabled = true;
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) setState(() => _enabled = prefs.getBool(_key) ?? true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SwitchListTile(
+          secondary: const Icon(Icons.auto_awesome_outlined),
+          title: const Text('Recipe suggestions'),
+          subtitle: const Text('Show "Suggested for you" on the recipe page'),
+          value: _enabled,
+          onChanged: (v) async {
+            setState(() => _enabled = v);
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setBool(_key, v);
+          },
+        ),
+        ListTile(
+          enabled: _enabled,
+          leading: const Icon(Icons.refresh),
+          title: const Text('Reset dismissed recipe suggestions'),
+          onTap: () async {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.remove('dismissed_public_recipes');
+            RecipeSuggestionNotifier.notify();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Dismissed suggestions reset')),
+              );
+            }
+          },
+        ),
+      ],
     );
   }
 }

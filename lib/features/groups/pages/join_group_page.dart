@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:couple_planner/features/groups/invite_links.dart';
+import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
 
 /// Landing screen shown when a user opens an invite link. It previews the group
@@ -66,6 +67,16 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
     });
     try {
       await joinGroupViaInvite(widget.groupId, widget.inviteId);
+      final isRecipeViewer = _preview?['type'] == 'recipe_viewer';
+      if (!mounted) return;
+      if (isRecipeViewer) {
+        // A recipe viewer never becomes the active group; the group appears in
+        // the "groups you can view recipes from" section instead. Open it now.
+        Navigator.of(context).pushReplacement(MaterialPageRoute(
+          builder: (_) => SharedRecipesPage(sourceGroupId: widget.groupId),
+        ));
+        return;
+      }
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('selected_group', widget.groupId);
       if (!mounted) return;
@@ -104,6 +115,7 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
     final features = ((preview['enabledFeatures'] as List?) ?? const []).map((e) => e.toString()).toList();
     final members = ((preview['members'] as List?) ?? const []).cast<dynamic>();
     final alreadyMember = preview['alreadyMember'] == true;
+    final isRecipeViewer = preview['type'] == 'recipe_viewer';
 
     return Column(
       children: [
@@ -111,11 +123,14 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
           child: ListView(
             padding: const EdgeInsets.all(24),
             children: [
-              Text("You've been invited to join", style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                isRecipeViewer ? "You've been invited to view recipes from" : "You've been invited to join",
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const SizedBox(height: 4),
               Text(name, style: Theme.of(context).textTheme.headlineMedium),
               const SizedBox(height: 24),
-              if (features.isNotEmpty) ...[
+              if (!isRecipeViewer && features.isNotEmpty) ...[
                 Text('Features', style: Theme.of(context).textTheme.titleSmall),
                 const SizedBox(height: 8),
                 Wrap(
@@ -131,15 +146,17 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
                 ),
                 const SizedBox(height: 24),
               ],
-              Text('Members (${members.length})', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 8),
-              for (final m in members)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const CircleAvatar(child: Icon(Icons.person)),
-                  title: Text((m['username'] ?? 'Member').toString()),
-                  trailing: (m['role'] == 'admin') ? const Text('admin') : null,
-                ),
+              if (!isRecipeViewer) ...[
+                Text('Members (${members.length})', style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                for (final m in members)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const CircleAvatar(child: Icon(Icons.person)),
+                    title: Text((m['username'] ?? 'Member').toString()),
+                    trailing: (m['role'] == 'admin') ? const Text('admin') : null,
+                  ),
+              ],
             ],
           ),
         ),
@@ -151,7 +168,9 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
               onPressed: _joining ? null : _join,
               child: _joining
                   ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                  : Text(alreadyMember ? 'Open group' : 'Join group'),
+                  : Text(alreadyMember
+                      ? (isRecipeViewer ? 'Open recipes' : 'Open group')
+                      : (isRecipeViewer ? 'View recipes' : 'Join group')),
             ),
           ),
         ),

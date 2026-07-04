@@ -191,6 +191,9 @@ class _HomePageState extends State<HomePage> {
   /// Server-set profile flag granting ingredient editing (admin tab).
   bool _canEditIngredients = false;
 
+  /// Server-set profile flag granting public recipe deletion.
+  bool _canEditPublicRecipes = false;
+
   // ---------------------------------------------------------------------------
   // Init / dispose
   // ---------------------------------------------------------------------------
@@ -437,6 +440,7 @@ class _HomePageState extends State<HomePage> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _openOnboarding());
     } else {
       _canEditIngredients = (userDoc.data())?['editIngredients'] == true;
+      _canEditPublicRecipes = (userDoc.data())?['editPublicRecipes'] == true;
 
       // If the user just signed up/in after tapping an invite link, open the
       // join screen now that they have an account.
@@ -503,6 +507,10 @@ class _HomePageState extends State<HomePage> {
       if (canEdit != _canEditIngredients) {
         _canEditIngredients = canEdit;
         _subscribeToGroupDoc(_selectedGroup);
+      }
+      final canEditPublic = fresh.data()?['editPublicRecipes'] == true;
+      if (canEditPublic != _canEditPublicRecipes) {
+        setState(() => _canEditPublicRecipes = canEditPublic);
       }
     } catch (_) {}
   }
@@ -628,7 +636,7 @@ class _HomePageState extends State<HomePage> {
       case 'shopping_list':
         return ShoppingListPage(groupId: _selectedGroup!);
       case 'recipes':
-        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled);
+        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes);
       case 'todos':
         // Replace with your real TodosPage when ready
         return const _PlaceholderPage(label: 'To-Do\'s');

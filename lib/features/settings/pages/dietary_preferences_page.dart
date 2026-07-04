@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
+import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
 /// Settings screen to view and edit the user's dietary preferences, stored in
 /// their private profile (users/{uid}.dietaryPreferences).
@@ -47,6 +48,7 @@ class _DietaryPreferencesPageState extends State<DietaryPreferencesPage> {
     setState(() => _prefs = value);
     _userRef
         .set({'dietaryPreferences': value}, SetOptions(merge: true))
+        .then((_) => RecipeSuggestionNotifier.notify())
         .catchError((e) {
           if (kDebugMode) debugPrint('Failed to save dietary preferences: $e');
         });

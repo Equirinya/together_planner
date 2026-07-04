@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 /// Preset dietary preference labels. Stored as-is in users/{uid}.dietaryPreferences
 /// alongside any free-text entries the user adds.
@@ -11,8 +12,56 @@ const List<String> kDietaryOptions = [
   'Nut-free',
   'Halal',
   'Kosher',
+  'Jain',
   'Low-carb',
 ];
+
+class _DietaryOption {
+  const _DietaryOption(this.label, this.icon);
+  final String label;
+  final IconData icon;
+}
+
+// Row 1: connected toggle buttons
+final List<_DietaryOption> _kToggleOptions = [
+  _DietaryOption('Vegan', Icons.spa),
+  _DietaryOption('Vegetarian', Icons.eco),
+  _DietaryOption('Pescatarian', MdiIcons.fish),
+];
+
+// Row 2: religion-related diets
+final List<_DietaryOption> _kReligionOptions = [
+  _DietaryOption('Halal', MdiIcons.foodHalal),
+  _DietaryOption('Kosher', MdiIcons.foodKosher),
+  _DietaryOption('Jain', MdiIcons.om),
+];
+
+// Row 3: dietary restrictions (smaller buttons, 4 per row)
+final List<_DietaryOption> _kRestrictionOptions = [
+  _DietaryOption('Gluten-free', MdiIcons.barleyOff),
+  _DietaryOption('Lactose-free', MdiIcons.cowOff),
+  _DietaryOption('Nut-free', MdiIcons.peanutOff),
+  _DietaryOption('Low-carb', Icons.fitness_center),
+];
+
+/// Returns the icon for a dietary tag, or null if not a known dietary option.
+/// Matching is case-insensitive and ignores hyphens and spaces,
+/// so "Nut-free", "nut free", and "nutfree" all match.
+IconData? dietaryTagIcon(String tag) {
+  switch (tag.toLowerCase().replaceAll(RegExp(r'[\s\-]+'), '')) {
+    case 'vegan': return Icons.spa;
+    case 'vegetarian': return Icons.eco;
+    case 'pescatarian': return MdiIcons.fish;
+    case 'glutenfree': return MdiIcons.barleyOff;
+    case 'lactosefree': return MdiIcons.cowOff;
+    case 'nutfree': return MdiIcons.peanutOff;
+    case 'halal': return MdiIcons.foodHalal;
+    case 'kosher': return MdiIcons.foodKosher;
+    case 'jain': return MdiIcons.om;
+    case 'lowcarb': return Icons.fitness_center;
+    default: return null;
+  }
+}
 
 /// Lets the user pick preset dietary preferences and add their own. Controlled:
 /// reports the full list (presets + custom) via [onChanged].
@@ -46,12 +95,42 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
 
   void _emit() => widget.onChanged(List.of(_selected));
 
+  // Vegan implies Vegetarian; Vegan or Vegetarian implies Pescatarian.
+  // Implied options appear muted but are still tappable to switch the selection down.
+  bool _isChecked(String option) {
+    if (option == 'Vegetarian' && _selected.contains('Vegan')) return true;
+    if (option == 'Pescatarian' &&
+        (_selected.contains('Vegan') || _selected.contains('Vegetarian'))) return true;
+    return _selected.contains(option);
+  }
+
+  // Returns true when the option is active only because a stricter option implies it.
+  bool _isImplied(String option) => _isChecked(option) && !_selected.contains(option);
+
+  bool _isDisabled(String option) => false;
+
   void _toggle(String option) {
     setState(() {
       if (_selected.contains(option)) {
         _selected.remove(option);
+      } else if (option == 'Vegetarian' && _selected.contains('Vegan')) {
+        // Switch down: Vegan → Vegetarian
+        _selected.remove('Vegan');
+        _selected.add('Vegetarian');
+      } else if (option == 'Pescatarian' &&
+          (_selected.contains('Vegan') || _selected.contains('Vegetarian'))) {
+        // Switch down: Vegan/Vegetarian → Pescatarian
+        _selected.remove('Vegan');
+        _selected.remove('Vegetarian');
+        _selected.add('Pescatarian');
       } else {
         _selected.add(option);
+        if (option == 'Vegan') {
+          _selected.remove('Vegetarian');
+          _selected.remove('Pescatarian');
+        } else if (option == 'Vegetarian') {
+          _selected.remove('Pescatarian');
+        }
       }
     });
     _emit();
@@ -75,36 +154,76 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
   @override
   Widget build(BuildContext context) {
     final custom = _selected.where((e) => !kDietaryOptions.contains(e)).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Wrap(
-          spacing: 8,
-          runSpacing: 4,
+        // Row 1: connected Vegan / Vegetarian toggle
+        _ConnectedToggleRow(
+          options: _kToggleOptions,
+          isChecked: _isChecked,
+          isImplied: _isImplied,
+          onTap: _toggle,
+        ),
+        const SizedBox(height: 12),
+        // Row 2: religion-related diets
+        _OptionRow(
+          options: _kReligionOptions,
+          isChecked: _isChecked,
+          isDisabled: _isDisabled,
+          onTap: _toggle,
+        ),
+        const SizedBox(height: 12),
+        // Row 3: restrictions (smaller, 4 items)
+        _OptionRow(
+          options: _kRestrictionOptions,
+          isChecked: _isChecked,
+          isDisabled: _isDisabled,
+          onTap: _toggle,
+          small: true,
+        ),
+        const SizedBox(height: 24),
+        // Custom entries
+        if (custom.isNotEmpty) ...[
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final entry in custom)
+                InputChip(
+                  avatar: Icon(Icons.restaurant_outlined,
+                      size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                  label: Text(entry),
+                  showCheckmark: false,
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  labelStyle: TextStyle(
+                      color: Theme.of(context).colorScheme.onPrimary),
+                  deleteIconColor: Theme.of(context).colorScheme.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                  onDeleted: () => _remove(entry),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+        // Info text
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final option in kDietaryOptions)
-              FilterChip(
-                label: Text(option),
-                showCheckmark: false,
-                selected: _selected.contains(option),
-                onSelected: (_) => _toggle(option),
-                side: BorderSide.none,
-                selectedColor: Theme.of(context).colorScheme.primary,
-                labelStyle: _selected.contains(option)
-                    ? TextStyle(color: Theme.of(context).colorScheme.onPrimary)
-                    : null,
+            Icon(Icons.info_outline, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Custom entries aren\'t considered for suggestions, but are used when generating recipes.',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-            for (final entry in custom)
-              InputChip(
-                label: Text(entry),
-                showCheckmark: false,
-                side: BorderSide.none,
-                backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
-                onDeleted: () => _remove(entry),
-              ),
+            ),
           ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
+        // Custom entry input
         Row(
           children: [
             Expanded(
@@ -113,15 +232,241 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
                 textInputAction: TextInputAction.done,
                 decoration: const InputDecoration(
                   hintText: 'Add your own…',
-                  isDense: true,
+border: OutlineInputBorder(),
                 ),
                 onSubmitted: (_) => _addCustom(),
               ),
             ),
-            IconButton(icon: const Icon(Icons.add), tooltip: 'Add', onPressed: _addCustom),
+            const SizedBox(width: 8),
+            IconButton.filled(
+              icon: const Icon(Icons.add),
+              tooltip: 'Add',
+              onPressed: _addCustom,
+            ),
           ],
         ),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Row widgets
+// ---------------------------------------------------------------------------
+
+class _ConnectedToggleRow extends StatelessWidget {
+  const _ConnectedToggleRow({
+    required this.options,
+    required this.isChecked,
+    required this.isImplied,
+    required this.onTap,
+  });
+
+  final List<_DietaryOption> options;
+  final bool Function(String) isChecked;
+  final bool Function(String) isImplied;
+  final void Function(String) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return IntrinsicHeight(
+      child: Row(
+        children: [
+          for (int i = 0; i < options.length; i++) ...[
+            Expanded(
+              child: _ConnectedOptionButton(
+                label: options[i].label,
+                icon: options[i].icon,
+                checked: isChecked(options[i].label),
+                implied: isImplied(options[i].label),
+                onTap: () => onTap(options[i].label),
+                borderRadius: _radiusFor(i, options.length),
+              ),
+            ),
+            if (i < options.length - 1)
+              VerticalDivider(
+                width: 1,
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  static BorderRadius _radiusFor(int i, int total) {
+    const r = Radius.circular(16);
+    if (total == 1) return BorderRadius.circular(16);
+    if (i == 0) return const BorderRadius.only(topLeft: r, bottomLeft: r);
+    if (i == total - 1) return const BorderRadius.only(topRight: r, bottomRight: r);
+    return BorderRadius.zero;
+  }
+}
+
+class _OptionRow extends StatelessWidget {
+  const _OptionRow({
+    required this.options,
+    required this.isChecked,
+    required this.isDisabled,
+    required this.onTap,
+    this.small = false,
+  });
+
+  final List<_DietaryOption> options;
+  final bool Function(String) isChecked;
+  final bool Function(String) isDisabled;
+  final void Function(String) onTap;
+  final bool small;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (int i = 0; i < options.length; i++) ...[
+          Expanded(
+            child: _DietaryOptionButton(
+              label: options[i].label,
+              icon: options[i].icon,
+              checked: isChecked(options[i].label),
+              disabled: isDisabled(options[i].label),
+              onTap: () => onTap(options[i].label),
+              small: small,
+            ),
+          ),
+          if (i < options.length - 1) const SizedBox(width: 8),
+        ],
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Button widgets
+// ---------------------------------------------------------------------------
+
+class _ConnectedOptionButton extends StatelessWidget {
+  const _ConnectedOptionButton({
+    required this.label,
+    required this.icon,
+    required this.checked,
+    required this.implied,
+    required this.onTap,
+    required this.borderRadius,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool checked;
+  final bool implied;
+  final VoidCallback onTap;
+  final BorderRadius borderRadius;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final Color cardColor = implied
+        ? colorScheme.primaryContainer
+        : checked
+            ? colorScheme.primary
+            : colorScheme.surfaceContainerHighest;
+
+    final Color contentColor = implied
+        ? colorScheme.onPrimaryContainer
+        : checked
+            ? colorScheme.onPrimary
+            : colorScheme.onSurfaceVariant;
+
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: Material(
+        color: cardColor,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 8),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 32, color: contentColor),
+                  const SizedBox(height: 8),
+                  Text(
+                    label,
+                    style: TextStyle(color: contentColor, fontSize: 13),
+                    textAlign: TextAlign.center,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+    );
+  }
+}
+
+class _DietaryOptionButton extends StatelessWidget {
+  const _DietaryOptionButton({
+    required this.label,
+    required this.icon,
+    required this.checked,
+    required this.disabled,
+    required this.onTap,
+    this.small = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool checked;
+  final bool disabled;
+  final VoidCallback onTap;
+  final bool small;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final Color cardColor = disabled
+        ? colorScheme.surfaceContainerHighest.withValues(alpha: 0.5)
+        : checked
+            ? colorScheme.primary
+            : colorScheme.surfaceContainerHighest;
+
+    final Color contentColor = disabled
+        ? colorScheme.onSurface.withValues(alpha: 0.38)
+        : checked
+            ? colorScheme.onPrimary
+            : colorScheme.onSurfaceVariant;
+
+    return Card(
+      color: cardColor,
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: disabled ? null : onTap,
+        child: Padding(
+          padding: small
+              ? const EdgeInsets.symmetric(vertical: 10, horizontal: 4)
+              : const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: small ? 22 : 32, color: contentColor),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(color: contentColor, fontSize: small ? 11 : 13),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

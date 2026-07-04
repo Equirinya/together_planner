@@ -10,11 +10,15 @@ import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sh
 import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart' show QuantityEditor;
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
+import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
+import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -32,12 +36,32 @@ class RecipeDetailPage extends StatefulWidget {
     this.aiEnabled = false,
     this.generating = false,
     this.initialData,
+    this.publicRecipeId,
+    this.sharedSourceGroupId,
+    this.canEditPublicRecipes = false,
   });
 
   final String groupId;
   final String recipeId;
   final bool editMode;
   final bool aiEnabled;
+
+  /// When set, the page opens as a read-only preview of the public recipe with
+  /// this id (localized), showing a "Save in own recipes" button instead of the
+  /// edit/delete actions. Saving adopts it into the group and switches the same
+  /// page over to the freshly created local recipe in place. [recipeId] is empty
+  /// until then.
+  final String? publicRecipeId;
+
+  /// When set, the page opens as a read-only preview of a recipe belonging to
+  /// another group (the recipe-viewer flow): [recipeId] is the source recipe's
+  /// id inside this group. Saving copies it into [groupId] and switches the same
+  /// page over to the freshly created local recipe in place. Reuses the same
+  /// preview/adopt mechanism as [publicRecipeId].
+  final String? sharedSourceGroupId;
+
+  /// When true, a delete action is shown while previewing a public recipe.
+  final bool canEditPublicRecipes;
 
   /// When true the recipe is being generated in the background: the page
   /// streams the document and shows shimmering placeholders for each part
@@ -63,6 +87,22 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Map<String, dynamic>? recipeData;
   late DocumentReference<Map<String, dynamic>> docRef;
   late CollectionReference<Map<String, dynamic>> ingredientsRef;
+
+  // ── public preview / adoption ─────────────────────────────────────────────
+  // While previewing a public recipe [_publicId] is set and the page reads from
+  // the public_recipes collection. After the user saves it, [_savedRecipeId]
+  // holds the new group recipe id and [_publicId] is cleared, so the page acts
+  // like any other local recipe. [recipeId] resolves to whichever is active.
+  String? _publicId;
+  String? _sharedGroupId;
+  String? _savedRecipeId;
+  bool _saving = false;
+  bool get _isPublicPreview => _publicId != null;
+  bool get _isSharedPreview => _sharedGroupId != null;
+  // Any read-only preview (public recipe or another group's recipe) that offers
+  // a "Save in own recipes" button instead of edit/delete.
+  bool get _isPreview => _isPublicPreview || _isSharedPreview;
+  String get recipeId => _savedRecipeId ?? widget.recipeId;
 
   late String lang;
 
@@ -117,15 +157,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     lang = LanguageService.instance.code.value;
     UnitsCache.instance.ensureLoaded();
 
-    final db = FirebaseFirestore.instance;
-    docRef = db
-        .collection('groups')
-        .doc(widget.groupId)
-        .collection('recipes')
-        .doc(widget.recipeId);
-    ingredientsRef = docRef.collection('ingredients');
+    _publicId = widget.publicRecipeId;
+    _sharedGroupId = widget.sharedSourceGroupId;
 
     if (widget.initialData != null) _applyData(widget.initialData!);
+
+    if (_isPublicPreview) {
+      _loadPublicPreview();
+      return;
+    }
+    if (_isSharedPreview) {
+      _loadSharedPreview();
+      return;
+    }
+
+    _bindLocalRefs(widget.recipeId);
 
     _startIngredientsSubscription();
     if (widget.generating) {
@@ -136,6 +182,15 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     } else {
       _loadRecipe();
     }
+  }
+
+  void _bindLocalRefs(String id) {
+    docRef = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(widget.groupId)
+        .collection('recipes')
+        .doc(id);
+    ingredientsRef = docRef.collection('ingredients');
   }
 
   @override
@@ -182,6 +237,155 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final doc = await docRef.get();
     if (!doc.exists || !mounted) return;
     setState(() => _applyData(doc.data()!));
+  }
+
+  /// Loads a public recipe (localized to [lang], English base otherwise) into
+  /// the page for a read-only preview. Mirrors the localization done when
+  /// adopting so the previewed content matches what gets saved.
+  Future<void> _loadPublicPreview() async {
+    final publicRef = FirebaseFirestore.instance.doc('public_recipes/$_publicId');
+    final snap = await publicRef.get();
+    if (!snap.exists || !mounted) return;
+    final p = snap.data()!;
+    final localized = lang == 'en'
+        ? null
+        : (p['translations'] as Map<String, dynamic>?)?[lang] as Map<String, dynamic>?;
+    T field<T>(String key, T fallback) =>
+        (localized?[key] ?? p[key] ?? fallback) as T;
+
+    final imagePath = p['image'];
+    final data = <String, dynamic>{
+      'name': field<String>('name', ''),
+      'description': field<String>('description', ''),
+      'tags': field<List<dynamic>>('tags', const []),
+      'steps': field<List<dynamic>>('steps', const []),
+      'images': (imagePath is String && imagePath.isNotEmpty)
+          ? <String>[imagePath]
+          : <String>[],
+      'servings': p['servings'] ?? 2,
+      'time': p['time'] ?? 0,
+      'preparationTime': p['preparationTime'] ?? 0,
+      if (p['attribution'] != null) 'attribution': p['attribution'],
+    };
+
+    final ingSnap = await publicRef.collection('ingredients').get();
+    final ings = <Map<String, dynamic>>[];
+    for (final d in ingSnap.docs) {
+      final dd = d.data();
+      final il = lang == 'en'
+          ? null
+          : (dd['translations'] as Map<String, dynamic>?)?[lang]
+              as Map<String, dynamic>?;
+      ings.add({
+        'id': d.id,
+        'ingredientId': (dd['ingredientId'] as String?) ?? kUnknownIngredient,
+        'displayName': il?['displayName'] ?? dd['displayName'] ?? '',
+        'description': il?['description'] ?? dd['description'] ?? '',
+        'quantity': <String, dynamic>{},
+      });
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _applyData(data);
+      ingredients = ings;
+    });
+  }
+
+  /// Loads another group's recipe (the recipe-viewer flow) into the page for a
+  /// read-only preview. Mirrors what [copyGroupRecipe] writes, so the previewed
+  /// content matches what gets saved.
+  Future<void> _loadSharedPreview() async {
+    final sourceRef = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(_sharedGroupId)
+        .collection('recipes')
+        .doc(widget.recipeId);
+    final snap = await sourceRef.get();
+    if (!snap.exists || !mounted) return;
+    final s = snap.data()!;
+
+    final data = <String, dynamic>{
+      'name': s['name'] ?? '',
+      'description': s['description'] ?? '',
+      'tags': List<dynamic>.from(s['tags'] ?? const []),
+      'steps': List<dynamic>.from(s['steps'] ?? const []),
+      'images': List<String>.from(s['images'] ?? const []),
+      'servings': s['servings'] ?? 2,
+      'time': s['time'] ?? 0,
+      'preparationTime': s['preparationTime'] ?? 0,
+      if (s['attribution'] != null) 'attribution': s['attribution'],
+    };
+
+    final ingSnap = await sourceRef.collection('ingredients').get();
+    final ings = <Map<String, dynamic>>[];
+    for (final d in ingSnap.docs) {
+      final dd = d.data();
+      ings.add({
+        'id': d.id,
+        'ingredientId': (dd['ingredientId'] as String?) ?? kUnknownIngredient,
+        'displayName': dd['displayName'] ?? '',
+        'description': dd['description'] ?? '',
+        'quantity': Map<String, dynamic>.from(dd['quantity'] ?? const {}),
+      });
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _applyData(data);
+      ingredients = ings;
+    });
+  }
+
+  /// Adopts/copies the previewed recipe into the group, then switches this same
+  /// page over to the new local recipe without a route change: the copied image
+  /// is warmed into the cache first so the storage-path swap paints from cache
+  /// with no reload, and the scroll offset is preserved.
+  Future<void> _saveToOwnRecipes() async {
+    if (!_isPreview) return;
+    setState(() => _saving = true);
+    try {
+      final newId = _isSharedPreview
+          ? await copyGroupRecipe(
+              groupId: widget.groupId,
+              sourceGroupId: _sharedGroupId!,
+              sourceRecipeId: widget.recipeId,
+              uid: FirebaseAuth.instance.currentUser!.uid,
+            )
+          : await adoptPublicRecipe(
+              groupId: widget.groupId,
+              publicRecipeId: _publicId!,
+              uid: FirebaseAuth.instance.currentUser!.uid,
+              lang: lang,
+            );
+      final newRef = FirebaseFirestore.instance
+          .collection('groups')
+          .doc(widget.groupId)
+          .collection('recipes')
+          .doc(newId);
+      final newSnap = await newRef.get();
+      final newData = newSnap.data() ?? <String, dynamic>{};
+      // Warm the cache for the copied image(s) so swapping to the local storage
+      // path below finds them synchronously and does not flash a placeholder.
+      for (final path in List<String>.from(newData['images'] ?? const [])) {
+        try {
+          await StorageImageCache.instance.getFile(path);
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      _savedRecipeId = newId;
+      _publicId = null;
+      _sharedGroupId = null;
+      _bindLocalRefs(newId);
+      _startIngredientsSubscription();
+      setState(() {
+        _applyStreamData(newData);
+        _saving = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _saving = false);
+      _snack('Could not save this recipe.');
+    }
   }
 
   /// Live document updates while the recipe is being generated. Each snapshot
@@ -356,7 +560,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     setState(() => _uploadingCount++);
     try {
       final ref = FirebaseStorage.instance.ref().child(
-          'groups/${widget.groupId}/recipes/${widget.recipeId}/${DateTime.now().millisecondsSinceEpoch}');
+          'groups/${widget.groupId}/recipes/$recipeId/${DateTime.now().millisecondsSinceEpoch}');
       await ref.putFile(File(image.path));
       await docRef.update({
         'images': FieldValue.arrayUnion([ref.fullPath]),
@@ -405,7 +609,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       final res = await _functions.httpsCallable('recipesEnhancement-enhanceRecipeImage').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
-        'recipeId': widget.recipeId,
+        'recipeId': recipeId,
         'imagePath': path,
       });
       final newPath = (res.data as Map)['path'] as String;
@@ -426,7 +630,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       await _functions.httpsCallable('recipesEnhancement-generateRecipeImage').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
-        'recipeId': widget.recipeId,
+        'recipeId': recipeId,
       });
       await _loadRecipe();
     } catch (e) {
@@ -444,7 +648,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       await _functions.httpsCallable('recipesEnhancement-generateRecipeIngredients').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
-        'recipeId': widget.recipeId,
+        'recipeId': recipeId,
       });
     } catch (e) {
       _snack('Could not generate ingredients: $e');
@@ -459,7 +663,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       await _functions.httpsCallable('recipesEnhancement-generateRecipeSteps').call({
         ..._buildRecipeContext(),
         'groupId': widget.groupId,
-        'recipeId': widget.recipeId,
+        'recipeId': recipeId,
       });
       await _reloadStepsOnly();
     } catch (e) {
@@ -536,6 +740,28 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         }
       },
       child: Scaffold(
+      bottomNavigationBar: _isPreview
+          ? SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: FilledButton.icon(
+                    onPressed: _saving ? null : _saveToOwnRecipes,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.bookmark_add_outlined),
+                    label: const Text('Save in own recipes'),
+                  ),
+                ),
+              ),
+            )
+          : null,
       appBar: AppBar(
         leading: edit
             ? IconButton(
@@ -544,6 +770,44 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               )
             : null,
         actions: [
+          if (_isPublicPreview && widget.canEditPublicRecipes)
+            IconButton(
+              icon: const Icon(Icons.delete),
+              onPressed: () => showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  icon: Icon(Icons.delete, color: Theme.of(ctx).colorScheme.error),
+                  title: const Text("Delete Public Recipe"),
+                  content: const Text(
+                      "Are you sure you want to delete this public recipe? This action cannot be undone."),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text("Cancel")),
+                    FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: Theme.of(ctx).colorScheme.error),
+                      onPressed: () async {
+                        final publicId = _publicId!;
+                        final db = FirebaseFirestore.instance;
+                        final publicRef = db.doc('public_recipes/$publicId');
+                        final ingsSnap = await publicRef.collection('ingredients').get();
+                        final batch = db.batch();
+                        for (final d in ingsSnap.docs) {
+                          batch.delete(d.reference);
+                        }
+                        batch.delete(publicRef);
+                        await batch.commit();
+                        Navigator.of(ctx).pop();
+                        Navigator.of(context).pop();
+                      },
+                      child: const Text("Delete"),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          if (!_isPreview)
           IconButton(
             icon: const Icon(Icons.delete),
             onPressed: () => showDialog(
@@ -561,7 +825,19 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                     style: FilledButton.styleFrom(
                         backgroundColor: Theme.of(ctx).colorScheme.error),
                     onPressed: () async {
-                      await docRef.delete();
+                      final db = FirebaseFirestore.instance;
+                      final plans = await db
+                          .collection('groups')
+                          .doc(widget.groupId)
+                          .collection('cooking_plan')
+                          .where('recipe', isEqualTo: recipeId)
+                          .get();
+                      final batch = db.batch();
+                      for (final plan in plans.docs) {
+                        batch.delete(plan.reference);
+                      }
+                      batch.delete(docRef);
+                      await batch.commit();
                       Navigator.of(ctx).pop();
                       Navigator.of(context).pop();
                     },
@@ -571,7 +847,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
           ),
-          if (!edit && !_isGenerating)
+          if (!edit && !_isGenerating && !_isPreview)
             IconButton(
               icon: const Icon(Icons.edit),
               onPressed: () {
@@ -604,11 +880,15 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             // ── Title ────────────────────────────────────────────────────
             edit
                 ? Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: TextField(
                 controller: nameController,
                 style: Theme.of(context).textTheme.headlineMedium,
-                decoration: const InputDecoration(hintText: 'Recipe name'),
+                decoration: const InputDecoration(
+                  hintText: 'Recipe name',
+                  isDense: true,
+                  contentPadding: EdgeInsets.only(bottom: 4),
+                ),
               ),
             )
                 : (_pending.contains('title') &&
@@ -626,38 +906,31 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             // ── Tags + times ─────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: edit
-                        ? TextField(
-                      controller: tagsController,
-                      style: Theme.of(context).textTheme.bodyMedium,
-                      decoration: const InputDecoration(hintText: '#tag1 #tag2…'),
-                    )
-                        : Wrap(
-                      spacing: 8,
-                      children: tags
-                          .map((tag) => Chip(
-                        label: Text(tag,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onPrimaryContainer)),
-                        backgroundColor: Theme.of(context)
-                            .colorScheme
-                            .primaryContainer,
-                        side: BorderSide.none,
-                      ))
-                          .toList(),
-                    ),
+                  edit
+                      ? TextField(
+                          controller: tagsController,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          decoration: const InputDecoration(
+                            hintText: '#tag1 #tag2…',
+                            isDense: true,
+                          ),
+                        )
+                      : Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: tags.map(_buildTagChip).toList(),
+                        ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      _timeTile(Icons.schedule, totalHour, totalMinute, 'time'),
+                      _timeTile(Icons.blender, prepHour, prepMinute, 'preparationTime'),
+                    ],
                   ),
-                  _timeTile(Icons.schedule, totalHour, totalMinute, 'time'),
-                  _timeTile(
-                      Icons.blender, prepHour, prepMinute, 'preparationTime'),
                 ],
               ),
             ),
@@ -668,7 +941,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: _AttributionText(attribution!),
               ),
 
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
 
             // ── Ingredients + servings (hidden in view mode when empty) ──
             if (edit || hasIngredients || _pending.contains('ingredients'))
@@ -808,6 +1081,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
@@ -820,12 +1094,16 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   icon: const Icon(Icons.auto_awesome),
                   tooltip: 'Generate with AI',
                   onPressed: _generateIngredients,
+                  constraints: const BoxConstraints(),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 ),
               if (edit && ingredients.isNotEmpty)
                 IconButton(
                   icon: const Icon(Icons.delete_sweep),
                   tooltip: 'Clear all',
                   onPressed: _clearIngredients,
+                  constraints: const BoxConstraints(),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 ),
             ],
           ),
@@ -1046,6 +1324,37 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   // ── component helpers ─────────────────────────────────────────────────────
+
+  Widget _buildTagChip(String tag) {
+    final cs = Theme.of(context).colorScheme;
+    final icon = dietaryTagIcon(tag);
+    if (icon != null) {
+      return Tooltip(
+        message: tag,
+        child: Container(
+          decoration: BoxDecoration(
+            color: cs.primaryContainer,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          padding: const EdgeInsets.all(6),
+          child: Icon(icon, size: 16, color: cs.onPrimaryContainer),
+        ),
+      );
+    }
+    return Chip(
+      label: Text(tag,
+          style: Theme.of(context)
+              .textTheme
+              .labelSmall
+              ?.copyWith(color: cs.onPrimaryContainer)),
+      labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      backgroundColor: cs.primaryContainer,
+      side: BorderSide.none,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      visualDensity: VisualDensity.compact,
+    );
+  }
 
   Widget _timeTile(IconData icon, int hour, int minute, String field) {
     return GestureDetector(
