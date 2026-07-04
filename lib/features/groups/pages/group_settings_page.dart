@@ -61,6 +61,12 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
   List<QueryDocumentSnapshot<Map<String, dynamic>>> get _activeMembers =>
       _members.where((m) => m.data()['status'] != 'left').toList();
 
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> get _fullMembers =>
+      _activeMembers.where((m) => m.data()['role'] != 'recipe_viewer').toList();
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> get _recipeViewers =>
+      _activeMembers.where((m) => m.data()['role'] == 'recipe_viewer').toList();
+
   bool get _isAdmin => _activeMembers.any((m) => m.id == _uid && m.data()['role'] == 'admin');
 
   bool get _membersCanEditFeatures => _group?['membersCanEditFeatures'] as bool? ?? true;
@@ -117,7 +123,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
     }
   }
 
-  Future<void> _createAndShareInvite() async {
+  Future<void> _createAndShareInvite({bool recipeViewer = false}) async {
     setState(() => _busy = true);
     try {
       final ref = _groupRef.collection('invites').doc();
@@ -125,11 +131,14 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
         'createdAt': FieldValue.serverTimestamp(),
         'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 14))),
         'createdBy': _uid,
+        if (recipeViewer) 'type': 'recipe_viewer',
       });
       final link = invites.buildInviteLink(widget.groupId, ref.id);
       final box = context.findRenderObject() as RenderBox?;
       await SharePlus.instance.share(ShareParams(
-        text: 'Join my group on Together Planner: $link',
+        text: recipeViewer
+            ? 'View my recipes on Together Planner: $link'
+            : 'Join my group on Together Planner: $link',
         subject: 'Together Planner invite',
         sharePositionOrigin: box != null ? box.localToGlobal(Offset.zero) & box.size : null,
       ));
@@ -160,6 +169,10 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
 
   Future<void> _promote(String uid) async {
     await _groupRef.collection('members').doc(uid).update({'role': 'admin'});
+  }
+
+  Future<void> _upgradeToMember(String uid) async {
+    await _groupRef.collection('members').doc(uid).update({'role': 'member'});
   }
 
   Future<void> _leave() async {
@@ -326,6 +339,15 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
             label: const Text('Create & share invite link'),
           ),
         ),
+      if (_canInvite)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: OutlinedButton.icon(
+            onPressed: _busy ? null : () => _createAndShareInvite(recipeViewer: true),
+            icon: const Icon(Icons.menu_book_outlined),
+            label: const Text('Share recipes only'),
+          ),
+        ),
       if (active.isEmpty)
         const Padding(
           padding: EdgeInsets.all(16),
@@ -341,7 +363,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
     final daysLeft = exp == null ? 0 : exp.difference(DateTime.now()).inDays;
     final createdBy = data['createdBy'] as String?;
     final canRevoke = _isAdmin || createdBy == _uid;
-    final joiners = _activeMembers.where((m) => m.data()['joinedVia'] == inv.id).toList();
+    final joiners = _fullMembers.where((m) => m.data()['joinedVia'] == inv.id).toList();
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -389,8 +411,33 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
   List<Widget> _buildMembers() {
     return [
       const _SectionHeader('Members'),
-      for (final m in _activeMembers) _memberTile(m),
+      for (final m in _fullMembers) _memberTile(m),
+      if (_recipeViewers.isNotEmpty) ...[
+        const _SectionHeader('Recipe viewers'),
+        for (final m in _recipeViewers) _recipeViewerTile(m),
+      ],
     ];
+  }
+
+  Widget _recipeViewerTile(QueryDocumentSnapshot<Map<String, dynamic>> m) {
+    final isMe = m.id == _uid;
+    return ListTile(
+      leading: const CircleAvatar(child: Icon(Icons.menu_book_outlined)),
+      title: _Username(uid: m.id),
+      subtitle: const Text('Can view recipes'),
+      trailing: (!isMe && _isAdmin)
+          ? PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'upgrade') _upgradeToMember(m.id);
+                if (v == 'remove') _removeMember(m.id);
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(value: 'upgrade', child: Text('Make full member')),
+                const PopupMenuItem(value: 'remove', child: Text('Remove')),
+              ],
+            )
+          : null,
+    );
   }
 
   Widget _memberTile(QueryDocumentSnapshot<Map<String, dynamic>> m) {

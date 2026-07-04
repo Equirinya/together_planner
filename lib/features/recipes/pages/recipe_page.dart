@@ -28,17 +28,21 @@ import 'package:couple_planner/features/ingredients/models/categories.dart' show
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/widgets/create_recipe_sheet.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
+import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
+import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
 class RecipePage extends StatefulWidget {
   final String groupId;
   final bool shoppingListEnabled;
   final bool aiEnabled;
+  final bool canEditPublicRecipes;
 
   const RecipePage({
     super.key,
     required this.groupId,
     required this.shoppingListEnabled,
     required this.aiEnabled,
+    this.canEditPublicRecipes = false,
   });
 
   @override
@@ -58,13 +62,23 @@ class _RecipePageState extends State<RecipePage> {
   // ── AI recipe suggestions (shown as tiles, only when aiEnabled) ────────────
   final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
   List<String> _dietary = [];
-  List<RecipeSuggestion> _suggestions = [];
+  List<RecipeSuggestion> _suggestions = [];      // AI name/url ideas
+  List<RecipeSuggestion> _publicSuggestions = []; // public recipe search matches
   Timer? _aiTimer;
+  Timer? _publicTimer;
   int _aiSeq = 0;
+  bool _suggestionsLoading = false;
+  final Map<String, List<RecipeSuggestion>> _publicCache = {};
+  final Map<String, List<RecipeSuggestion>> _aiCache = {};
+  final ScrollController _scrollController = ScrollController();
+
+  bool _isDraggingSuggestion = false;
+  bool _isDraggingPlan = false;
 
   // ── "Suggested for you" row (shown when not searching) ─────────────────────
   List<RecipeSuggestion> _suggestedPool = [];
   Map<String, int> _dismissed = {};
+  bool _suggestionsEnabled = true;
   static const String _kDismissedKey = 'dismissed_public_recipes';
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? planListener;
@@ -151,10 +165,13 @@ class _RecipePageState extends State<RecipePage> {
     // Dietary preferences drive the AI name suggestions, which public recipes
     // match, and the "suggested for you" row.
     _initSuggestions();
+    RecipeSuggestionNotifier.instance.addListener(_initSuggestions);
   }
 
   Future<void> _initSuggestions() async {
     await _loadDismissed();
+    final prefs = await SharedPreferences.getInstance();
+    _suggestionsEnabled = prefs.getBool('recipe_suggestions_enabled') ?? true;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
       try {
@@ -164,7 +181,7 @@ class _RecipePageState extends State<RecipePage> {
       } catch (_) {}
     }
     if (mounted) setState(() {});
-    await _loadSuggestedRow();
+    if (_suggestionsEnabled) await _loadSuggestedRow();
   }
 
   Future<void> _loadDismissed() async {
@@ -230,6 +247,7 @@ class _RecipePageState extends State<RecipePage> {
         docs.addAll(plain.docs);
       }
 
+      final lang = LanguageService.instance.code.value;
       final prefs = _dietary.map((e) => e.toLowerCase()).toSet();
       final seen = <String>{};
       final scored = <({
@@ -248,6 +266,15 @@ class _RecipePageState extends State<RecipePage> {
         // A recipe is in season when its suitable months (1–12) include the
         // current month; a null/empty list means it fits any time of year.
         final suitableMonths = data['suitableMonths'];
+        var title = (data['name'] ?? '').toString();
+        if (lang != 'en') {
+          final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
+          if (languages.contains(lang)) {
+            final localized = (data['translations'] as Map?)?[lang] as Map?;
+            final localizedName = (localized?['name'] ?? '').toString();
+            if (localizedName.isNotEmpty) title = localizedName;
+          }
+        }
         // Nothing is filtered out: recipes are ranked so the row always fills,
         // even for a custom diet that matches no recipe or after dismissals.
         scored.add((
@@ -258,7 +285,7 @@ class _RecipePageState extends State<RecipePage> {
           seasonal: suitableMonths is List && suitableMonths.contains(now.month),
           s: RecipeSuggestion(
             kind: SuggestionKind.public,
-            title: (data['name'] ?? '').toString(),
+            title: title,
             publicId: d.id,
             publicImage: data['image'] as String?,
           ),
@@ -300,10 +327,13 @@ class _RecipePageState extends State<RecipePage> {
 
   @override
   void dispose() {
+    RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
     recipesListener?.cancel();
     keyboardSubscription.cancel();
     _aiTimer?.cancel();
+    _publicTimer?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -421,6 +451,15 @@ class _RecipePageState extends State<RecipePage> {
 
   String? _extractUrl(String s) => _urlRe.firstMatch(s)?.group(0);
 
+  /// Returns the id of an already-existing recipe whose [attribution] matches
+  /// [url], or null if no such recipe is loaded yet.
+  String? _findRecipeIdByUrl(String url) {
+    for (final r in recipes) {
+      if ((r.data()['attribution'] ?? '') == url) return r.id;
+    }
+    return null;
+  }
+
   /// True when an existing recipe's name already contains the whole query, in
   /// which case the local results are good enough and no AI ideas are shown.
   bool _hasStrongLocalMatch(String query) {
@@ -434,29 +473,77 @@ class _RecipePageState extends State<RecipePage> {
   }
 
   /// Called on every keystroke (in addition to [generateSearchedRecipes]).
-  /// Debounces AI name ideas by one second; a pasted link shows a globe tile
-  /// immediately while its title loads.
+  /// Public matches use a short debounce (300 ms) and are shown regardless of
+  /// [aiEnabled]; AI name ideas use a 1 s debounce and only when [aiEnabled].
+  /// Cached results for the current query are shown immediately so suggestions
+  /// persist while the user edits. Lists are only cleared when query is empty.
   void _onSearchChangedAi(String value) {
     _aiTimer?.cancel();
+    _publicTimer?.cancel();
     final seq = ++_aiSeq;
     final q = value.trim();
 
-    if (!widget.aiEnabled || q.isEmpty) {
-      setState(() => _suggestions = []);
+    if (q.isEmpty) {
+      setState(() {
+        _suggestions = [];
+        _publicSuggestions = [];
+        _suggestionsLoading = false;
+      });
       return;
     }
 
-    final url = _extractUrl(q);
-    if (url != null) {
-      setState(() => _suggestions = [
+    // URL tile: immediate, AI only.
+    if (widget.aiEnabled) {
+      final url = _extractUrl(q);
+      if (url != null) {
+        setState(() {
+          _suggestions = [
             RecipeSuggestion(kind: SuggestionKind.url, title: '', url: url, loading: true),
-          ]);
-      _loadUrlTitle(url, seq);
-      return;
+          ];
+          _publicSuggestions = [];
+          _suggestionsLoading = false;
+        });
+        _loadUrlTitle(url, seq);
+        return;
+      }
     }
 
-    setState(() => _suggestions = []);
-    _aiTimer = Timer(const Duration(seconds: 1), () => _runAiSuggestions(q, seq));
+    // Show cached results immediately; keep current lists visible until replaced.
+    final qKey = q.toLowerCase();
+    setState(() {
+      if (_publicCache.containsKey(qKey)) _publicSuggestions = _publicCache[qKey]!;
+      if (_aiCache.containsKey(qKey)) _suggestions = _aiCache[qKey]!;
+      _suggestionsLoading = true;
+    });
+
+    // Public recipes: snappy 300 ms debounce.
+    _publicTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (!mounted || seq != _aiSeq) return;
+      final results = await _fetchPublicMatches(q);
+      if (!mounted || seq != _aiSeq) return;
+      _publicCache[qKey] = results;
+      setState(() => _publicSuggestions = results);
+    });
+
+    // AI name ideas: 1 s debounce; loading clears when this settles.
+    if (widget.aiEnabled && !_hasStrongLocalMatch(q)) {
+      _aiTimer = Timer(const Duration(seconds: 1), () async {
+        if (!mounted || seq != _aiSeq) return;
+        final results = await _fetchNameIdeas(q);
+        if (!mounted || seq != _aiSeq) return;
+        _aiCache[qKey] = results;
+        setState(() {
+          _suggestions = results;
+          _suggestionsLoading = false;
+        });
+      });
+    } else {
+      // No AI fetch; clear loading once the public fetch has had time to land.
+      _aiTimer = Timer(const Duration(milliseconds: 600), () {
+        if (!mounted || seq != _aiSeq) return;
+        setState(() => _suggestionsLoading = false);
+      });
+    }
   }
 
   Future<void> _loadUrlTitle(String url, int seq) async {
@@ -477,12 +564,6 @@ class _RecipePageState extends State<RecipePage> {
     });
   }
 
-  Future<void> _runAiSuggestions(String q, int seq) async {
-    if (!mounted || seq != _aiSeq || _hasStrongLocalMatch(q)) return;
-    final results = await Future.wait([_fetchNameIdeas(q), _fetchPublicMatches(q)]);
-    if (!mounted || seq != _aiSeq) return;
-    setState(() => _suggestions = [...results[1], ...results[0]]);
-  }
 
   Future<List<RecipeSuggestion>> _fetchNameIdeas(String q) async {
     try {
@@ -522,12 +603,6 @@ class _RecipePageState extends State<RecipePage> {
       final english = <RecipeSuggestion>[];
       for (final d in snap.docs) {
         final data = d.data();
-        final recipeDietary = List<String>.from(data['dietary'] ?? [])
-            .map((e) => e.toLowerCase())
-            .toList();
-        // Only offer a public recipe when it satisfies every one of the user's
-        // dietary preferences.
-        if (!_dietary.every((d) => recipeDietary.contains(d.toLowerCase()))) continue;
         final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
         final hasOwn = lang != 'en' && languages.contains(lang);
         var title = (data['name'] ?? '').toString();
@@ -576,43 +651,61 @@ class _RecipePageState extends State<RecipePage> {
     return _functions.httpsCallable('recipes-generateRecipeStaged').call(data);
   }
 
-  /// Tapping a suggestion: public recipes are copied into the group and opened;
-  /// name/link ideas open the detail page immediately and generate in the
-  /// background (shimmering the parts that haven't arrived yet).
+  /// Tapping a suggestion: public recipes open a read-only preview that saves
+  /// itself into the group in place; name/link ideas open the detail page
+  /// immediately and generate in the background (shimmering the parts that
+  /// haven't arrived yet).
   Future<void> _openSuggestion(RecipeSuggestion s) async {
     if (s.kind == SuggestionKind.public) {
-      try {
-        final res = await _functions
-            .httpsCallable('recipes-adoptPublicRecipe')
-            .call(<String, dynamic>{
-          'groupId': widget.groupId,
-          'publicRecipeId': s.publicId,
-          'lang': LanguageService.instance.code.value,
-        });
-        final recipeId = res.data['recipeId'] as String?;
-        if (recipeId != null && mounted) _pushDetail(recipeId);
-      } catch (_) {
-        _snack('Could not add this recipe.');
-      }
+      _pushDetail(
+        '',
+        publicRecipeId: s.publicId,
+        initialData: _seedData(s.title)
+          ..['images'] = (s.publicImage?.isNotEmpty ?? false)
+              ? [s.publicImage!]
+              : <String>[],
+      );
       return;
     }
 
+    if (s.kind == SuggestionKind.url && s.url != null) {
+      final existing = _findRecipeIdByUrl(s.url!);
+      if (existing != null) {
+        _pushDetail(existing);
+        return;
+      }
+    }
+
     final name = s.kind == SuggestionKind.name ? s.title : '';
-    final ref = await _createRecipeDoc(
-        name: name, attribution: s.kind == SuggestionKind.url ? s.url : null);
-    if (!mounted) return;
+    final attribution = s.kind == SuggestionKind.url ? s.url : null;
+    final ref = groupDoc.collection('recipes').doc();
+    ref.set({
+      'name': name,
+      'description': '',
+      'creator': FirebaseAuth.instance.currentUser!.uid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastUsedAt': null,
+      'preparationTime': 0,
+      'time': 0,
+      'servings': 2,
+      'tags': <String>[],
+      'images': <String>[],
+      'steps': <String>[],
+      if (attribution != null) 'attribution': attribution,
+    });
     _pushDetail(
       ref.id,
       generating: true,
-      initialData:
-          _seedData(name, attribution: s.kind == SuggestionKind.url ? s.url : null),
+      initialData: _seedData(name, attribution: attribution),
     );
     // Fire and forget; the detail page streams progress from the document.
     _callStaged(ref.id, s).ignore();
   }
 
   void _pushDetail(String recipeId,
-      {bool generating = false, Map<String, dynamic>? initialData}) {
+      {bool generating = false,
+      Map<String, dynamic>? initialData,
+      String? publicRecipeId}) {
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -622,6 +715,8 @@ class _RecipePageState extends State<RecipePage> {
           aiEnabled: widget.aiEnabled,
           generating: generating,
           initialData: initialData,
+          publicRecipeId: publicRecipeId,
+          canEditPublicRecipes: widget.canEditPublicRecipes,
         ),
       ),
     );
@@ -643,6 +738,55 @@ class _RecipePageState extends State<RecipePage> {
             )));
   }
 
+  /// Dragging a suggestion onto the save zone: generate/adopt the recipe
+  /// (loading dialog) and set lastUsedAt to now, without planning it.
+  Future<void> _handleSuggestionSave(RecipeSuggestion s) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _GeneratingDialog(),
+    );
+    try {
+      String? recipeId;
+      if (s.kind == SuggestionKind.public) {
+        recipeId = await adoptPublicRecipe(
+          groupId: widget.groupId,
+          publicRecipeId: s.publicId!,
+          uid: FirebaseAuth.instance.currentUser!.uid,
+          lang: LanguageService.instance.code.value,
+        );
+      } else {
+        if (s.kind == SuggestionKind.url && s.url != null) {
+          final existing = _findRecipeIdByUrl(s.url!);
+          if (existing != null) {
+            recipeId = existing;
+          } else {
+            final ref = await _createRecipeDoc(name: '', attribution: s.url);
+            recipeId = ref.id;
+            await _callStaged(recipeId, s);
+          }
+        } else {
+          final ref = await _createRecipeDoc(
+              name: s.kind == SuggestionKind.name ? s.title : '');
+          recipeId = ref.id;
+          await _callStaged(recipeId, s);
+        }
+        if (recipeId != null) {
+          groupDoc
+              .collection('recipes')
+              .doc(recipeId)
+              .update({'lastUsedAt': FieldValue.serverTimestamp()});
+        }
+      }
+    } catch (_) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      _snack('Could not save this recipe.');
+      return;
+    }
+    if (!mounted) return;
+    Navigator.of(context, rootNavigator: true).pop();
+  }
+
   /// Dragging a suggestion onto a day: generate/adopt the recipe (loading
   /// dialog), then plan it and open the add-to-shopping-list dialog.
   Future<void> _handleSuggestionDrop(
@@ -659,20 +803,31 @@ class _RecipePageState extends State<RecipePage> {
     String? recipeId;
     try {
       if (s.kind == SuggestionKind.public) {
-        final res = await _functions
-            .httpsCallable('recipes-adoptPublicRecipe')
-            .call(<String, dynamic>{
-          'groupId': widget.groupId,
-          'publicRecipeId': s.publicId,
-          'lang': LanguageService.instance.code.value,
-        });
-        recipeId = res.data['recipeId'] as String?;
+        recipeId = await adoptPublicRecipe(
+          groupId: widget.groupId,
+          publicRecipeId: s.publicId!,
+          uid: FirebaseAuth.instance.currentUser!.uid,
+          lang: LanguageService.instance.code.value,
+        );
       } else {
-        final ref = await _createRecipeDoc(
-            name: s.kind == SuggestionKind.name ? s.title : '',
-            attribution: s.kind == SuggestionKind.url ? s.url : null);
-        recipeId = ref.id;
-        await _callStaged(recipeId, s);
+        if (s.kind == SuggestionKind.url && s.url != null) {
+          final existing = _findRecipeIdByUrl(s.url!);
+          if (existing != null) {
+            recipeId = existing;
+          } else {
+            final ref = await _createRecipeDoc(
+                name: '',
+                attribution: s.url);
+            recipeId = ref.id;
+            await _callStaged(recipeId, s);
+          }
+        } else {
+          final ref = await _createRecipeDoc(
+              name: s.kind == SuggestionKind.name ? s.title : '',
+              attribution: null);
+          recipeId = ref.id;
+          await _callStaged(recipeId, s);
+        }
       }
       if (recipeId != null) await _resolvePendingIngredients(recipeId);
     } catch (_) {
@@ -714,9 +869,29 @@ class _RecipePageState extends State<RecipePage> {
     final t = text.trim();
     if (t.isEmpty) return;
     final url = _extractUrl(t);
+    if (url != null) {
+      final existing = _findRecipeIdByUrl(url);
+      if (existing != null) {
+        if (mounted) _pushDetail(existing);
+        return;
+      }
+    }
     final name = url != null ? '' : t;
-    final ref = await _createRecipeDoc(name: name, attribution: url);
-    if (!mounted) return;
+    final ref = groupDoc.collection('recipes').doc();
+    ref.set({
+      'name': name,
+      'description': '',
+      'creator': FirebaseAuth.instance.currentUser!.uid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastUsedAt': null,
+      'preparationTime': 0,
+      'time': 0,
+      'servings': 2,
+      'tags': <String>[],
+      'images': <String>[],
+      'steps': <String>[],
+      if (url != null) 'attribution': url,
+    });
     _pushDetail(ref.id,
         generating: true, initialData: _seedData(name, attribution: url));
     _callStaged(
@@ -886,6 +1061,9 @@ class _RecipePageState extends State<RecipePage> {
     isTablet ? const <int>[1, 2, 2, 2, 2, 1] : const <int>[1, 3, 3, 1];
     final planCrossAxisCount =
     isTablet && displaySize.width < displaySize.height ? 5 : 3;
+    final smallerdim = displaySize.width < displaySize.height
+        ? displaySize.width
+        : displaySize.height;
 
     // Drop suggestions for public recipes already adopted into this group so
     // they are not offered again. Adopted recipes carry the source id.
@@ -897,6 +1075,12 @@ class _RecipePageState extends State<RecipePage> {
     final suggestedPool = _suggestedPool
         .where((s) => !adoptedPublicIds.contains(s.publicId))
         .toList();
+    final bool showSuggestedRow = _suggestionsEnabled &&
+        suggestedPool.isNotEmpty &&
+        !keyboardVisible &&
+        searchQuery.trim().isEmpty;
+    final suggestedTopOffset =
+        showSuggestedRow ? smallerdim / crossAxisCount * 3 / 4 + 1 : 0.0;
 
     return Column(
       mainAxisSize: MainAxisSize.max,
@@ -1021,6 +1205,9 @@ class _RecipePageState extends State<RecipePage> {
                                         child: LongPressDraggable<
                                             DocumentSnapshot<Map<String, dynamic>>>(
                                           data: dayPlans[i],
+                                          onDragStarted: () => setState(() => _isDraggingPlan = true),
+                                          onDragEnd: (_) => setState(() => _isDraggingPlan = false),
+                                          onDraggableCanceled: (_, __) => setState(() => _isDraggingPlan = false),
                                           feedback: RecipeCard(
                                             recipeId: dayPlans[i]['recipe'],
                                             groupCollection: groupDoc,
@@ -1076,20 +1263,24 @@ class _RecipePageState extends State<RecipePage> {
           child: Stack(
             children: [
               CustomScrollView(
+                controller: _scrollController,
                 slivers: [
-                  if (searchQuery.trim().isEmpty && suggestedPool.isNotEmpty)
+                  if (showSuggestedRow)
                     SliverToBoxAdapter(
                       child: _SuggestedRowWidget(
                         key: ValueKey(
                             Object.hashAll(suggestedPool.map((s) => s.publicId))),
                         pool: suggestedPool,
                         onDismiss: _dismissSuggested,
-                        onTap: _openSuggestion,
+                        visible: true,
+                        groupId: widget.groupId,
+                        aiEnabled: widget.aiEnabled,
+                        canEditPublicRecipes: widget.canEditPublicRecipes,
                         crossAxisCount: crossAxisCount,
+                        onDragStarted: () => setState(() => _isDraggingSuggestion = true),
+                        onDragEnd: () => setState(() => _isDraggingSuggestion = false),
                       ),
                     ),
-                  if (searchQuery.trim().isEmpty && suggestedPool.isNotEmpty)
-                    const SliverToBoxAdapter(child: Divider(height: 1)),
                   SliverPadding(
                     padding: EdgeInsets.only(
                         bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
@@ -1097,11 +1288,14 @@ class _RecipePageState extends State<RecipePage> {
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount),
                       delegate: SliverChildListDelegate([
-                        // AI suggestion tiles first, then matching recipes.
-                        if (widget.aiEnabled && searchQuery.trim().isNotEmpty)
-                          for (final s in _suggestions)
+                        // Suggestion tiles (public always, AI names only when enabled).
+                        if (searchQuery.trim().isNotEmpty)
+                          for (final s in [..._publicSuggestions, ..._suggestions])
                             LongPressDraggable<RecipeSuggestion>(
                               data: s,
+                              onDragStarted: () => setState(() => _isDraggingSuggestion = true),
+                              onDragEnd: (_) => setState(() => _isDraggingSuggestion = false),
+                              onDraggableCanceled: (_, __) => setState(() => _isDraggingSuggestion = false),
                               feedback: RecipeSuggestionCard(
                                   suggestion: s, crossAxisCount: crossAxisCount),
                               childWhenDragging: RecipeSuggestionCard(
@@ -1159,11 +1353,21 @@ class _RecipePageState extends State<RecipePage> {
                           color: colorScheme.onSurfaceVariant),
                     ),
                     onChanged: (value) {
+                      final wasEmpty = searchQuery.trim().isEmpty;
                       searchQuery = value;
                       generateSearchedRecipes();
                       _onSearchChangedAi(value);
+                      if (wasEmpty && value.trim().isNotEmpty && _scrollController.hasClients) {
+                        _scrollController.jumpTo(0);
+                      }
                     },
                     trailing: [
+                      if (_suggestionsLoading && searchQuery.trim().isNotEmpty)
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CupertinoActivityIndicator(),
+                        ),
                       IconButton(
                           onPressed: _openCreateMenu,
                           icon: const Icon(Icons.add)),
@@ -1171,40 +1375,71 @@ class _RecipePageState extends State<RecipePage> {
                   ),
                 ),
               ),
-              // ── Delete target ──────────────────────────────────────────
-              DragTarget<Object>(
-                builder: (context, candidateData, _) {
-                  final first = candidateData.isNotEmpty ? candidateData.first : null;
-                  return Visibility(
-                    visible: first is DocumentSnapshot<Map<String, dynamic>> &&
-                        first.reference.parent.id == 'cooking_plan',
-                    maintainSize: true,
-                    maintainAnimation: true,
-                    maintainState: true,
-                    child: Container(
+              // ── Delete target (topmost when dragging a plan) ───────────
+              if (_isDraggingPlan)
+                DragTarget<Object>(
+                  builder: (context, candidateData, _) {
+                    final hovering = candidateData.isNotEmpty;
+                    return Container(
                       margin: const EdgeInsets.all(4),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(16),
-                        color: colorScheme.errorContainer.withAlpha(200),
+                        color: hovering
+                            ? colorScheme.errorContainer.withAlpha(200)
+                            : colorScheme.errorContainer.withAlpha(60),
+                        border: hovering
+                            ? null
+                            : Border.all(color: colorScheme.error, width: 2),
                       ),
                       child: Center(
                         child: Icon(Icons.delete_outline,
-                            size: 128, color: colorScheme.onErrorContainer),
+                            size: 128,
+                            color: hovering ? colorScheme.onErrorContainer : colorScheme.error),
                       ),
-                    ),
-                  );
-                },
-                onWillAcceptWithDetails: (d) =>
-                    d.data is DocumentSnapshot<Map<String, dynamic>> &&
-                    (d.data as DocumentSnapshot).reference.parent.id == 'cooking_plan',
-                onAcceptWithDetails: (d) {
-                  final data = d.data;
-                  if (data is DocumentSnapshot<Map<String, dynamic>> &&
-                      data.reference.parent.id == 'cooking_plan') {
-                    _removePlan(data.reference);
-                  }
-                },
-              ),
+                    );
+                  },
+                  onWillAcceptWithDetails: (d) =>
+                      d.data is DocumentSnapshot<Map<String, dynamic>> &&
+                      (d.data as DocumentSnapshot).reference.parent.id == 'cooking_plan',
+                  onAcceptWithDetails: (d) {
+                    final data = d.data;
+                    if (data is DocumentSnapshot<Map<String, dynamic>> &&
+                        data.reference.parent.id == 'cooking_plan') {
+                      _removePlan(data.reference);
+                    }
+                  },
+                ),
+              // ── Save-to-recipes target (topmost when dragging a suggestion) ──
+              if (_isDraggingSuggestion)
+                Positioned(
+                  top: suggestedTopOffset + 4,
+                  left: 4,
+                  right: 4,
+                  bottom: 4,
+                  child: DragTarget<RecipeSuggestion>(
+                    builder: (context, candidateData, _) {
+                      final hovering = candidateData.isNotEmpty;
+                      return Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: hovering
+                              ? Colors.green.withAlpha(200)
+                              : Colors.green.withAlpha(40),
+                          border: hovering
+                              ? null
+                              : Border.all(color: Colors.green, width: 2),
+                        ),
+                        child: Center(
+                          child: Icon(Icons.bookmark_add,
+                              size: 128,
+                              color: hovering ? Colors.white : Colors.green),
+                        ),
+                      );
+                    },
+                    onWillAcceptWithDetails: (_) => true,
+                    onAcceptWithDetails: (d) => _handleSuggestionSave(d.data),
+                  ),
+                ),
             ],
           ),
         ),
@@ -1218,15 +1453,25 @@ class _RecipePageState extends State<RecipePage> {
 class _SuggestedRowWidget extends StatefulWidget {
   final List<RecipeSuggestion> pool;
   final void Function(RecipeSuggestion) onDismiss;
-  final void Function(RecipeSuggestion) onTap;
+  final bool visible;
+  final String groupId;
+  final bool aiEnabled;
+  final bool canEditPublicRecipes;
   final int crossAxisCount;
+  final VoidCallback? onDragStarted;
+  final VoidCallback? onDragEnd;
 
   const _SuggestedRowWidget({
     super.key,
     required this.pool,
     required this.onDismiss,
-    required this.onTap,
+    required this.visible,
+    required this.groupId,
+    required this.aiEnabled,
     required this.crossAxisCount,
+    this.canEditPublicRecipes = false,
+    this.onDragStarted,
+    this.onDragEnd,
   });
 
   @override
@@ -1237,13 +1482,16 @@ class _SuggestedRowWidgetState extends State<_SuggestedRowWidget> {
   final GlobalKey<AnimatedListState> _listKey = GlobalKey();
   late List<RecipeSuggestion> _visible;
   late List<RecipeSuggestion> _remaining;
-  bool _opening = false;
+  bool _appeared = false;
 
   @override
   void initState() {
     super.initState();
     _visible = widget.pool.take(3).toList();
     _remaining = widget.pool.skip(3).toList();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _appeared = true);
+    });
   }
 
   void _dismiss(int index) {
@@ -1285,18 +1533,43 @@ class _SuggestedRowWidgetState extends State<_SuggestedRowWidget> {
             interactive
                 ? LongPressDraggable<RecipeSuggestion>(
                     data: s,
+                    onDragStarted: widget.onDragStarted,
+                    onDragEnd: (_) => widget.onDragEnd?.call(),
+                    onDraggableCanceled: (_, __) => widget.onDragEnd?.call(),
                     feedback: RecipeSuggestionCard(
                         suggestion: s, crossAxisCount: widget.crossAxisCount),
                     childWhenDragging: RecipeSuggestionCard(
                         suggestion: s, crossAxisCount: widget.crossAxisCount),
-                    child: GestureDetector(
-                      onTap: _opening ? null : () {
-                        setState(() => _opening = true);
-                        widget.onTap(s);
-                        Future.delayed(const Duration(seconds: 2),
-                            () { if (mounted) setState(() => _opening = false); });
-                      },
-                      child: card,
+                    child: OpenContainer(
+                      tappable: false,
+                      transitionType: ContainerTransitionType.fade,
+                      transitionDuration: const Duration(milliseconds: 300),
+                      closedElevation: 0,
+                      closedColor: Colors.transparent,
+                      openColor: Theme.of(context).scaffoldBackgroundColor,
+                      closedShape: const RoundedRectangleBorder(
+                        borderRadius: BorderRadius.all(Radius.circular(16)),
+                      ),
+                      closedBuilder: (_, open) => GestureDetector(onTap: open, child: card),
+                      openBuilder: (_, __) => RecipeDetailPage(
+                        groupId: widget.groupId,
+                        recipeId: '',
+                        aiEnabled: widget.aiEnabled,
+                        publicRecipeId: s.publicId,
+                        canEditPublicRecipes: widget.canEditPublicRecipes,
+                        initialData: {
+                          'name': s.title,
+                          'description': '',
+                          'images': (s.publicImage?.isNotEmpty ?? false)
+                              ? [s.publicImage!]
+                              : <String>[],
+                          'steps': <String>[],
+                          'tags': <String>[],
+                          'servings': 2,
+                          'time': 0,
+                          'preparationTime': 0,
+                        },
+                      ),
                     ),
                   )
                 : card,
@@ -1330,15 +1603,31 @@ class _SuggestedRowWidgetState extends State<_SuggestedRowWidget> {
     final size = MediaQuery.of(context).size;
     final smallerdim = size.width < size.height ? size.width : size.height;
     final tileW = smallerdim / widget.crossAxisCount;
-    return SizedBox(
-      height: tileW * 3 / 4,
-      child: AnimatedList(
-        key: _listKey,
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        initialItemCount: _visible.length,
-        itemBuilder: (context, index, animation) =>
-            _tile(_visible[index], index, animation),
+    return ClipRect(
+      child: AnimatedSize(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+        alignment: Alignment.topCenter,
+        child: SizedBox(
+          height: widget.visible && _appeared ? tileW * 3 / 4 + 1 : 0,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                height: tileW * 3 / 4,
+                child: AnimatedList(
+                  key: _listKey,
+                  scrollDirection: Axis.horizontal,
+                  physics: const NeverScrollableScrollPhysics(),
+                  initialItemCount: _visible.length,
+                  itemBuilder: (context, index, animation) =>
+                      _tile(_visible[index], index, animation),
+                ),
+              ),
+              const Divider(height: 1),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1992,7 +2281,7 @@ class _GeneratingDialog extends StatelessWidget {
           children: [
             CupertinoActivityIndicator(),
             SizedBox(width: 16),
-            Flexible(child: Text('Generating recipe…')),
+            Flexible(child: Text('Loading recipe…')),
           ],
         ),
       ),

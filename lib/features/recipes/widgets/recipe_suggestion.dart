@@ -126,7 +126,10 @@ class RecipeSuggestionCard extends StatelessWidget {
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
-                              Icon(icon, size: 12, color: Colors.white70),
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 2),
+                                child: Icon(icon, size: 12, color: Colors.white70),
+                              ),
                               const SizedBox(width: 3),
                               Expanded(
                                 child: Text(
