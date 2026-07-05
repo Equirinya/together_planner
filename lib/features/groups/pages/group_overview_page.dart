@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
@@ -28,6 +32,31 @@ class GroupOverviewPage extends StatefulWidget {
 
 class _GroupOverviewPageState extends State<GroupOverviewPage> {
   final _db = FirebaseFirestore.instance;
+  late List<String> _groupIds;
+  StreamSubscription? _groupsSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _groupIds = List<String>.from(widget.groupIds);
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      _groupsSub = _db
+          .collection('users')
+          .doc(uid)
+          .collection('groups')
+          .snapshots()
+          .listen((snap) {
+        if (mounted) setState(() => _groupIds = snap.docs.map((d) => d.id).toList());
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _groupsSub?.cancel();
+    super.dispose();
+  }
 
   Future<void> _createGroup() async {
     final newId = await Navigator.of(context).push<String>(
@@ -51,12 +80,12 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 96),
         children: [
-          if (widget.groupIds.isEmpty)
+          if (_groupIds.isEmpty)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Text('You are not a member of any groups yet.', textAlign: TextAlign.center),
             ),
-          for (final id in widget.groupIds)
+          for (final id in _groupIds)
             Card(
               child: ListTile(
                 contentPadding: EdgeInsetsDirectional.only(start: 16.0, end: 8.0),
@@ -68,13 +97,35 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
                   docRef: _db.collection('groups').doc(id),
                   builder: (data) => Text((data['name'] ?? 'Group').toString()),
                 ),
-                trailing: IconButton(
-                  icon: const Icon(Icons.settings_outlined),
-                  tooltip: 'Group settings',
-                  constraints: const BoxConstraints(),
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => GroupSettingsPage(groupId: id)),
-                  ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_groupIds.length > 1)
+                      IconButton(
+                        icon: Icon(MdiIcons.bookPlusMultiple),
+                        tooltip: 'Copy recipes',
+                        constraints: const BoxConstraints(),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => SharedRecipesPage(sourceGroupId: id, showLeaveButton: false),
+                          ),
+                        ),
+                      ),
+                    IconButton(
+                      icon: const Icon(Icons.share_outlined),
+                      tooltip: 'Share invite',
+                      constraints: const BoxConstraints(),
+                      onPressed: () => showGroupInvitePicker(context, id),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.settings_outlined),
+                      tooltip: 'Group settings',
+                      constraints: const BoxConstraints(),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => GroupSettingsPage(groupId: id)),
+                      ),
+                    ),
+                  ],
                 ),
                 onTap: () {
                   widget.onSelect(id);

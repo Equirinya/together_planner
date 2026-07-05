@@ -10,6 +10,109 @@ import 'package:couple_planner/features/groups/invite_links.dart' as invites;
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
 
+/// Shows the invite-type picker and, if confirmed, creates and shares the link.
+/// Can be called from any page that knows the [groupId].
+Future<void> showGroupInvitePicker(BuildContext context, String groupId) async {
+  final recipeViewer = await showDialog<bool>(
+    context: context,
+    builder: (context) => const _InviteTypeDialog(),
+  );
+  if (recipeViewer == null || !context.mounted) return;
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  if (uid == null) return;
+  try {
+    final db = FirebaseFirestore.instance;
+    final ref = db.collection('groups').doc(groupId).collection('invites').doc();
+    await ref.set({
+      'createdAt': FieldValue.serverTimestamp(),
+      'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 14))),
+      'createdBy': uid,
+      if (recipeViewer) 'type': 'recipe_viewer',
+    });
+    final link = invites.buildInviteLink(groupId, ref.id);
+    if (!context.mounted) return;
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(ShareParams(
+      text: recipeViewer
+          ? 'View my recipes on Together Planner: $link'
+          : 'Join my group on Together Planner: $link',
+      subject: 'Together Planner invite',
+      sharePositionOrigin: box != null ? box.localToGlobal(Offset.zero) & box.size : null,
+    ));
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not create the invite link.')),
+      );
+    }
+  }
+}
+
+class _InviteTypeDialog extends StatelessWidget {
+  const _InviteTypeDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Invite as'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _InviteTypeOption(
+            icon: Icons.group,
+            label: 'Members',
+            description: 'Full access to all group features',
+            onTap: () => Navigator.of(context).pop(false),
+          ),
+          const SizedBox(height: 8),
+          _InviteTypeOption(
+            icon: Icons.menu_book_outlined,
+            label: 'Recipe Viewers',
+            description: 'Can view and copy recipes only',
+            onTap: () => Navigator.of(context).pop(true),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InviteTypeOption extends StatelessWidget {
+  const _InviteTypeOption({
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String description;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+          child: Column(
+            children: [
+              Icon(icon, size: 48),
+              const SizedBox(height: 8),
+              Text(label, style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 4),
+              Text(description, style: Theme.of(context).textTheme.bodySmall, textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class GroupSettingsPage extends StatefulWidget {
   const GroupSettingsPage({super.key, required this.groupId});
 
@@ -121,6 +224,15 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
     if (name != null && name.trim().isNotEmpty) {
       await _groupRef.update({'name': name.trim()});
     }
+  }
+
+  Future<void> _pickAndShareInvite() async {
+    final recipeViewer = await showDialog<bool>(
+      context: context,
+      builder: (context) => const _InviteTypeDialog(),
+    );
+    if (recipeViewer == null || !mounted) return;
+    await _createAndShareInvite(recipeViewer: recipeViewer);
   }
 
   Future<void> _createAndShareInvite({bool recipeViewer = false}) async {
@@ -334,18 +446,9 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: FilledButton.icon(
-            onPressed: _busy ? null : _createAndShareInvite,
+            onPressed: _busy ? null : _pickAndShareInvite,
             icon: const Icon(Icons.add_link),
-            label: const Text('Create & share invite link'),
-          ),
-        ),
-      if (_canInvite)
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: OutlinedButton.icon(
-            onPressed: _busy ? null : () => _createAndShareInvite(recipeViewer: true),
-            icon: const Icon(Icons.menu_book_outlined),
-            label: const Text('Share recipes only'),
+            label: const Text('Create invite link'),
           ),
         ),
       if (active.isEmpty)
@@ -359,6 +462,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
 
   Widget _inviteCard(QueryDocumentSnapshot<Map<String, dynamic>> inv) {
     final data = inv.data();
+    final isRecipeViewer = data['type'] == 'recipe_viewer';
     final exp = (data['expiresAt'] as Timestamp?)?.toDate();
     final daysLeft = exp == null ? 0 : exp.difference(DateTime.now()).inDays;
     final createdBy = data['createdBy'] as String?;
@@ -374,9 +478,21 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
           children: [
             Row(
               children: [
-                const Icon(Icons.link, size: 20),
+                Icon(isRecipeViewer ? Icons.menu_book_outlined : Icons.group_outlined, size: 20),
                 const SizedBox(width: 8),
-                Expanded(child: Text('Expires in $daysLeft day${daysLeft == 1 ? '' : 's'}')),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isRecipeViewer ? 'Recipe Viewers' : 'Members',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      Text('Expires in $daysLeft day${daysLeft == 1 ? '' : 's'}',
+                          style: const TextStyle(fontSize: 12)),
+                    ],
+                  ),
+                ),
                 if (canRevoke)
                   TextButton(onPressed: () => _revokeInvite(inv.id), child: const Text('Revoke')),
               ],

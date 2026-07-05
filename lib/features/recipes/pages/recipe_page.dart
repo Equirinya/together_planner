@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:couple_planner/core/date_utils.dart';
 import 'package:couple_planner/core/widgets/load_builders.dart';
@@ -88,6 +89,22 @@ class _RecipePageState extends State<RecipePage> {
   List<QueryDocumentSnapshot<Map<String, dynamic>>> recipes = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> searchedRecipes = [];
 
+  // Growable window over the group's recipes: the listener starts at [_recipeLimit]
+  // and grows by [_recipePageSize] whenever the grid is scrolled near its end and
+  // the previous page came back full (so more recipes likely exist).
+  static const int _recipePageSize = 50;
+  int _recipeLimit = _recipePageSize;
+  bool _recipesMaybeMore = true;
+
+  // How often each recipe has been cooked (past cooking-plan entries within
+  // [_usageWindowDays]) and which recipes are already planned in the future.
+  // Drives the "cook again" ordering of the recipe grid; usage is read from the
+  // cooking plans rather than stored on the recipe.
+  static const int _usageWindowDays = 180;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? usageListener;
+  Map<String, int> _usageCounts = {};
+  Set<String> _futurePlanned = {};
+
   // One stable GlobalKey per cooking-plan id, used to compute drop position.
   final Map<String, GlobalKey> _planCardKeys = {};
   GlobalKey _planKey(String planId) =>
@@ -96,6 +113,14 @@ class _RecipePageState extends State<RecipePage> {
   // Shopping-list rows preloaded when a recipe drag starts, keyed by recipe id,
   // so the add-to-shopping-list dialog can open instantly.
   final Map<String, Future<List<_IngPreload>>> _ingredientPreload = {};
+
+  // Public recipe data preloaded when a suggestion drag starts, keyed by public
+  // recipe id. Awaited on drop so the recipe doc can be written immediately.
+  final Map<String, Future<PublicRecipePreload>> _publicPreload = {};
+
+  // Recipe ids whose image upload is still in progress after an instant adopt.
+  // Plan tiles for these recipes show a loading overlay until the upload finishes.
+  final Set<String> _uploadingRecipeIds = {};
   Future<List<_IngPreload>> _preloadIngredients(String recipeId) =>
       _ingredientPreload.putIfAbsent(
         recipeId,
@@ -144,14 +169,37 @@ class _RecipePageState extends State<RecipePage> {
       setState(() => cookingPlans = snapshot.docs);
     });
 
-    final recipesStream = groupDoc
-        .collection('recipes')
-        .orderBy('lastUsedAt', descending: true)
-        .limit(50)
+    _subscribeRecipes();
+    _scrollController.addListener(_maybeLoadMoreRecipes);
+
+    // A longer window over the cooking plans, used only to derive how often each
+    // recipe is cooked (and whether it is already planned ahead) for ordering.
+    final usageStream = groupDoc
+        .collection('cooking_plan')
+        .where(
+          'plannedFor',
+          isGreaterThan: Timestamp.fromDate(
+            DateTime.now().subtract(Duration(days: _usageWindowDays)),
+          ),
+        )
         .snapshots();
-    recipesListener = recipesStream.listen((snapshot) {
+    usageListener = usageStream.listen((snapshot) {
+      final counts = <String, int>{};
+      final future = <String>{};
+      final now = DateTime.now();
+      for (final d in snapshot.docs) {
+        final rid = d.data()['recipe'];
+        final when = (d.data()['plannedFor'] as Timestamp?)?.toDate();
+        if (rid is! String || when == null) continue;
+        if (when.isAfter(now)) {
+          future.add(rid);
+        } else {
+          counts[rid] = (counts[rid] ?? 0) + 1;
+        }
+      }
       setState(() {
-        recipes = snapshot.docs;
+        _usageCounts = counts;
+        _futurePlanned = future;
         generateSearchedRecipes();
       });
     });
@@ -239,6 +287,16 @@ class _RecipePageState extends State<RecipePage> {
             .get();
         docs.addAll(second.docs);
       }
+      // Also pull the most popular recipes so widely-adopted ones have a real
+      // chance to surface, on top of the daily random sample. They still go
+      // through the weighted sampling below, so the row stays varied.
+      try {
+        final popular = await col
+            .orderBy('popularity', descending: true)
+            .limit(15)
+            .get();
+        docs.addAll(popular.docs);
+      } catch (_) {}
       // Fallback for public recipes missing the `random` field: those documents
       // are excluded from the range queries above, so fetch a plain page rather
       // than leaving the row empty.
@@ -250,13 +308,7 @@ class _RecipePageState extends State<RecipePage> {
       final lang = LanguageService.instance.code.value;
       final prefs = _dietary.map((e) => e.toLowerCase()).toSet();
       final seen = <String>{};
-      final scored = <({
-        int matches,
-        int dismissed,
-        double base,
-        bool seasonal,
-        RecipeSuggestion s
-      })>[];
+      final scored = <({double key, bool seasonal, RecipeSuggestion s})>[];
       for (final d in docs) {
         if (!seen.add(d.id)) continue;
         final data = d.data();
@@ -275,13 +327,25 @@ class _RecipePageState extends State<RecipePage> {
             if (localizedName.isNotEmpty) title = localizedName;
           }
         }
-        // Nothing is filtered out: recipes are ranked so the row always fills,
-        // even for a custom diet that matches no recipe or after dismissals.
+
+        // Weighted-random ordering: a recipe's chance of ranking high grows with
+        // how many of the user's dietary tags it matches and how often it has
+        // been adopted (popularity), and shrinks each time it is dismissed.
+        // Nothing is filtered out, so the row always fills.
+        final matches = prefs.where(recipeDietary.contains).length;
+        final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
+        final dismissed = _dismissed[d.id] ?? 0;
+        final weight = (1 + 2 * matches) *
+            (1 + math.log(1 + popularity)) /
+            (1 + dismissed);
+        // Deterministic per-recipe uniform in (0,1], identical for every group
+        // member and reshuffled each day via the group+date seed.
+        final r = (_stableHash('$seed-${d.id}') % 100000 + 1) / 100001.0;
+        // Efraimidis–Spirakis key: smaller wins, higher weight → smaller key.
+        final key = -math.log(r) / weight;
+
         scored.add((
-          matches: prefs.where(recipeDietary.contains).length,
-          dismissed: _dismissed[d.id] ?? 0,
-          // Deterministic per-recipe value, identical for every group member.
-          base: (_stableHash('$seed-${d.id}') % 100000) / 100000.0,
+          key: key,
           seasonal: suitableMonths is List && suitableMonths.contains(now.month),
           s: RecipeSuggestion(
             kind: SuggestionKind.public,
@@ -291,15 +355,7 @@ class _RecipePageState extends State<RecipePage> {
           ),
         ));
       }
-      // Most matching dietary tags first, then least dismissed, then a stable
-      // shuffle for variety.
-      scored.sort((a, b) {
-        if (a.matches != b.matches) return b.matches.compareTo(a.matches);
-        if (a.dismissed != b.dismissed) {
-          return a.dismissed.compareTo(b.dismissed);
-        }
-        return a.base.compareTo(b.base);
-      });
+      scored.sort((a, b) => a.key.compareTo(b.key));
       // Interleave in-season and any-time recipes so roughly half of the shown
       // suggestions fit the current season, while each stream keeps the ranking
       // above. When one stream runs out the rest are simply appended.
@@ -330,16 +386,115 @@ class _RecipePageState extends State<RecipePage> {
     RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
     recipesListener?.cancel();
+    usageListener?.cancel();
     keyboardSubscription.cancel();
     _aiTimer?.cancel();
     _publicTimer?.cancel();
+    _scrollController.removeListener(_maybeLoadMoreRecipes);
     _scrollController.dispose();
     super.dispose();
   }
 
+  /// (Re)subscribes to the group's recipes with the current [_recipeLimit].
+  /// Ordered by `createdAt` so freshly added recipes always sit in the loaded
+  /// window (a recipe never cooked yet has no `lastUsedAt`); the grid itself is
+  /// re-ranked client-side by [_rankOwnRecipes] when not searching.
+  void _subscribeRecipes() {
+    recipesListener?.cancel();
+    recipesListener = groupDoc
+        .collection('recipes')
+        .orderBy('createdAt', descending: true)
+        .limit(_recipeLimit)
+        .snapshots()
+        .listen((snapshot) {
+      setState(() {
+        recipes = snapshot.docs;
+        // A full page means there may be more to load on scroll.
+        _recipesMaybeMore = snapshot.docs.length >= _recipeLimit;
+        generateSearchedRecipes();
+      });
+    });
+  }
+
+  /// Grows the recipe window when the grid is scrolled near its end, so groups
+  /// with more than a page of recipes keep loading further ones on demand.
+  void _maybeLoadMoreRecipes() {
+    if (!_recipesMaybeMore) return;
+    if (recipes.length < _recipeLimit) return; // current page not full yet
+    final pos = _scrollController.position;
+    if (pos.pixels < pos.maxScrollExtent - 600) return;
+    _recipeLimit += _recipePageSize;
+    _subscribeRecipes();
+  }
+
+  /// How long a just-added recipe stays pinned to the very start of the grid.
+  static const Duration _newRecipeWindow = Duration(days: 3);
+
+  /// Orders the recipe grid. Recipes added within [_newRecipeWindow] come first
+  /// (newest first) so a freshly added recipe is right at the start. The rest are
+  /// ranked so the recipes worth cooking again rise to the top: ones cooked often
+  /// but not in the last few days. Frequency comes from the cooking plans
+  /// ([_usageCounts]) with diminishing returns; a "due" factor grows from 0 right
+  /// after a recipe was last used toward 1 over about a week, so a just-cooked
+  /// recipe is pushed down while a regular favourite resurfaces. Older never-used
+  /// recipes keep a small decaying bonus, and a recipe already planned ahead is
+  /// de-emphasised.
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _rankOwnRecipes(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> list) {
+    final now = DateTime.now();
+    final newCutoff = now.subtract(_newRecipeWindow);
+    final scores = <String, double>{};
+    for (final d in list) {
+      final data = d.data();
+      final count = _usageCounts[d.id] ?? 0;
+      final freq = math.log(1 + count);
+
+      final lastUsed = (data['lastUsedAt'] as Timestamp?)?.toDate();
+      double due = 0;
+      if (lastUsed != null) {
+        final days = now.difference(lastUsed).inHours / 24.0;
+        due = 1 - math.exp(-days / 7.0);
+      }
+      var score = freq * due;
+
+      final created = (data['createdAt'] as Timestamp?)?.toDate();
+      if (created != null) {
+        final age = now.difference(created).inHours / 24.0;
+        score += (count == 0 ? 1.2 : 0.3) * math.exp(-age / 10.0);
+      }
+
+      // Already on the plan ahead → less need to resurface it now.
+      if (_futurePlanned.contains(d.id)) score *= 0.5;
+      scores[d.id] = score;
+    }
+    DateTime? createdOf(QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+        (d.data()['createdAt'] as Timestamp?)?.toDate();
+
+    final ordered = [...list];
+    ordered.sort((a, b) {
+      // Just-added recipes first, newest first.
+      final ca = createdOf(a);
+      final cb = createdOf(b);
+      final na = ca != null && ca.isAfter(newCutoff);
+      final nb = cb != null && cb.isAfter(newCutoff);
+      if (na != nb) return na ? -1 : 1;
+      if (na && nb) {
+        return (cb?.millisecondsSinceEpoch ?? 0)
+            .compareTo(ca?.millisecondsSinceEpoch ?? 0);
+      }
+      // Then by "cook again" score.
+      final c = (scores[b.id] ?? 0).compareTo(scores[a.id] ?? 0);
+      if (c != 0) return c;
+      final la = (a.data()['lastUsedAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+      final lb = (b.data()['lastUsedAt'] as Timestamp?)?.millisecondsSinceEpoch ?? 0;
+      return lb.compareTo(la);
+    });
+    return ordered;
+  }
+
   void generateSearchedRecipes() {
     if (searchQuery.isEmpty) {
-      searchedRecipes = recipes;
+      searchedRecipes = _rankOwnRecipes(recipes);
     } else {
       final query = searchQuery.trim().toLowerCase();
       final splitRe = RegExp(r'[ \t\n\r,.;:!?\-()\[\]"\x27\\/]+');
@@ -516,20 +671,36 @@ class _RecipePageState extends State<RecipePage> {
       _suggestionsLoading = true;
     });
 
-    // Public recipes: snappy 300 ms debounce.
+    // Public recipes + reused ideas: snappy 300 ms debounce. Both are single
+    // indexed reads, so ideas already in the corpus show almost immediately
+    // instead of waiting on the AI-generation debounce below.
     _publicTimer = Timer(const Duration(milliseconds: 300), () async {
       if (!mounted || seq != _aiSeq) return;
       final results = await _fetchPublicMatches(q);
       if (!mounted || seq != _aiSeq) return;
       _publicCache[qKey] = results;
       setState(() => _publicSuggestions = results);
+
+      if (widget.aiEnabled && !_hasStrongLocalMatch(q)) {
+        final cached = await _fetchCachedIdeas(q);
+        if (!mounted || seq != _aiSeq) return;
+        if (cached.isNotEmpty) {
+          _aiCache[qKey] = cached;
+          setState(() => _suggestions = cached);
+        }
+      }
     });
 
-    // AI name ideas: 1 s debounce; loading clears when this settles.
+    // AI generation: 1 s debounce, only when the idea corpus didn't already
+    // cover the query. Loading clears when this settles.
     if (widget.aiEnabled && !_hasStrongLocalMatch(q)) {
       _aiTimer = Timer(const Duration(seconds: 1), () async {
         if (!mounted || seq != _aiSeq) return;
-        final results = await _fetchNameIdeas(q);
+        if (_suggestions.length >= _minCachedIdeas) {
+          setState(() => _suggestionsLoading = false);
+          return;
+        }
+        final results = await _generateNameIdeas(q);
         if (!mounted || seq != _aiSeq) return;
         _aiCache[qKey] = results;
         setState(() {
@@ -564,8 +735,66 @@ class _RecipePageState extends State<RecipePage> {
     });
   }
 
+  /// Minimum number of good cached ideas needed to skip AI generation entirely.
+  static const int _minCachedIdeas = 3;
 
-  Future<List<RecipeSuggestion>> _fetchNameIdeas(String q) async {
+  /// Reuses ideas earlier searches already generated: up to [_minCachedIdeas]
+  /// names whose search terms cover the whole query and fit the user's diet, or
+  /// an empty list when the corpus doesn't cover it well enough. A single indexed
+  /// read, so it runs on the snappy debounce to show reused ideas quickly.
+  Future<List<RecipeSuggestion>> _fetchCachedIdeas(String q) async {
+    final lang = LanguageService.instance.code.value;
+    final tokens = q
+        .toLowerCase()
+        .split(RegExp(r'[^\p{L}\p{N}]+', unicode: true))
+        .where((t) => t.length >= 2)
+        .toList();
+    if (tokens.isEmpty) return const [];
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('recipe_idea_cache')
+          .where('searchTokens', arrayContainsAny: tokens.take(10).toList())
+          .limit(20)
+          .get();
+      final tokenSet = tokens.toSet();
+      final prefs = _dietary.map((e) => e.toLowerCase()).toSet();
+      final seenNames = <String>{};
+      final names = <String>[];
+      for (final d in snap.docs) {
+        final data = d.data();
+        if ((data['lang'] ?? 'en') != lang) continue;
+        final ideaTokens =
+            (data['searchTokens'] as List?)?.map((e) => e.toString()).toSet() ??
+                const <String>{};
+        // The idea must match every word of the query to count as a good hit.
+        if (tokenSet.where(ideaTokens.contains).length < tokenSet.length) {
+          continue;
+        }
+        // …and satisfy every diet the user follows.
+        final dietary = (data['dietary'] as List?)
+                ?.map((e) => e.toString().toLowerCase())
+                .toSet() ??
+            const <String>{};
+        if (!prefs.every(dietary.contains)) continue;
+        final name = (data['name'] ?? '').toString().trim();
+        if (name.isNotEmpty && seenNames.add(name.toLowerCase())) {
+          names.add(name);
+        }
+      }
+      if (names.length >= _minCachedIdeas) {
+        return names
+            .take(_minCachedIdeas)
+            .map((n) => RecipeSuggestion(kind: SuggestionKind.name, title: n))
+            .toList();
+      }
+    } catch (_) {}
+    return const [];
+  }
+
+  /// Generates fresh name ideas via the AI function (which stores them, tagged
+  /// with search terms, for future reuse). Slower, so it runs only on the longer
+  /// debounce when the idea corpus didn't already cover the query.
+  Future<List<RecipeSuggestion>> _generateNameIdeas(String q) async {
     try {
       final res = await _functions
           .httpsCallable('recipes-suggestRecipeNames')
@@ -596,11 +825,12 @@ class _RecipePageState extends State<RecipePage> {
           .limit(20)
           .get();
       final lang = LanguageService.instance.code.value;
+      final tokenSet = tokens.toSet();
       // Public recipes keep an English base plus a `translations` map for the
       // languages listed in `languages`. Recipes available in the user's
-      // language come first (shown translated); the rest fall back to English.
-      final own = <RecipeSuggestion>[];
-      final english = <RecipeSuggestion>[];
+      // language come first (shown translated); within each language bucket the
+      // best matches — more query tokens hit, then more popular — come first.
+      final ranked = <({bool hasOwn, double score, RecipeSuggestion s})>[];
       for (final d in snap.docs) {
         final data = d.data();
         final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
@@ -611,15 +841,26 @@ class _RecipePageState extends State<RecipePage> {
           final name = (localized?['name'] ?? '').toString();
           if (name.isNotEmpty) title = name;
         }
-        final suggestion = RecipeSuggestion(
-          kind: SuggestionKind.public,
-          title: title,
-          publicId: d.id,
-          publicImage: data['image'] as String?,
-        );
-        (hasOwn ? own : english).add(suggestion);
+        final recipeTokens =
+            (data['searchTokens'] as List?)?.map((e) => e.toString()).toSet() ?? const <String>{};
+        final relevance = tokenSet.where(recipeTokens.contains).length;
+        final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
+        ranked.add((
+          hasOwn: hasOwn,
+          score: relevance * 10 + math.log(1 + popularity),
+          s: RecipeSuggestion(
+            kind: SuggestionKind.public,
+            title: title,
+            publicId: d.id,
+            publicImage: data['image'] as String?,
+          ),
+        ));
       }
-      return [...own, ...english].take(4).toList();
+      ranked.sort((a, b) {
+        if (a.hasOwn != b.hasOwn) return a.hasOwn ? -1 : 1;
+        return b.score.compareTo(a.score);
+      });
+      return ranked.map((e) => e.s).take(4).toList();
     } catch (_) {
       return [];
     }
@@ -738,9 +979,28 @@ class _RecipePageState extends State<RecipePage> {
             )));
   }
 
-  /// Dragging a suggestion onto the save zone: generate/adopt the recipe
-  /// (loading dialog) and set lastUsedAt to now, without planning it.
+  /// Dragging a suggestion onto the save zone: generate/adopt the recipe and
+  /// set lastUsedAt to now, without planning it. Public recipes are adopted
+  /// instantly from preloaded data; AI-generated recipes show a loading dialog.
   Future<void> _handleSuggestionSave(RecipeSuggestion s) async {
+    if (s.kind == SuggestionKind.public) {
+      try {
+        final preloadFuture =
+            _publicPreload.remove(s.publicId!) ?? preloadPublicRecipe(s.publicId!);
+        final preload = await preloadFuture;
+        final result = await adoptPublicRecipeFromPreload(
+          groupId: widget.groupId,
+          publicRecipeId: s.publicId!,
+          preload: preload,
+          uid: FirebaseAuth.instance.currentUser!.uid,
+          lang: LanguageService.instance.code.value,
+        );
+        result.imageUpload.ignore();
+      } catch (_) {
+        _snack('Could not save this recipe.');
+      }
+      return;
+    }
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -748,35 +1008,26 @@ class _RecipePageState extends State<RecipePage> {
     );
     try {
       String? recipeId;
-      if (s.kind == SuggestionKind.public) {
-        recipeId = await adoptPublicRecipe(
-          groupId: widget.groupId,
-          publicRecipeId: s.publicId!,
-          uid: FirebaseAuth.instance.currentUser!.uid,
-          lang: LanguageService.instance.code.value,
-        );
-      } else {
-        if (s.kind == SuggestionKind.url && s.url != null) {
-          final existing = _findRecipeIdByUrl(s.url!);
-          if (existing != null) {
-            recipeId = existing;
-          } else {
-            final ref = await _createRecipeDoc(name: '', attribution: s.url);
-            recipeId = ref.id;
-            await _callStaged(recipeId, s);
-          }
+      if (s.kind == SuggestionKind.url && s.url != null) {
+        final existing = _findRecipeIdByUrl(s.url!);
+        if (existing != null) {
+          recipeId = existing;
         } else {
-          final ref = await _createRecipeDoc(
-              name: s.kind == SuggestionKind.name ? s.title : '');
+          final ref = await _createRecipeDoc(name: '', attribution: s.url);
           recipeId = ref.id;
           await _callStaged(recipeId, s);
         }
-        if (recipeId != null) {
-          groupDoc
-              .collection('recipes')
-              .doc(recipeId)
-              .update({'lastUsedAt': FieldValue.serverTimestamp()});
-        }
+      } else {
+        final ref = await _createRecipeDoc(
+            name: s.kind == SuggestionKind.name ? s.title : '');
+        recipeId = ref.id;
+        await _callStaged(recipeId, s);
+      }
+      if (recipeId != null) {
+        groupDoc
+            .collection('recipes')
+            .doc(recipeId)
+            .update({'lastUsedAt': FieldValue.serverTimestamp()});
       }
     } catch (_) {
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
@@ -787,14 +1038,19 @@ class _RecipePageState extends State<RecipePage> {
     Navigator.of(context, rootNavigator: true).pop();
   }
 
-  /// Dragging a suggestion onto a day: generate/adopt the recipe (loading
-  /// dialog), then plan it and open the add-to-shopping-list dialog.
+  /// Dragging a suggestion onto a day: generate/adopt the recipe, then plan it
+  /// and open the add-to-shopping-list dialog. Public recipes are adopted
+  /// instantly from preloaded data; AI-generated recipes show a loading dialog.
   Future<void> _handleSuggestionDrop(
     DateTime day,
     List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
     int index,
     RecipeSuggestion s,
   ) async {
+    if (s.kind == SuggestionKind.public) {
+      await _handlePublicRecipeDrop(day, plans, index, s);
+      return;
+    }
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -802,32 +1058,23 @@ class _RecipePageState extends State<RecipePage> {
     );
     String? recipeId;
     try {
-      if (s.kind == SuggestionKind.public) {
-        recipeId = await adoptPublicRecipe(
-          groupId: widget.groupId,
-          publicRecipeId: s.publicId!,
-          uid: FirebaseAuth.instance.currentUser!.uid,
-          lang: LanguageService.instance.code.value,
-        );
-      } else {
-        if (s.kind == SuggestionKind.url && s.url != null) {
-          final existing = _findRecipeIdByUrl(s.url!);
-          if (existing != null) {
-            recipeId = existing;
-          } else {
-            final ref = await _createRecipeDoc(
-                name: '',
-                attribution: s.url);
-            recipeId = ref.id;
-            await _callStaged(recipeId, s);
-          }
+      if (s.kind == SuggestionKind.url && s.url != null) {
+        final existing = _findRecipeIdByUrl(s.url!);
+        if (existing != null) {
+          recipeId = existing;
         } else {
           final ref = await _createRecipeDoc(
-              name: s.kind == SuggestionKind.name ? s.title : '',
-              attribution: null);
+              name: '',
+              attribution: s.url);
           recipeId = ref.id;
           await _callStaged(recipeId, s);
         }
+      } else {
+        final ref = await _createRecipeDoc(
+            name: s.kind == SuggestionKind.name ? s.title : '',
+            attribution: null);
+        recipeId = ref.id;
+        await _callStaged(recipeId, s);
       }
       if (recipeId != null) await _resolvePendingIngredients(recipeId);
     } catch (_) {
@@ -838,6 +1085,40 @@ class _RecipePageState extends State<RecipePage> {
     if (!mounted) return;
     Navigator.of(context, rootNavigator: true).pop(); // close loading dialog
     if (recipeId == null) return;
+    final snap = await groupDoc.collection('recipes').doc(recipeId).get();
+    if (mounted) _handleDrop(day, plans, index, snap);
+  }
+
+  /// Adopts [s] using preloaded data: writes recipe + cooking plan instantly,
+  /// then uploads the image in the background with a loading overlay on the tile.
+  Future<void> _handlePublicRecipeDrop(
+    DateTime day,
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
+    int index,
+    RecipeSuggestion s,
+  ) async {
+    String? recipeId;
+    try {
+      final preloadFuture =
+          _publicPreload.remove(s.publicId!) ?? preloadPublicRecipe(s.publicId!);
+      final preload = await preloadFuture;
+      final result = await adoptPublicRecipeFromPreload(
+        groupId: widget.groupId,
+        publicRecipeId: s.publicId!,
+        preload: preload,
+        uid: FirebaseAuth.instance.currentUser!.uid,
+        lang: LanguageService.instance.code.value,
+      );
+      recipeId = result.recipeId;
+      if (mounted) setState(() => _uploadingRecipeIds.add(recipeId!));
+      result.imageUpload.whenComplete(() {
+        if (mounted) setState(() => _uploadingRecipeIds.remove(recipeId));
+      });
+    } catch (_) {
+      _snack('Could not adopt this recipe.');
+      return;
+    }
+    if (!mounted || recipeId == null) return;
     final snap = await groupDoc.collection('recipes').doc(recipeId).get();
     if (mounted) _handleDrop(day, plans, index, snap);
   }
@@ -1079,8 +1360,28 @@ class _RecipePageState extends State<RecipePage> {
         suggestedPool.isNotEmpty &&
         !keyboardVisible &&
         searchQuery.trim().isEmpty;
+    // Suggestion tiles shown while searching, de-duplicated so a public/AI idea
+    // never repeats a recipe the group already has (matched by title, or an
+    // already-adopted public recipe) nor another suggestion with the same title.
+    final ownRecipeNames = {
+      for (final r in searchedRecipes)
+        (r.data()['name'] ?? '').toString().trim().toLowerCase(),
+    };
+    final seenSuggestionTitles = <String>{};
+    final suggestionTiles = <RecipeSuggestion>[];
+    for (final s in [..._publicSuggestions, ..._suggestions]) {
+      if (s.publicId != null && adoptedPublicIds.contains(s.publicId)) continue;
+      final t = s.title.trim().toLowerCase();
+      if (t.isNotEmpty) {
+        if (ownRecipeNames.contains(t)) continue;
+        if (!seenSuggestionTitles.add(t)) continue;
+      }
+      suggestionTiles.add(s);
+    }
     final suggestedTopOffset =
-        showSuggestedRow ? smallerdim / crossAxisCount * 3 / 4 + 1 : 0.0;
+        (showSuggestedRow || (widget.aiEnabled && suggestionTiles.isNotEmpty))
+            ? smallerdim / crossAxisCount * 3 / 4 + 1
+            : 0.0;
 
     return Column(
       mainAxisSize: MainAxisSize.max,
@@ -1215,20 +1516,38 @@ class _RecipePageState extends State<RecipePage> {
                                             crossAxisCount: planCrossAxisCount,
                                           ),
                                           childWhenDragging: const SizedBox.shrink(),
-                                          child: _RecipeOpenContainer(
-                                            recipeId: dayPlans[i]['recipe'],
-                                            groupId: groupDoc.id,
-                                            groupDoc: groupDoc,
-                                            aiEnabled: widget.aiEnabled,
-                                            initialData:
-                                            _recipeDataFor(dayPlans[i]['recipe']),
-                                            child: RecipeCard(
-                                              recipeId: dayPlans[i]['recipe'],
-                                              groupCollection: groupDoc,
-                                              data: _recipeDataFor(dayPlans[i]['recipe']),
-                                              cropContent: true,
-                                              crossAxisCount: planCrossAxisCount,
-                                            ),
+                                          child: Stack(
+                                            children: [
+                                              _RecipeOpenContainer(
+                                                recipeId: dayPlans[i]['recipe'],
+                                                groupId: groupDoc.id,
+                                                groupDoc: groupDoc,
+                                                aiEnabled: widget.aiEnabled,
+                                                initialData:
+                                                _recipeDataFor(dayPlans[i]['recipe']),
+                                                child: RecipeCard(
+                                                  recipeId: dayPlans[i]['recipe'],
+                                                  groupCollection: groupDoc,
+                                                  data: _recipeDataFor(dayPlans[i]['recipe']),
+                                                  cropContent: true,
+                                                  crossAxisCount: planCrossAxisCount,
+                                                ),
+                                              ),
+                                              if (_uploadingRecipeIds.contains(dayPlans[i]['recipe']))
+                                                Positioned.fill(
+                                                  child: IgnorePointer(
+                                                    child: ClipRRect(
+                                                      borderRadius: BorderRadius.circular(20),
+                                                      child: const ColoredBox(
+                                                        color: Colors.black26,
+                                                        child: Center(
+                                                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                            ],
                                           ),
                                         ),
                                       ),
@@ -1279,6 +1598,11 @@ class _RecipePageState extends State<RecipePage> {
                         crossAxisCount: crossAxisCount,
                         onDragStarted: () => setState(() => _isDraggingSuggestion = true),
                         onDragEnd: () => setState(() => _isDraggingSuggestion = false),
+                        onDragStartedWithSuggestion: (s) {
+                          if (s.publicId != null) {
+                            _publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
+                          }
+                        },
                       ),
                     ),
                   SliverPadding(
@@ -1288,12 +1612,18 @@ class _RecipePageState extends State<RecipePage> {
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount),
                       delegate: SliverChildListDelegate([
-                        // Suggestion tiles (public always, AI names only when enabled).
+                        // Suggestion tiles (public always, AI names only when enabled),
+                        // de-duplicated against the group's own recipes.
                         if (searchQuery.trim().isNotEmpty)
-                          for (final s in [..._publicSuggestions, ..._suggestions])
+                          for (final s in suggestionTiles)
                             LongPressDraggable<RecipeSuggestion>(
                               data: s,
-                              onDragStarted: () => setState(() => _isDraggingSuggestion = true),
+                              onDragStarted: () {
+                                setState(() => _isDraggingSuggestion = true);
+                                if (s.kind == SuggestionKind.public && s.publicId != null) {
+                                  _publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
+                                }
+                              },
                               onDragEnd: (_) => setState(() => _isDraggingSuggestion = false),
                               onDraggableCanceled: (_, __) => setState(() => _isDraggingSuggestion = false),
                               feedback: RecipeSuggestionCard(
@@ -1460,6 +1790,7 @@ class _SuggestedRowWidget extends StatefulWidget {
   final int crossAxisCount;
   final VoidCallback? onDragStarted;
   final VoidCallback? onDragEnd;
+  final void Function(RecipeSuggestion)? onDragStartedWithSuggestion;
 
   const _SuggestedRowWidget({
     super.key,
@@ -1472,6 +1803,7 @@ class _SuggestedRowWidget extends StatefulWidget {
     this.canEditPublicRecipes = false,
     this.onDragStarted,
     this.onDragEnd,
+    this.onDragStartedWithSuggestion,
   });
 
   @override
@@ -1533,7 +1865,10 @@ class _SuggestedRowWidgetState extends State<_SuggestedRowWidget> {
             interactive
                 ? LongPressDraggable<RecipeSuggestion>(
                     data: s,
-                    onDragStarted: widget.onDragStarted,
+                    onDragStarted: () {
+                      widget.onDragStarted?.call();
+                      widget.onDragStartedWithSuggestion?.call(s);
+                    },
                     onDragEnd: (_) => widget.onDragEnd?.call(),
                     onDraggableCanceled: (_, __) => widget.onDragEnd?.call(),
                     feedback: RecipeSuggestionCard(

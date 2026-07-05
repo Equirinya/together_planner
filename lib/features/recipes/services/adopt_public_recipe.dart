@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
@@ -9,25 +11,65 @@ const String _kBaseLanguage = 'en';
 /// Largest public image we are willing to pull down and re-upload.
 const int _kMaxImageBytes = 20 * 1024 * 1024;
 
-/// Copies a public recipe into a group's own `recipes` collection, localized to
-/// [lang] when a translation exists (else the English base). Replaces the former
-/// `adoptPublicRecipe` Cloud Function: the recipe doc, its ingredients and a
-/// private copy of the image are written client-side in a single batch. Returns
-/// the id of the new group recipe.
-Future<String> adoptPublicRecipe({
+/// Pre-fetched public recipe data, ready for instant adoption on drop.
+/// [imageFuture] may still be in-flight when this object is returned, allowing
+/// the recipe doc and ingredients to be written to Firestore immediately while
+/// the image download continues in the background.
+class PublicRecipePreload {
+  final Map<String, dynamic> data;
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> ingredients;
+
+  /// Resolves to the downloaded image bytes (or null on failure / no image).
+  final Future<Uint8List?> imageFuture;
+
+  const PublicRecipePreload(this.data, this.ingredients, this.imageFuture);
+}
+
+/// Fetches the public recipe document and its ingredients concurrently, then
+/// starts the image download in the background without blocking the returned
+/// [Future]. Call when the user begins dragging a public recipe suggestion;
+/// await the result on drop so that [adoptPublicRecipeFromPreload] can write to
+/// Firestore immediately.
+Future<PublicRecipePreload> preloadPublicRecipe(String publicRecipeId) async {
+  final db = FirebaseFirestore.instance;
+  final publicRef = db.doc('public_recipes/$publicRecipeId');
+
+  // Start ingredient fetch before awaiting the recipe doc so both run in parallel.
+  final ingFuture = publicRef.collection('ingredients').get();
+
+  final snap = await publicRef.get();
+  if (!snap.exists) throw StateError('Public recipe not found.');
+  final p = snap.data()!;
+
+  // Kick off image download — kept as a Future so it does not block the caller.
+  final imagePath = p['image'];
+  final Future<Uint8List?> imgFuture;
+  if (imagePath is String && imagePath.isNotEmpty) {
+    imgFuture = _fetchImageBytes(imagePath);
+  } else {
+    imgFuture = Future.value(null);
+  }
+
+  final ingSnap = await ingFuture;
+  return PublicRecipePreload(p, ingSnap.docs, imgFuture);
+}
+
+/// Writes the recipe and its ingredients from [preload] to Firestore without
+/// waiting for the image. Returns the new recipe id and an [imageUpload]
+/// [Future] that chains on the preload's still-running image download and then
+/// uploads the bytes; the recipe doc is updated with the storage path once
+/// complete. Callers can create the cooking plan as soon as [recipeId] is
+/// available.
+Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPreload({
   required String groupId,
   required String publicRecipeId,
+  required PublicRecipePreload preload,
   required String uid,
   required String lang,
 }) async {
   final db = FirebaseFirestore.instance;
-  final publicRef = db.doc('public_recipes/$publicRecipeId');
-  final publicSnap = await publicRef.get();
-  if (!publicSnap.exists) throw StateError('Public recipe not found.');
-  final p = publicSnap.data()!;
+  final p = preload.data;
 
-  // Public recipes store an English base plus a `translations` map. Prefer the
-  // user's language when a translation exists, else fall back to the base.
   final localized = lang == _kBaseLanguage
       ? null
       : (p['translations'] as Map<String, dynamic>?)?[lang] as Map<String, dynamic>?;
@@ -35,28 +77,6 @@ Future<String> adoptPublicRecipe({
       (localized?[key] ?? p[key] ?? fallback) as T;
 
   final recipeRef = db.collection('groups/$groupId/recipes').doc();
-
-  // Copy the public image into the group's own storage so editing or deleting
-  // this recipe never touches the shared public asset (and vice-versa).
-  final images = <String>[];
-  final imagePath = p['image'];
-  if (imagePath is String && imagePath.isNotEmpty) {
-    try {
-      final bytes = await FirebaseStorage.instance.ref(imagePath).getData(_kMaxImageBytes);
-      if (bytes != null) {
-        final dest =
-            'groups/$groupId/recipes/${recipeRef.id}/ai_${DateTime.now().millisecondsSinceEpoch}.jpg';
-        await FirebaseStorage.instance
-            .ref(dest)
-            .putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
-        images.add(dest);
-      }
-    } catch (_) {
-      // Non-fatal: adopt the recipe without an image.
-    }
-  }
-
-  final ingSnap = await publicRef.collection('ingredients').get();
 
   final batch = db.batch();
   batch.set(recipeRef, {
@@ -70,12 +90,12 @@ Future<String> adoptPublicRecipe({
     'servings': p['servings'] ?? 2,
     'tags': localizedField<List<dynamic>>('tags', const []),
     'steps': localizedField<List<dynamic>>('steps', const []),
-    'images': images,
+    'images': <String>[],
     'sourcePublicId': publicRecipeId,
     if (p['attribution'] != null) 'attribution': p['attribution'],
   });
 
-  for (final d in ingSnap.docs) {
+  for (final d in preload.ingredients) {
     final data = d.data();
     final ingLocalized = lang == _kBaseLanguage
         ? null
@@ -96,5 +116,36 @@ Future<String> adoptPublicRecipe({
   }
 
   await batch.commit();
-  return recipeRef.id;
+
+  // Chain image upload on the already-running download future so upload starts
+  // as soon as the bytes are ready, without any additional waiting.
+  final imageUpload = preload.imageFuture
+      .then((bytes) => _uploadImageAndUpdate(recipeRef, groupId, bytes));
+  return (recipeId: recipeRef.id, imageUpload: imageUpload);
+}
+
+Future<Uint8List?> _fetchImageBytes(String storagePath) async {
+  try {
+    return await FirebaseStorage.instance.ref(storagePath).getData(_kMaxImageBytes);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> _uploadImageAndUpdate(
+  DocumentReference<Map<String, dynamic>> recipeRef,
+  String groupId,
+  Uint8List? bytes,
+) async {
+  if (bytes == null) return;
+  try {
+    final dest =
+        'groups/$groupId/recipes/${recipeRef.id}/ai_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    await FirebaseStorage.instance
+        .ref(dest)
+        .putData(bytes, SettableMetadata(contentType: 'image/jpeg'));
+    await recipeRef.update({'images': [dest]});
+  } catch (_) {
+    // Non-fatal: recipe stays without image.
+  }
 }
