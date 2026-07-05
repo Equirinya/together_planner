@@ -47,21 +47,39 @@ final List<_DietaryOption> _kRestrictionOptions = [
 /// Returns the icon for a dietary tag, or null if not a known dietary option.
 /// Matching is case-insensitive and ignores hyphens and spaces,
 /// so "Nut-free", "nut free", and "nutfree" all match.
-IconData? dietaryTagIcon(String tag) {
-  switch (tag.toLowerCase().replaceAll(RegExp(r'[\s\-]+'), '')) {
-    case 'vegan': return Icons.spa;
-    case 'vegetarian': return Icons.eco;
-    case 'pescatarian': return MdiIcons.fish;
-    case 'glutenfree': return MdiIcons.barleyOff;
-    case 'lactosefree': return MdiIcons.cowOff;
-    case 'nutfree': return MdiIcons.peanutOff;
-    case 'halal': return MdiIcons.foodHalal;
-    case 'kosher': return MdiIcons.foodKosher;
-    case 'jain': return MdiIcons.om;
-    case 'lowcarb': return Icons.fitness_center;
-    default: return null;
-  }
-}
+// Maps normalized tag labels (lowercase, no spaces/hyphens) to icons.
+// Keys must be pre-normalized. To add a language, append its terms here.
+// Normalization strips spaces and hyphens, so "nut-free", "nut free" and
+// "nutfree" all resolve to the same key "nutfree".
+final Map<String, IconData> _kDietaryTagIcons = {
+  // — English —
+  'vegan':        Icons.spa,
+  'vegetarian':   Icons.eco,
+  'pescatarian':  MdiIcons.fish,
+  'glutenfree':   MdiIcons.barleyOff,
+  'lactosefree':  MdiIcons.cowOff,
+  'nutfree':      MdiIcons.peanutOff,
+  'halal':        MdiIcons.foodHalal,
+  'kosher':       MdiIcons.foodKosher,
+  'jain':         MdiIcons.om,
+  'lowcarb':      Icons.fitness_center,
+  // — German —
+  'vegetarisch':      Icons.eco,
+  'pescetarisch':     MdiIcons.fish,
+  'glutenfrei':       MdiIcons.barleyOff,
+  'laktosefrei':      MdiIcons.cowOff,
+  'nussfrei':         MdiIcons.peanutOff,
+  'koscher':          MdiIcons.foodKosher,
+  'kohlenhydratarm':  Icons.fitness_center,
+};
+
+String _normalizeDietaryTag(String tag) =>
+    tag.toLowerCase().replaceAll(RegExp(r'[\s\-]+'), '');
+
+/// Returns the icon for a dietary tag, or null if not recognised.
+/// Matching is case-insensitive and ignores spaces and hyphens.
+IconData? dietaryTagIcon(String tag) =>
+    _kDietaryTagIcons[_normalizeDietaryTag(tag)];
 
 /// Lets the user pick preset dietary preferences and add their own. Controlled:
 /// reports the full list (presets + custom) via [onChanged].

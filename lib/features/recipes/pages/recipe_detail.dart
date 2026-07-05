@@ -39,12 +39,18 @@ class RecipeDetailPage extends StatefulWidget {
     this.publicRecipeId,
     this.sharedSourceGroupId,
     this.canEditPublicRecipes = false,
+    this.onTagTap,
   });
 
   final String groupId;
   final String recipeId;
   final bool editMode;
   final bool aiEnabled;
+
+  /// Called instead of the default behaviour when a tag chip is tapped (view
+  /// mode only). The caller is responsible for closing this page and acting on
+  /// the tag (e.g. entering it into a search field).
+  final void Function(String tag)? onTagTap;
 
   /// When set, the page opens as a read-only preview of the public recipe with
   /// this id (localized), showing a "Save in own recipes" button instead of the
@@ -96,6 +102,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   String? _publicId;
   String? _sharedGroupId;
   String? _savedRecipeId;
+  String? _destGroupName;
   bool _saving = false;
   bool get _isPublicPreview => _publicId != null;
   bool get _isSharedPreview => _sharedGroupId != null;
@@ -168,6 +175,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
     if (_isSharedPreview) {
       _loadSharedPreview();
+      _loadDestGroupName();
       return;
     }
 
@@ -337,6 +345,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     });
   }
 
+  Future<void> _loadDestGroupName() async {
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('groups')
+          .doc(widget.groupId)
+          .get();
+      final name = (snap.data()?['name'] ?? '').toString();
+      if (mounted && name.isNotEmpty) setState(() => _destGroupName = name);
+    } catch (_) {}
+  }
+
   /// Adopts/copies the previewed recipe into the group, then switches this same
   /// page over to the new local recipe without a route change: the copied image
   /// is warmed into the cache first so the storage-path swap paints from cache
@@ -345,19 +364,26 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     if (!_isPreview) return;
     setState(() => _saving = true);
     try {
-      final newId = _isSharedPreview
-          ? await copyGroupRecipe(
-              groupId: widget.groupId,
-              sourceGroupId: _sharedGroupId!,
-              sourceRecipeId: widget.recipeId,
-              uid: FirebaseAuth.instance.currentUser!.uid,
-            )
-          : await adoptPublicRecipe(
-              groupId: widget.groupId,
-              publicRecipeId: _publicId!,
-              uid: FirebaseAuth.instance.currentUser!.uid,
-              lang: lang,
-            );
+      final String newId;
+      if (_isSharedPreview) {
+        newId = await copyGroupRecipe(
+          groupId: widget.groupId,
+          sourceGroupId: _sharedGroupId!,
+          sourceRecipeId: widget.recipeId,
+          uid: FirebaseAuth.instance.currentUser!.uid,
+        );
+      } else {
+        final preload = await preloadPublicRecipe(_publicId!);
+        final result = await adoptPublicRecipeFromPreload(
+          groupId: widget.groupId,
+          publicRecipeId: _publicId!,
+          preload: preload,
+          uid: FirebaseAuth.instance.currentUser!.uid,
+          lang: lang,
+        );
+        newId = result.recipeId;
+        await result.imageUpload; // wait for image before switching the page
+      }
       final newRef = FirebaseFirestore.instance
           .collection('groups')
           .doc(widget.groupId)
@@ -756,7 +782,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.bookmark_add_outlined),
-                    label: const Text('Save in own recipes'),
+                    label: Text(
+                      _isSharedPreview && _destGroupName != null
+                          ? 'Save to recipes in $_destGroupName'
+                          : 'Save in own recipes',
+                    ),
                   ),
                 ),
               ),
@@ -895,13 +925,29 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         (recipeData?['name'] ?? '').toString().isEmpty)
                     ? _titleShimmer()
                     : Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
                 recipeData?['name'] ?? 'Unnamed Recipe',
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
             ),
+
+            if (attribution != null && attribution!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Icon(Icons.link, size: 14,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(child: _AttributionText(attribution!)),
+                  ],
+                ),
+              ),
 
             // ── Tags + times ─────────────────────────────────────────────
             Padding(
@@ -934,12 +980,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 ],
               ),
             ),
-
-            if (attribution != null && attribution!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: _AttributionText(attribution!),
-              ),
 
             const SizedBox(height: 12),
 
@@ -1327,32 +1367,39 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   Widget _buildTagChip(String tag) {
     final cs = Theme.of(context).colorScheme;
+    final onTap = widget.onTagTap == null ? null : () => widget.onTagTap!(tag);
     final icon = dietaryTagIcon(tag);
     if (icon != null) {
-      return Tooltip(
-        message: tag,
-        child: Container(
-          decoration: BoxDecoration(
-            color: cs.primaryContainer,
-            borderRadius: BorderRadius.circular(20),
+      return GestureDetector(
+        onTap: onTap,
+        child: Tooltip(
+          message: tag,
+          child: Container(
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(6),
+            child: Icon(icon, size: 16, color: cs.onPrimaryContainer),
           ),
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 16, color: cs.onPrimaryContainer),
         ),
       );
     }
-    return Chip(
-      label: Text(tag,
-          style: Theme.of(context)
-              .textTheme
-              .labelSmall
-              ?.copyWith(color: cs.onPrimaryContainer)),
-      labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      backgroundColor: cs.primaryContainer,
-      side: BorderSide.none,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
+    return GestureDetector(
+      onTap: onTap,
+      child: Chip(
+        label: Text(tag,
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: cs.onPrimaryContainer)),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        backgroundColor: cs.primaryContainer,
+        side: BorderSide.none,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
     );
   }
 
@@ -1657,7 +1704,9 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
 
   @override
   void dispose() {
-    widget.onDescriptionSave(_descCtrl.text.trim());
+    if (widget.editMode) {
+      widget.onDescriptionSave(_descCtrl.text.trim());
+    }
     _descFocus.dispose();
     _descCtrl.dispose();
     super.dispose();
@@ -1774,9 +1823,9 @@ class _AttributionText extends StatelessWidget {
   Widget build(BuildContext context) {
     final style = Theme.of(context).textTheme.bodySmall;
     final linkStyle = style?.copyWith(
-      color: Theme.of(context).colorScheme.primary,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
       decoration: TextDecoration.underline,
-      decorationColor: Theme.of(context).colorScheme.primary,
+      decorationColor: Theme.of(context).colorScheme.onSurfaceVariant,
     );
 
     final spans = <InlineSpan>[];

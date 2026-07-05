@@ -6,9 +6,7 @@
 #if not exisiting yet, create a distribution certificate: https://mzansibytes.com/2021/08/28/create-apple-developer-certificates-on-windows/, then [Convert]::ToBase64String([IO.File]::ReadAllBytes("ExportedCertificate.pfx")) | Out-File "ExportedCertificate_base64.txt"
 
 #create Identifier:  (APP-IDs/APP/) add Push Notifications, Sign In with Apple
-#then change bundle id in Step 8 below
 #create Provisioning Profile: Distribution/App Store Connect then [Convert]::ToBase64String([IO.File]::ReadAllBytes("AppName.mobileprovision")) | Out-File "AppName_base64.txt"
-#copy Provisioning Profile name to Step 5 & 8 below
 #create App in App Store Connect
 
 
@@ -24,12 +22,15 @@
 #P12_PASSWORD #password for distribution certificate
 
 #BUILD_PROVISION_PROFILE_BASE64
+#BUILD_PROVISION_PROFILE_SHARE_BASE64
 
 #KEYCHAIN_PASSWORD #can be set freely
 
 ###necessary github action repository variables:
 #BUNDLE_ID
 #PROVISIONING_PROFILE_NAME
+#BUNDLE_ID_SHARE
+#PROVISIONING_PROFILE_NAME_SHARE
 #DEPLOYMENT_TARGET
 #FLUTTER_VERSION
 
@@ -92,14 +93,17 @@ jobs:
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $RUNNER_TEMP/app-signing.keychain-db
           security list-keychain -d user -s $RUNNER_TEMP/app-signing.keychain-db
 
-      # Step 5: Configure Provisioning Profile
-      - name: Configure Provisioning Profile
+      # Step 5: Configure Provisioning Profiles
+      - name: Configure Provisioning Profiles
         env:
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           PROVISIONING_PROFILE_NAME: ${{ vars.PROVISIONING_PROFILE_NAME }}
+          BUILD_PROVISION_PROFILE_SHARE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_SHARE_BASE64 }}
+          PROVISIONING_PROFILE_NAME_SHARE: ${{ vars.PROVISIONING_PROFILE_NAME_SHARE }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_NAME.mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/"$PROVISIONING_PROFILE_NAME".mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_SHARE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/"$PROVISIONING_PROFILE_NAME_SHARE".mobileprovision
 
       # Step 6: Configure Distribution Certificate
       - name: Configure Distribution Certificate
@@ -133,6 +137,8 @@ jobs:
           EXPORT_DESTINATION: "export"
           BUNDLE_ID: ${{ vars.BUNDLE_ID }}
           PROVISIONING_PROFILE: ${{ vars.PROVISIONING_PROFILE_NAME }}
+          BUNDLE_ID_SHARE: ${{ vars.BUNDLE_ID_SHARE }}
+          PROVISIONING_PROFILE_SHARE: ${{ vars.PROVISIONING_PROFILE_NAME_SHARE }}
           TEAM_ID: ${{ secrets.TEAM_ID }}
         run: |
           envsubst < ios/Runner/ExportOptions-Template.plist > ios/Runner/ExportOptions.plist

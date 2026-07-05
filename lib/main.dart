@@ -23,7 +23,6 @@ import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
 import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
-import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.dart';
 import 'package:couple_planner/features/groups/pages/join_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
@@ -48,7 +47,6 @@ const _featureMeta = <String, ({IconData icon, String label})>{
   'todos': (icon: Icons.checklist, label: 'To-Do\'s'),
   'calendar': (icon: Icons.calendar_month, label: 'Calendar'),
   'money': (icon: Icons.account_balance_wallet, label: 'Money splitting'),
-  'ingredients_admin': (icon: Icons.fact_check, label: 'Ingredients'),
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +142,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final Set<int> _visitedIndices = {};
+  final RecipePageController _recipePageController = RecipePageController();
   String? _selectedGroup;
   String? _cachedGroupId;
   bool _groupDocReady = false;
@@ -387,7 +386,13 @@ class _HomePageState extends State<HomePage> {
       ids.insert(0, _selectedGroup!);
     }
     Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => GroupOverviewPage(groupIds: ids, selectedGroup: _selectedGroup, onSelect: _selectGroup),
+      builder: (_) => GroupOverviewPage(
+        groupIds: ids,
+        selectedGroup: _selectedGroup,
+        onSelect: _selectGroup,
+        canEditIngredients: _canEditIngredients,
+        canEditPublicRecipes: _canEditPublicRecipes,
+      ),
     ));
   }
 
@@ -505,8 +510,7 @@ class _HomePageState extends State<HomePage> {
       if (!mounted || !fresh.exists) return;
       final canEdit = fresh.data()?['editIngredients'] == true;
       if (canEdit != _canEditIngredients) {
-        _canEditIngredients = canEdit;
-        _subscribeToGroupDoc(_selectedGroup);
+        setState(() => _canEditIngredients = canEdit);
       }
       final canEditPublic = fresh.data()?['editPublicRecipes'] == true;
       if (canEditPublic != _canEditPublicRecipes) {
@@ -562,8 +566,7 @@ class _HomePageState extends State<HomePage> {
       final raw = data['enabledFeatures'];
       final List<String> parsed = raw is List ? raw.map((e) => e.toString()).where(_allFeatures.contains).toList() : List.of(_defaultEnabledFeatures);
 
-      final base = parsed.isNotEmpty ? parsed : List.of(_defaultEnabledFeatures);
-      final enabled = _canEditIngredients ? [...base, 'ingredients_admin'] : base;
+      final enabled = parsed.isNotEmpty ? parsed : List.of(_defaultEnabledFeatures);
 
       // --- default startup page -----------------------------------------------
       final String? defaultPage = data['defaultPage'] as String?;
@@ -636,7 +639,7 @@ class _HomePageState extends State<HomePage> {
       case 'shopping_list':
         return ShoppingListPage(groupId: _selectedGroup!);
       case 'recipes':
-        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes);
+        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes, controller: _recipePageController);
       case 'todos':
         // Replace with your real TodosPage when ready
         return const _PlaceholderPage(label: 'To-Do\'s');
@@ -646,8 +649,6 @@ class _HomePageState extends State<HomePage> {
       case 'money':
         // Replace with your real MoneyPage when ready
         return const _PlaceholderPage(label: 'Money splitting');
-      case 'ingredients_admin':
-        return const IngredientAdminPage();
       default:
         return const SizedBox.shrink();
     }
@@ -663,7 +664,30 @@ class _HomePageState extends State<HomePage> {
     final bool noGroups = acceptedGroups != null && acceptedGroups!.isEmpty && (_selectedGroup == null || _selectedGroup!.isEmpty);
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
-    return Scaffold(
+    return AnimatedBuilder(
+      animation: Listenable.merge(
+          [_recipePageController.hasSearch, _recipePageController.keyboardVisible]),
+      builder: (context, child) {
+        final hasSearch = _recipePageController.hasSearch.value;
+        final keyboardVisible = _recipePageController.keyboardVisible.value;
+        final onRecipes = _currentFeatureKey == 'recipes';
+        return PopScope(
+          // On the recipes tab, back first dismisses the keyboard if it's
+          // open; only once it's closed does back clear an active search,
+          // before finally falling through to the normal back/exit behaviour.
+          canPop: !(onRecipes && (keyboardVisible || hasSearch)),
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            if (keyboardVisible) {
+              FocusManager.instance.primaryFocus?.unfocus();
+              return;
+            }
+            _recipePageController.clearSearchIfActive();
+          },
+          child: child!,
+        );
+      },
+      child: Scaffold(
       bottomNavigationBar: groupReady
           ? NavigationBar(
               height: 60,
@@ -745,6 +769,7 @@ class _HomePageState extends State<HomePage> {
               ),
             )
           : const Center(child: CupertinoActivityIndicator()),
+      ),
       ),
     );
   }

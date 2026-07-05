@@ -36,12 +36,14 @@ target 'Runner' do
   target 'RunnerTests' do
     inherit! :search_paths
   end
-end
 
-# The Share Extension reuses the receive_sharing_intent pod that is linked into
-# the Runner target via inherited search paths.
-target 'Share Extension' do
-  inherit! :search_paths
+  # Share Extension nested here (per receive_sharing_intent's setup instructions)
+  # so it reuses the already-built Runner framework via search paths, instead of
+  # compiling its own copy of the pod under APPLICATION_EXTENSION_API_ONLY, which
+  # fails to compile the plugin's app-delegate-only code paths.
+  target 'Share Extension' do
+    inherit! :search_paths
+  end
 end
 
 post_install do |installer|

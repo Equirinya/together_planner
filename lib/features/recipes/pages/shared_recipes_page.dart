@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:animations/animations.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -7,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
-import 'package:couple_planner/features/recipes/pages/recipe_page.dart' show RecipeCard;
+import 'package:couple_planner/features/recipes/widgets/recipe_card.dart' show RecipeCard;
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
 
 /// Browses another group's recipes (as a recipe viewer) and lets the user add
@@ -15,9 +16,14 @@ import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart'
 /// already copied into the active group; tapping it copies or removes the
 /// recipe. Tapping the tile body opens a read-only detail preview.
 class SharedRecipesPage extends StatefulWidget {
-  const SharedRecipesPage({super.key, required this.sourceGroupId});
+  const SharedRecipesPage({
+    super.key,
+    required this.sourceGroupId,
+    this.showLeaveButton = true,
+  });
 
   final String sourceGroupId;
+  final bool showLeaveButton;
 
   @override
   State<SharedRecipesPage> createState() => _SharedRecipesPageState();
@@ -28,6 +34,8 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
   final String _uid = FirebaseAuth.instance.currentUser!.uid;
 
   String? _destGroupId;
+  List<String> _memberGroupIds = [];
+  bool _groupPickerExpanded = false;
 
   StreamSubscription? _sourceSub;
   StreamSubscription? _destSub;
@@ -54,10 +62,20 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
   }
 
   Future<void> _loadDestGroup() async {
-    final prefs = await SharedPreferences.getInstance();
-    final id = prefs.getString('selected_group');
+    final memberSnap = await _db.collection('users').doc(_uid).collection('groups').get();
     if (!mounted) return;
-    setState(() => _destGroupId = (id != null && id.isNotEmpty) ? id : null);
+    final memberIds = memberSnap.docs.map((d) => d.id).toList();
+    setState(() => _memberGroupIds = memberIds);
+
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('selected_group');
+    // If the preferred dest is the source itself (or unset), pick a different member group.
+    if (id == null || id.isEmpty || id == widget.sourceGroupId) {
+      id = memberIds.firstWhere((g) => g != widget.sourceGroupId, orElse: () => '');
+      if (id.isEmpty) id = null;
+    }
+    if (!mounted) return;
+    setState(() => _destGroupId = id);
     if (_destGroupId != null) _subscribeDest(_destGroupId!);
   }
 
@@ -131,24 +149,21 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
     await batch.commit();
   }
 
-  void _openDetail(String sourceRecipeId, Map<String, dynamic> data) {
-    if (_destGroupId == null) {
-      _snack('Select or create your own group first.');
-      return;
-    }
-    final existingId = _addedBySource[sourceRecipeId];
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => existingId != null
-          // Already copied: open the editable local recipe directly.
-          ? RecipeDetailPage(groupId: _destGroupId!, recipeId: existingId)
-          // Not yet copied: read-only preview with a "Save in own recipes" button.
-          : RecipeDetailPage(
-              groupId: _destGroupId!,
-              recipeId: sourceRecipeId,
-              sharedSourceGroupId: widget.sourceGroupId,
-              initialData: data,
-            ),
-    ));
+  Future<void> _leave() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Stop viewing recipes?'),
+        content: const Text('You can be invited again later.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Confirm')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _db.collection('users').doc(_uid).collection('recipe_groups').doc(widget.sourceGroupId).delete();
+    if (mounted) Navigator.of(context).pop();
   }
 
   void _snack(String msg) {
@@ -169,6 +184,14 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
           docRef: _sourceGroupRef,
           builder: (data) => Text((data['name'] ?? 'Recipes').toString()),
         ),
+        actions: [
+          if (widget.showLeaveButton)
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Leave',
+              onPressed: _leave,
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -190,27 +213,66 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
 
   Widget _buildTopBar() {
     final cs = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      color: cs.surfaceContainerHigh,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: _destGroupId == null
-          ? const Text('Select or create your own group to add recipes.')
-          : Row(
-              children: [
-                const Icon(Icons.add_task, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: LoadDocumentBuilder(
-                    docRef: _db.collection('groups').doc(_destGroupId),
-                    builder: (data) => Text(
-                      'Select recipes to add them to group ${(data['name'] ?? '').toString()}',
-                      style: Theme.of(context).textTheme.bodyMedium,
+    // Member groups that can serve as copy destination (exclude the source group itself).
+    final targets = _memberGroupIds.where((g) => g != widget.sourceGroupId).toList();
+    final canSwitch = targets.length > 1;
+
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      child: Container(
+        width: double.infinity,
+        color: cs.surfaceContainerHigh,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            InkWell(
+              onTap: canSwitch
+                  ? () => setState(() => _groupPickerExpanded = !_groupPickerExpanded)
+                  : null,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Row(
+                  children: [
+                    const Icon(Icons.add_task, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _destGroupId == null
+                          ? const Text('No group available to copy to.')
+                          : LoadDocumentBuilder(
+                              docRef: _db.collection('groups').doc(_destGroupId),
+                              builder: (data) => Text(
+                                'Copying to: ${(data['name'] ?? '').toString()}',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ),
                     ),
-                  ),
+                    if (canSwitch)
+                      Icon(_groupPickerExpanded ? Icons.expand_less : Icons.expand_more, size: 20),
+                  ],
                 ),
-              ],
+              ),
             ),
+            if (_groupPickerExpanded)
+              for (final gid in targets)
+                RadioListTile<String>(
+                  value: gid,
+                  groupValue: _destGroupId,
+                  title: LoadDocumentBuilder(
+                    docRef: _db.collection('groups').doc(gid),
+                    builder: (data) => Text((data['name'] ?? 'Group').toString()),
+                  ),
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() {
+                      _destGroupId = v;
+                      _groupPickerExpanded = false;
+                    });
+                    _subscribeDest(v);
+                  },
+                ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -219,17 +281,41 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
     final added = _addedBySource.containsKey(doc.id);
     final busy = _busy.contains(doc.id);
     final cs = Theme.of(context).colorScheme;
+    final destId = _destGroupId;
+    final existingId = _addedBySource[doc.id];
 
     return Stack(
+      fit: StackFit.expand,
       children: [
-        GestureDetector(
-          onTap: () => _openDetail(doc.id, data),
-          child: RecipeCard(
-            recipeId: doc.id,
-            groupCollection: _sourceGroupRef,
-            data: data,
-            crossAxisCount: crossAxisCount,
+        OpenContainer(
+          tappable: false,
+          transitionType: ContainerTransitionType.fade,
+          transitionDuration: const Duration(milliseconds: 300),
+          closedElevation: 0,
+          closedColor: Colors.transparent,
+          openColor: Theme.of(context).scaffoldBackgroundColor,
+          closedShape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
           ),
+          closedBuilder: (_, open) => GestureDetector(
+            onTap: destId == null
+                ? () => _snack('Select or create your own group first.')
+                : open,
+            child: RecipeCard(
+              recipeId: doc.id,
+              groupCollection: _sourceGroupRef,
+              data: data,
+              crossAxisCount: crossAxisCount,
+            ),
+          ),
+          openBuilder: (_, __) => existingId != null
+              ? RecipeDetailPage(groupId: destId!, recipeId: existingId)
+              : RecipeDetailPage(
+                  groupId: destId!,
+                  recipeId: doc.id,
+                  sharedSourceGroupId: widget.sourceGroupId,
+                  initialData: data,
+                ),
         ),
         Positioned(
           top: 8,

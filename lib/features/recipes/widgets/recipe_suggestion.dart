@@ -92,6 +92,7 @@ class RecipeSuggestionCard extends StatelessWidget {
                   final sd = constraints.maxWidth < constraints.maxHeight
                       ? constraints.maxWidth
                       : constraints.maxHeight;
+                  final dpr = MediaQuery.of(context).devicePixelRatio;
                   return Stack(
                     children: [
                       if (hasImage) ...[
@@ -99,6 +100,7 @@ class RecipeSuggestionCard extends StatelessWidget {
                           child: StorageImage(
                             storagePath: suggestion.publicImage!,
                             fit: BoxFit.cover,
+                            memCacheHeight: (constraints.maxHeight * dpr).toInt(),
                           ),
                         ),
                         Container(color: Colors.black26),
@@ -119,34 +121,30 @@ class RecipeSuggestionCard extends StatelessWidget {
                             ),
                           ),
                         ),
+                      if (hasImage)
+                        Align(
+                          alignment: Alignment.topLeft,
+                          child: Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(icon, size: 16, color: Colors.white),
+                          ),
+                        ),
                       Align(
                         alignment: Alignment.bottomLeft,
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 6),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 2),
-                                child: Icon(icon, size: 12, color: Colors.white70),
-                              ),
-                              const SizedBox(width: 3),
-                              Expanded(
-                                child: Text(
-                                  suggestion.title.isNotEmpty
-                                      ? suggestion.title
-                                      : (suggestion.kind == SuggestionKind.url
-                                          ? 'Reading link…'
-                                          : ''),
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .titleMedium
-                                      ?.copyWith(color: Colors.white, height: 1.2),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
+                          child: Text(
+                            suggestion.title.isNotEmpty
+                                ? suggestion.title
+                                : (suggestion.kind == SuggestionKind.url
+                                    ? 'Reading link…'
+                                    : ''),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(color: Colors.white, height: 1.2),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
