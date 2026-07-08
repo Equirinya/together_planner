@@ -12,6 +12,8 @@
     <dict>
        <key>${BUNDLE_ID}</key>
        <string>${PROVISIONING_PROFILE}</string>
+       <key>${BUNDLE_ID_SHARE}</key>
+       <string>${PROVISIONING_PROFILE_SHARE}</string>
     </dict>
     <key>signingCertificate</key>
     <string>Apple Distribution</string>

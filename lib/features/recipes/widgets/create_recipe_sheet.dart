@@ -24,6 +24,7 @@ class CreateRecipeSheet extends StatefulWidget {
 
 class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
   final _controller = TextEditingController();
+  String? _textError;
 
   @override
   void dispose() {
@@ -41,6 +42,14 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
 
   void _createWithAi(CreateRecipeType type) {
     final text = _controller.text.trim();
+    if (type == CreateRecipeType.text && text.length < 3) {
+      setState(() {
+        _textError = text.isEmpty
+            ? 'Please enter some text'
+            : 'Please enter at least 3 characters';
+      });
+      return;
+    }
     Navigator.pop(context, CreateRecipeResult(type, text.isEmpty ? null : text));
   }
 
@@ -62,11 +71,14 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
             controller: _controller,
             autofocus: true,
             textInputAction: TextInputAction.done,
+            onChanged: (_) {
+              if (_textError != null) setState(() => _textError = null);
+            },
             onSubmitted: (_) => _createBlank(),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               labelText: 'Name',
               hintText: "e.g. Grandma's lasagna",
-              prefixIcon: Icon(Icons.edit_note),
+              errorText: _textError,
             ),
           ),
           const SizedBox(height: 20),

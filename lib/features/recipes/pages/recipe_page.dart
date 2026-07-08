@@ -76,6 +76,10 @@ class _RecipePageState extends State<RecipePage>
   static const int _recipePageSize = 50;
   int _recipeLimit = _recipePageSize;
   bool _recipesMaybeMore = true;
+  // While searching, the window is widened to cover the whole group so search
+  // isn't limited to whatever page happened to be loaded already.
+  static const int _allRecipesLimit = 100000;
+  bool _searchActive = false;
 
   // How often each recipe has been cooked (past cooking-plan entries within
   // [_usageWindowDays]) and which recipes are already planned in the future.
@@ -255,22 +259,30 @@ class _RecipePageState extends State<RecipePage>
     super.dispose();
   }
 
-  /// (Re)subscribes to the group's recipes with the current [_recipeLimit].
-  /// Ordered by `createdAt` so freshly added recipes always sit in the loaded
-  /// window (a recipe never cooked yet has no `lastUsedAt`); the grid itself is
-  /// re-ranked client-side by [_rankOwnRecipes] when not searching.
+  /// (Re)subscribes to the group's recipes with the current [_recipeLimit], or
+  /// with [_allRecipesLimit] while [_searchActive] so search covers every
+  /// recipe rather than just the loaded page. Ordered by `createdAt` so
+  /// freshly added recipes always sit in the loaded window (a recipe never
+  /// cooked yet has no `lastUsedAt`); the grid itself is re-ranked
+  /// client-side by [_rankOwnRecipes] when not searching.
+  ///
+  /// While searching the `orderBy` is dropped entirely: search re-sorts by
+  /// match score anyway, and a doc whose `createdAt` is still an unresolved
+  /// `FieldValue.serverTimestamp()` write is excluded by Firestore from any
+  /// query ordered by that same field until the write reaches the server —
+  /// which made a just-saved recipe briefly vanish from the search results.
   void _subscribeRecipes() {
     recipesListener?.cancel();
-    recipesListener = groupDoc
-        .collection('recipes')
-        .orderBy('createdAt', descending: true)
-        .limit(_recipeLimit)
-        .snapshots()
-        .listen((snapshot) {
+    final limit = _searchActive ? _allRecipesLimit : _recipeLimit;
+    Query<Map<String, dynamic>> query = groupDoc.collection('recipes');
+    if (!_searchActive) {
+      query = query.orderBy('createdAt', descending: true);
+    }
+    recipesListener = query.limit(limit).snapshots().listen((snapshot) {
       setState(() {
         recipes = snapshot.docs;
         // A full page means there may be more to load on scroll.
-        _recipesMaybeMore = snapshot.docs.length >= _recipeLimit;
+        _recipesMaybeMore = !_searchActive && snapshot.docs.length >= _recipeLimit;
         generateSearchedRecipes();
       });
     });
@@ -322,6 +334,7 @@ class _RecipePageState extends State<RecipePage>
   Future<DocumentReference<Map<String, dynamic>>> _createRecipeDoc({
     required String name,
     String? attribution,
+    String? searchHint,
   }) {
     return groupDoc.collection('recipes').add({
       'name': name,
@@ -336,6 +349,7 @@ class _RecipePageState extends State<RecipePage>
       'images': <String>[],
       'steps': <String>[],
       if (attribution != null) 'attribution': attribution,
+      if (searchHint != null && searchHint.isNotEmpty) 'searchHint': searchHint,
     });
   }
 
@@ -477,6 +491,37 @@ class _RecipePageState extends State<RecipePage>
             )));
   }
 
+  /// Waits only until the recipe's `ingredients` stage has cleared from the
+  /// doc's `pending` array (steps 1–3 of generateRecipeStaged), rather than the
+  /// whole call — the image (stage 4) keeps generating in the background via
+  /// [generation]. Also surfaces a failure if [generation] itself rejects
+  /// before ever writing `pending`, or if the function flags generationError.
+  Future<void> _awaitIngredientsStage(
+      String recipeId, Future<void> generation) async {
+    final ref = groupDoc.collection('recipes').doc(recipeId);
+    final ready = Completer<void>();
+    late final StreamSubscription<DocumentSnapshot<Map<String, dynamic>>> sub;
+    sub = ref.snapshots().listen((snap) {
+      final data = snap.data();
+      if (data == null || ready.isCompleted) return;
+      if (data['generationError'] == true) {
+        ready.completeError(Exception('Recipe generation failed'));
+        return;
+      }
+      if (!data.containsKey('pending')) return;
+      final pending = List<String>.from(data['pending'] ?? const []);
+      if (!pending.contains('ingredients')) ready.complete();
+    });
+    generation.catchError((Object e) {
+      if (!ready.isCompleted) ready.completeError(e);
+    });
+    try {
+      await ready.future;
+    } finally {
+      sub.cancel();
+    }
+  }
+
   /// Dragging a suggestion onto the save zone: generate/adopt the recipe and
   /// set lastUsedAt to now, without planning it. Public recipes are adopted
   /// instantly from preloaded data; AI-generated recipes show a loading dialog.
@@ -504,22 +549,30 @@ class _RecipePageState extends State<RecipePage>
       barrierDismissible: false,
       builder: (_) => const _GeneratingDialog(),
     );
+    // The current search text, if any, is stamped onto the new recipe as
+    // `searchHint` so it stays findable under the term that surfaced this
+    // suggestion, even once AI generation replaces its name/description/tags
+    // with something that doesn't literally contain those words.
+    final searchHint = searchQuery.trim();
+    String? recipeId;
     try {
-      String? recipeId;
       if (s.kind == SuggestionKind.url && s.url != null) {
         final existing = _findRecipeIdByUrl(s.url!);
         if (existing != null) {
           recipeId = existing;
         } else {
-          final ref = await _createRecipeDoc(name: '', attribution: s.url);
+          final ref = await _createRecipeDoc(
+              name: '', attribution: s.url, searchHint: searchHint);
           recipeId = ref.id;
-          await _callStaged(recipeId, s);
+          // Fire and forget; the doc is edited in place as generation streams in.
+          _callStaged(recipeId, s).ignore();
         }
       } else {
         final ref = await _createRecipeDoc(
-            name: s.kind == SuggestionKind.name ? s.title : '');
+            name: s.kind == SuggestionKind.name ? s.title : '',
+            searchHint: searchHint);
         recipeId = ref.id;
-        await _callStaged(recipeId, s);
+        _callStaged(recipeId, s).ignore();
       }
       if (recipeId != null) {
         groupDoc
@@ -565,14 +618,14 @@ class _RecipePageState extends State<RecipePage>
               name: '',
               attribution: s.url);
           recipeId = ref.id;
-          await _callStaged(recipeId, s);
+          await _awaitIngredientsStage(recipeId, _callStaged(recipeId, s));
         }
       } else {
         final ref = await _createRecipeDoc(
             name: s.kind == SuggestionKind.name ? s.title : '',
             attribution: null);
         recipeId = ref.id;
-        await _callStaged(recipeId, s);
+        await _awaitIngredientsStage(recipeId, _callStaged(recipeId, s));
       }
       if (recipeId != null) await _resolvePendingIngredients(recipeId);
     } catch (_) {
@@ -1115,8 +1168,27 @@ class _RecipePageState extends State<RecipePage>
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount),
                       delegate: SliverChildListDelegate([
-                        // Suggestion tiles (public always, AI names only when enabled),
-                        // de-duplicated against the group's own recipes.
+                        // Own recipes first, then suggestion tiles (public
+                        // matches, then AI names when enabled) — prefer what
+                        // the group already has over ideas for something new.
+                        for (final e in searchedRecipes)
+                          LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
+                            key: ValueKey(e.id),
+                            data: e,
+                            onDragStarted: () => _preloadIngredients(e.id),
+                            feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            childWhenDragging:
+                            RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            child: RecipeOpenContainer(
+                              recipeId: e.id,
+                              groupId: widget.groupId,
+                              groupDoc: groupDoc,
+                              aiEnabled: widget.aiEnabled,
+                              initialData: e.data(),
+                              onTagTap: _onDetailTagTap,
+                              child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
+                            ),
+                          ),
                         if (searchQuery.trim().isNotEmpty)
                           for (final s in suggestionTiles)
                             LongPressDraggable<RecipeSuggestion>(
@@ -1139,24 +1211,6 @@ class _RecipePageState extends State<RecipePage>
                                     suggestion: s, crossAxisCount: crossAxisCount),
                               ),
                             ),
-                        for (final e in searchedRecipes)
-                          LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
-                            key: ValueKey(e.id),
-                            data: e,
-                            onDragStarted: () => _preloadIngredients(e.id),
-                            feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            childWhenDragging:
-                            RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            child: RecipeOpenContainer(
-                              recipeId: e.id,
-                              groupId: widget.groupId,
-                              groupDoc: groupDoc,
-                              aiEnabled: widget.aiEnabled,
-                              initialData: e.data(),
-                              onTagTap: _onDetailTagTap,
-                              child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            ),
-                          ),
                       ]),
                     ),
                   ),
@@ -1165,46 +1219,119 @@ class _RecipePageState extends State<RecipePage>
               // ── Search bar ─────────────────────────────────────────────
               Align(
                 alignment: Alignment.bottomCenter,
-                child: Padding(
+                child: AnimatedPadding(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOut,
                   padding: keyboardVisible
                       ? EdgeInsets.zero
                       : const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                  child: SearchBar(
-                    shape: WidgetStatePropertyAll(
-                      keyboardVisible
-                          ? const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.vertical(
-                          top: Radius.circular(16),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.easeOut,
+                          clipBehavior: Clip.antiAlias,
+                          decoration: BoxDecoration(
+                            borderRadius: keyboardVisible
+                                ? const BorderRadius.only(
+                                    topLeft: Radius.circular(16))
+                                : BorderRadius.circular(28),
+                          ),
+                          child: SearchBar(
+                          shape: const WidgetStatePropertyAll(
+                            RoundedRectangleBorder(),
+                          ),
+                          controller: _searchController,
+                          hintText: 'Search recipes',
+                          leading: Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Icon(Icons.search,
+                                color: colorScheme.onSurfaceVariant),
+                          ),
+                          onChanged: (value) {
+                            final wasEmpty = searchQuery.trim().isEmpty;
+                            final isEmptyNow = value.trim().isEmpty;
+                            searchQuery = value;
+                            // Widen the loaded recipe window to the whole group while
+                            // searching, so search isn't limited to whatever page had
+                            // already been scrolled into view; revert once cleared.
+                            if (wasEmpty && !isEmptyNow && !_searchActive) {
+                              _searchActive = true;
+                              _subscribeRecipes();
+                            } else if (!wasEmpty && isEmptyNow && _searchActive) {
+                              _searchActive = false;
+                              _subscribeRecipes();
+                            }
+                            generateSearchedRecipes();
+                            onSearchChangedAi(value);
+                            if (wasEmpty && value.trim().isNotEmpty && _scrollController.hasClients) {
+                              _scrollController.jumpTo(0);
+                            }
+                          },
+                          trailing: [
+                            if (suggestionsLoading && searchQuery.trim().isNotEmpty)
+                              const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CupertinoActivityIndicator(),
+                              ),
+                            if (searchQuery.isNotEmpty)
+                              IconButton(
+                                onPressed: () {
+                                  _searchController.clear();
+                                  searchQuery = '';
+                                  if (_searchActive) {
+                                    _searchActive = false;
+                                    _subscribeRecipes();
+                                  }
+                                  generateSearchedRecipes();
+                                  onSearchChangedAi('');
+                                },
+                                icon: const Icon(Icons.close),
+                              ),
+                          ],
+                          ),
                         ),
-                      )
-                          : const StadiumBorder(),
-                    ),
-                    controller: _searchController,
-                    hintText: 'Search recipes',
-                    leading: Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: Icon(Icons.search,
-                          color: colorScheme.onSurfaceVariant),
-                    ),
-                    onChanged: (value) {
-                      final wasEmpty = searchQuery.trim().isEmpty;
-                      searchQuery = value;
-                      generateSearchedRecipes();
-                      onSearchChangedAi(value);
-                      if (wasEmpty && value.trim().isNotEmpty && _scrollController.hasClients) {
-                        _scrollController.jumpTo(0);
-                      }
-                    },
-                    trailing: [
-                      if (suggestionsLoading && searchQuery.trim().isNotEmpty)
-                        const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CupertinoActivityIndicator(),
+                      ),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                        alignment: Alignment.center,
+                        width: keyboardVisible ? 1 : 8,
+                        height: 56,
+                        color: keyboardVisible
+                            ? colorScheme.surfaceContainerHigh
+                            : Colors.transparent,
+                        child: AnimatedOpacity(
+                          duration: const Duration(milliseconds: 300),
+                          opacity: keyboardVisible ? 1 : 0,
+                          child: Container(
+                            width: 1,
+                            height: 32,
+                            color: colorScheme.outlineVariant,
+                          ),
                         ),
-                      IconButton(
+                      ),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        curve: Curves.easeOut,
+                        clipBehavior: Clip.antiAlias,
+                        width: 56,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHigh,
+                          borderRadius: keyboardVisible
+                              ? const BorderRadius.only(
+                                  topRight: Radius.circular(16))
+                              : BorderRadius.circular(28),
+                        ),
+                        child: IconButton(
                           onPressed: _openCreateMenu,
-                          icon: const Icon(Icons.add)),
+                          icon: const Icon(Icons.add),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -1299,7 +1426,7 @@ class _GeneratingDialog extends StatelessWidget {
           children: [
             CupertinoActivityIndicator(),
             SizedBox(width: 16),
-            Flexible(child: Text('Loading recipe…')),
+            Flexible(child: Text('Generating recipe…')),
           ],
         ),
       ),

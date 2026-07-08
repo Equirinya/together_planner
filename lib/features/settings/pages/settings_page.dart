@@ -241,6 +241,7 @@ class _RecipeSuggestionToggleState extends State<_RecipeSuggestionToggle> {
             setState(() => _enabled = v);
             final prefs = await SharedPreferences.getInstance();
             await prefs.setBool(_key, v);
+            RecipeSuggestionNotifier.notify();
           },
         ),
         ListTile(

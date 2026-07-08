@@ -157,7 +157,17 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
   void generateSearchedRecipes() {
     final parsed = _parseSearchQuery(searchQuery);
-    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> pool = recipes;
+    _applySearchedRecipes(parsed, recipes);
+  }
+
+  /// Filters [pool] by [parsed]'s tags/text and assigns the result to
+  /// [searchedRecipes] — ranked by "cook again" score with no free text, or
+  /// by match score once there's free text. [recipes] itself is widened to
+  /// cover the whole group while searching (see [RecipePage]'s search bar),
+  /// so this always runs over the full recipe set, not just a loaded page.
+  void _applySearchedRecipes(
+      ({List<String> tags, String text}) parsed,
+      Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> pool) {
     if (parsed.tags.isNotEmpty) {
       pool = pool.where((doc) {
         final docTags = (doc.data()['tags'] ?? [])
@@ -182,10 +192,17 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
         final description = (data['description'] ?? '').toString().toLowerCase();
         final tags =
         (data['tags'] ?? []).map<String>((e) => e.toString().toLowerCase()).toList();
+        // The query that surfaced this recipe as a suggestion (see
+        // [RecipePage._createRecipeDoc]'s `searchHint`), if any. AI-generated
+        // ideas are matched semantically, so the finished recipe's own
+        // name/description/tags don't always literally contain the words the
+        // user searched for; the hint keeps it findable under that search.
+        final searchHint = (data['searchHint'] ?? '').toString().toLowerCase();
         final tokens = [
           ...name.split(splitRe).where((s) => s.isNotEmpty),
           ...description.split(splitRe).where((s) => s.isNotEmpty),
           ...tags,
+          ...searchHint.split(splitRe).where((s) => s.isNotEmpty),
         ];
 
         double score = 0;
@@ -231,18 +248,6 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   static final _urlRe = RegExp(r'https?://\S+', caseSensitive: false);
 
   String? extractUrl(String s) => _urlRe.firstMatch(s)?.group(0);
-
-  /// True when an existing recipe's name already contains the whole query, in
-  /// which case the local results are good enough and no AI ideas are shown.
-  bool _hasStrongLocalMatch(String query) {
-    final q = query.toLowerCase();
-    for (final doc in recipes) {
-      if ((doc.data()['name'] ?? '').toString().toLowerCase().contains(q)) {
-        return true;
-      }
-    }
-    return false;
-  }
 
   /// Called on every keystroke (in addition to [generateSearchedRecipes]).
   /// Public matches use a short debounce (300 ms) and are shown regardless of
@@ -303,7 +308,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       _publicCache[qKey] = results;
       setState(() => publicSuggestions = results);
 
-      if (widget.aiEnabled && !(q.isNotEmpty && _hasStrongLocalMatch(q))) {
+      if (widget.aiEnabled) {
         final cached = await _fetchCachedIdeas(q, tags);
         if (!mounted || seq != _aiSeq) return;
         if (cached.isNotEmpty) {
@@ -315,10 +320,11 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
     // AI generation: 1 s debounce, only when the idea corpus didn't already
     // cover the query. Loading clears when this settles.
-    if (widget.aiEnabled && !(q.isNotEmpty && _hasStrongLocalMatch(q))) {
+    if (widget.aiEnabled) {
       aiTimer = Timer(const Duration(seconds: 1), () async {
         if (!mounted || seq != _aiSeq) return;
-        if (suggestions.length >= _minCachedIdeas) {
+        final shownTiles = searchedRecipes.length + publicSuggestions.length + suggestions.length;
+        if (shownTiles > _minCachedIdeas) {
           setState(() => suggestionsLoading = false);
           return;
         }
@@ -443,7 +449,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
   /// [tags] (from `#tag` filters) are folded into the token search so tagged
   /// recipes surface, and are then required as an exact match (case-insensitive,
-  /// against the base or the current language's translated tags) so only
+  /// against the base tags or any language's translated tags) so only
   /// recipes actually carrying every requested tag are returned.
   Future<List<RecipeSuggestion>> _fetchPublicMatches(String q, [List<String> tags = const []]) async {
     try {
@@ -478,13 +484,14 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           if (name.isNotEmpty) title = name;
         }
         if (tags.isNotEmpty) {
-          Map? localizedTags;
-          if (hasOwn) {
-            localizedTags = (data['translations'] as Map?)?[lang] as Map?;
-          }
+          // Check the base tags plus every language's translated tags (not
+          // just the current UI language), so a tag only translated into a
+          // language other than the user's still matches.
+          final translations = data['translations'] as Map?;
           final docTags = {
             ...(data['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
-            ...(localizedTags?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
+            for (final t in translations?.values ?? const [])
+              ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
           };
           if (!tags.every(docTags.contains)) continue;
         }
