@@ -102,8 +102,8 @@ jobs:
           PROVISIONING_PROFILE_NAME_SHARE: ${{ vars.PROVISIONING_PROFILE_NAME_SHARE }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_NAME.mobileprovision
-          echo "$BUILD_PROVISION_PROFILE_SHARE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/$PROVISIONING_PROFILE_NAME_SHARE.mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/"$PROVISIONING_PROFILE_NAME".mobileprovision
+          echo "$BUILD_PROVISION_PROFILE_SHARE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/"$PROVISIONING_PROFILE_NAME_SHARE".mobileprovision
 
       # Step 6: Configure Distribution Certificate
       - name: Configure Distribution Certificate
