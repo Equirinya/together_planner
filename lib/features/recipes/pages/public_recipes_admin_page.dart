@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
+import 'package:couple_planner/features/ingredients/models/ingredients.dart' show kPendingIngredient, kUnknownIngredient;
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 
 /// Lists every generated public recipe (global, server-managed), newest
@@ -27,9 +28,12 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
 
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
   final _scrollController = ScrollController();
+  final _searchController = TextEditingController();
   DocumentSnapshot<Map<String, dynamic>>? _lastDoc;
   bool _loading = false;
   bool _hasMore = true;
+  bool _loadingAll = false;
+  String _query = '';
 
   @override
   void initState() {
@@ -45,6 +49,7 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -66,123 +71,166 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
     });
   }
 
+  /// Search only matches what's already loaded, so pull in every remaining
+  /// page once the user starts typing.
+  Future<void> _loadAll() async {
+    if (_loadingAll) return;
+    _loadingAll = true;
+    try {
+      while (_hasMore) {
+        await _loadMore();
+      }
+    } finally {
+      _loadingAll = false;
+    }
+  }
+
   Future<void> _regenerateImage(String recipeId) async {
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _regenerating.add(recipeId));
     try {
       await _functions
           .httpsCallable('recipesEnhancement-regeneratePublicRecipeImage')
           .call({'recipeId': recipeId});
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not generate image: $e')));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not generate image: $e')));
     } finally {
       if (mounted) setState(() => _regenerating.remove(recipeId));
     }
   }
 
+  String _titleFor(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final data = d.data();
+    final lang = LanguageService.instance.code.value;
+    var title = (data['name'] ?? '').toString();
+    if (lang != 'en') {
+      final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
+      if (languages.contains(lang)) {
+        final localized = (data['translations'] as Map?)?[lang] as Map?;
+        final localizedName = (localized?['name'] ?? '').toString();
+        if (localizedName.isNotEmpty) title = localizedName;
+      }
+    }
+    return title;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final filteredDocs = _query.isEmpty
+        ? _docs
+        : _docs.where((d) => _titleFor(d).toLowerCase().contains(_query.toLowerCase())).toList();
     return Scaffold(
       appBar: AppBar(title: const Text('Public recipes')),
-      body: ListView.builder(
-        controller: _scrollController,
-        itemCount: _docs.length + (_hasMore ? 1 : 0),
-        itemBuilder: (context, i) {
-          if (i >= _docs.length) {
-            return const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(child: CircularProgressIndicator()),
-            );
-          }
-          final d = _docs[i];
-          final data = d.data();
-          final lang = LanguageService.instance.code.value;
-          var title = (data['name'] ?? '').toString();
-          if (lang != 'en') {
-            final languages =
-                (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
-            if (languages.contains(lang)) {
-              final localized = (data['translations'] as Map?)?[lang] as Map?;
-              final localizedName = (localized?['name'] ?? '').toString();
-              if (localizedName.isNotEmpty) title = localizedName;
-            }
-          }
-          final image = data['image'] as String?;
-          final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList() ?? const [];
-          final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
-          final dateStr = createdAt == null
-              ? null
-              : '${createdAt.day.toString().padLeft(2, '0')}.${createdAt.month.toString().padLeft(2, '0')}.${createdAt.year}';
-          final subtitleParts = [
-            if (dateStr != null) dateStr,
-            if (tags.isNotEmpty) tags.join(', '),
-          ];
-          final isRegenerating = _regenerating.contains(d.id);
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: TextField(
+              controller: _searchController,
+              decoration: const InputDecoration(
+                hintText: 'Search',
+                prefixIcon: Icon(Icons.search),
+              ),
+              onChanged: (v) {
+                setState(() => _query = v);
+                if (v.isNotEmpty) _loadAll();
+              },
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              itemCount: filteredDocs.length + (_query.isEmpty && _hasMore ? 1 : 0),
+              itemBuilder: (context, i) {
+                if (i >= filteredDocs.length) {
+                  return const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final d = filteredDocs[i];
+                final data = d.data();
+                final title = _titleFor(d);
+                final image = data['image'] as String?;
+                final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList() ?? const [];
+                final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+                final dateStr = createdAt == null
+                    ? null
+                    : '${createdAt.day.toString().padLeft(2, '0')}.${createdAt.month.toString().padLeft(2, '0')}.${createdAt.year}';
+                final subtitleParts = [
+                  if (dateStr != null) dateStr,
+                  if (tags.isNotEmpty) tags.join(', '),
+                ];
+                final isRegenerating = _regenerating.contains(d.id);
 
-          return ListTile(
-            leading: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: SizedBox(
-                width: 64,
-                height: 64,
-                child: (image?.isNotEmpty ?? false)
-                    ? StorageImage(
-                        storagePath: image!,
-                        fit: BoxFit.cover,
-                        memCacheWidth: 128,
-                        memCacheHeight: 128,
-                        errorWidget: const Icon(Icons.restaurant_menu),
-                        placeholder: const Icon(Icons.restaurant_menu),
-                      )
-                    : Container(
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        child: const Icon(Icons.restaurant_menu),
-                      ),
-              ),
-            ),
-            title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: subtitleParts.isEmpty
-                ? null
-                : Text(subtitleParts.join(' · '), maxLines: 1, overflow: TextOverflow.ellipsis),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _ResolveIngredientsButton(recipeId: d.id, functions: _functions),
-                if (!(image?.isNotEmpty ?? false))
-                  IconButton(
-                    icon: isRegenerating
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.auto_awesome),
-                    tooltip: 'Generate image',
-                    onPressed: isRegenerating ? null : () => _regenerateImage(d.id),
+                return ListTile(
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: SizedBox(
+                      width: 64,
+                      height: 64,
+                      child: (image?.isNotEmpty ?? false)
+                          ? StorageImage(
+                              storagePath: image!,
+                              fit: BoxFit.cover,
+                              memCacheWidth: 128,
+                              memCacheHeight: 128,
+                              errorWidget: const Icon(Icons.restaurant_menu),
+                              placeholder: const Icon(Icons.restaurant_menu),
+                            )
+                          : Container(
+                              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                              child: const Icon(Icons.restaurant_menu),
+                            ),
+                    ),
                   ),
-              ],
+                  title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: subtitleParts.isEmpty
+                      ? null
+                      : Text(subtitleParts.join(' · '), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _ResolveIngredientsButton(recipeId: d.id, functions: _functions),
+                      if (!(image?.isNotEmpty ?? false))
+                        IconButton(
+                          icon: isRegenerating
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.auto_awesome),
+                          tooltip: 'Generate image',
+                          onPressed: isRegenerating ? null : () => _regenerateImage(d.id),
+                        ),
+                    ],
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => RecipeDetailPage(
+                        groupId: widget.groupId,
+                        recipeId: '',
+                        publicRecipeId: d.id,
+                        canEditPublicRecipes: true,
+                        initialData: {
+                          'name': title,
+                          'description': '',
+                          'images': (image?.isNotEmpty ?? false) ? [image] : <String>[],
+                          'steps': <String>[],
+                          'tags': <String>[],
+                          'servings': 2,
+                          'time': 0,
+                          'preparationTime': 0,
+                        },
+                      ),
+                    ),
+                  ),
+                );
+              },
             ),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => RecipeDetailPage(
-                  groupId: widget.groupId,
-                  recipeId: '',
-                  publicRecipeId: d.id,
-                  canEditPublicRecipes: true,
-                  initialData: {
-                    'name': title,
-                    'description': '',
-                    'images': (image?.isNotEmpty ?? false) ? [image] : <String>[],
-                    'steps': <String>[],
-                    'tags': <String>[],
-                    'servings': 2,
-                    'time': 0,
-                    'preparationTime': 0,
-                  },
-                ),
-              ),
-            ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }
@@ -220,7 +268,10 @@ class _ResolveIngredientsButtonState extends State<_ResolveIngredientsButton> {
           .doc(widget.recipeId)
           .collection('ingredients')
           .get();
-      final hasUnresolved = snap.docs.any((d) => (d.data()['ingredientId'] as String?)?.trim().isNotEmpty != true);
+      final hasUnresolved = snap.docs.any((d) {
+        final id = (d.data()['ingredientId'] as String?)?.trim() ?? '';
+        return id.isEmpty || id == kPendingIngredient || id == kUnknownIngredient;
+      });
       if (mounted) setState(() => _hasUnresolved = hasUnresolved);
     } catch (_) {
       // leave as-is, retried next time the tile is rebuilt
@@ -230,6 +281,7 @@ class _ResolveIngredientsButtonState extends State<_ResolveIngredientsButton> {
   }
 
   Future<void> _resolve() async {
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _resolving = true);
     try {
       final res = await widget.functions
@@ -237,13 +289,13 @@ class _ResolveIngredientsButtonState extends State<_ResolveIngredientsButton> {
           .call({'recipeId': widget.recipeId});
       final data = res.data as Map;
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(content: Text('Resolved ${data['count']}/${data['total']} ingredients')),
         );
       }
       await _checkUnresolved();
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not resolve ingredients: $e')));
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not resolve ingredients: $e')));
     } finally {
       if (mounted) setState(() => _resolving = false);
     }

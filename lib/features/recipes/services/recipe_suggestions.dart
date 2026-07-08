@@ -63,7 +63,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   /// (newest first) so a freshly added recipe is right at the start. The rest are
   /// ranked so the recipes worth cooking again rise to the top: ones cooked often
   /// but not in the last few days. Frequency comes from the cooking plans
-  /// ([usageCounts]) with diminishing returns; a "due" factor starts at 0.35
+  /// ([usageCounts]) with diminishing returns; a "due" factor starts at 0.5
   /// right after a recipe was last used and grows toward 1 over about a week,
   /// so a just-cooked favourite still sits roughly mid-pack (scaled by how
   /// often it's made) rather than the very bottom, while a regular favourite
@@ -91,11 +91,11 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       double due = 0;
       if (lastUsed != null) {
         final days = now.difference(lastUsed).inHours / 24.0;
-        // Floored at 0.35 so a just-cooked favourite still lands roughly in
+        // Floored at 0.5 so a just-cooked favourite still lands roughly in
         // the middle of the pack (scaled by its frequency) instead of the
         // very bottom; it then climbs the rest of the way toward 1 over the
         // following week or so.
-        due = 0.35 + 0.65 * (1 - math.exp(-days / 7.0));
+        due = 0.5 + 0.5 * (1 - math.exp(-days / 7.0));
       }
       var score = freq * due;
 

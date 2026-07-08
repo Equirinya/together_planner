@@ -57,9 +57,12 @@ class _IngredientAdminPageState extends State<IngredientAdminPage> {
 
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
   final _scrollController = ScrollController();
+  final _searchController = TextEditingController();
   DocumentSnapshot<Map<String, dynamic>>? _lastDoc;
   bool _loading = false;
   bool _hasMore = true;
+  bool _loadingAll = false;
+  String _query = '';
 
   @override
   void initState() {
@@ -75,6 +78,7 @@ class _IngredientAdminPageState extends State<IngredientAdminPage> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -96,63 +100,104 @@ class _IngredientAdminPageState extends State<IngredientAdminPage> {
     });
   }
 
+  /// Search only matches what's already loaded, so pull in every remaining
+  /// page once the user starts typing.
+  Future<void> _loadAll() async {
+    if (_loadingAll) return;
+    _loadingAll = true;
+    try {
+      while (_hasMore) {
+        await _loadMore();
+      }
+    } finally {
+      _loadingAll = false;
+    }
+  }
+
+  String _nameFor(QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+      (d.data()['name'] as Map?)?.values.firstOrNull?.toString() ?? d.id;
+
   @override
   Widget build(BuildContext context) {
+    final filteredDocs = _query.isEmpty
+        ? _docs
+        : _docs.where((d) => _nameFor(d).toLowerCase().contains(_query.toLowerCase())).toList();
     return Scaffold(
-      body: ListView.builder(
-        controller: _scrollController,
-        itemCount: _docs.length + (_hasMore ? 1 : 0),
-        itemBuilder: (context, i) {
-          if (i >= _docs.length) {
-            return const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(child: CircularProgressIndicator()),
-            );
-          }
-          final d = _docs[i];
-          final name = (d.data()['name'] as Map?)?.values.firstOrNull?.toString() ?? d.id;
-          final category = (d.data()['category'] ?? '').toString();
-          return ListTile(
-            leading: Avatar(ingredientId: d.id),
-            title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: category.isEmpty
-                ? null
-                : Row(
+      appBar: AppBar(title: const Text('Ingredients')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: TextField(
+              controller: _searchController,
+              decoration: const InputDecoration(
+                hintText: 'Search',
+                prefixIcon: Icon(Icons.search),
+              ),
+              onChanged: (v) {
+                setState(() => _query = v);
+                if (v.isNotEmpty) _loadAll();
+              },
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              itemCount: filteredDocs.length + (_query.isEmpty && _hasMore ? 1 : 0),
+              itemBuilder: (context, i) {
+                if (i >= filteredDocs.length) {
+                  return const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final d = filteredDocs[i];
+                final name = _nameFor(d);
+                final category = (d.data()['category'] ?? '').toString();
+                return ListTile(
+                  leading: Avatar(ingredientId: d.id),
+                  title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: category.isEmpty
+                      ? null
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircleAvatar(
+                              radius: 9,
+                              child: StorageImage(
+                                storagePath: 'categories/$category.png',
+                                fit: BoxFit.contain,
+                                memCacheWidth: 64,
+                                memCacheHeight: 64,
+                                errorWidget: const SizedBox.shrink(),
+                                placeholder: const SizedBox.shrink(),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Flexible(child: Text(category, overflow: TextOverflow.ellipsis)),
+                          ],
+                        ),
+                  trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      CircleAvatar(
-                        radius: 9,
-                        child: StorageImage(
-                          storagePath: 'categories/$category.png',
-                          fit: BoxFit.contain,
-                          memCacheWidth: 64,
-                          memCacheHeight: 64,
-                          errorWidget: const SizedBox.shrink(),
-                          placeholder: const SizedBox.shrink(),
-                        ),
+                      IconButton(icon: const Icon(Icons.refresh), onPressed: () => _regenerateIcon(context, d.id)),
+                      IconButton(
+                        icon: const Icon(Icons.delete),
+                        onPressed: () async {
+                          final deleted = await _confirmDelete(context, d.id);
+                          if (deleted && mounted) setState(() => _docs.removeWhere((doc) => doc.id == d.id));
+                        },
                       ),
-                      const SizedBox(width: 6),
-                      Text(category),
                     ],
                   ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(icon: const Icon(Icons.refresh), onPressed: () => _regenerateIcon(context, d.id)),
-                IconButton(
-                  icon: const Icon(Icons.delete),
-                  onPressed: () async {
-                    final deleted = await _confirmDelete(context, d.id);
-                    if (deleted && mounted) setState(() => _docs.removeWhere((doc) => doc.id == d.id));
-                  },
-                ),
-              ],
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => IngredientEditPage(id: d.id)),
+                  ),
+                );
+              },
             ),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => IngredientEditPage(id: d.id)),
-            ),
-          );
-        },
+          ),
+        ],
       ),
     );
   }

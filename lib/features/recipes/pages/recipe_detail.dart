@@ -925,8 +925,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         (recipeData?['name'] ?? '').toString().isEmpty)
                     ? _titleShimmer()
                     : Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               child: Text(
                 recipeData?['name'] ?? 'Unnamed Recipe',
                 style: Theme.of(context).textTheme.headlineMedium,
@@ -935,12 +934,15 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
             if (attribution != null && attribution!.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 4),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Icon(Icons.link, size: 14,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Icon(Icons.link, size: 14,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
                     const SizedBox(width: 4),
                     Expanded(child: _AttributionText(attribution!)),
                   ],
@@ -1702,7 +1704,9 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
 
   @override
   void dispose() {
-    widget.onDescriptionSave(_descCtrl.text.trim());
+    if (widget.editMode) {
+      widget.onDescriptionSave(_descCtrl.text.trim());
+    }
     _descFocus.dispose();
     _descCtrl.dispose();
     super.dispose();
