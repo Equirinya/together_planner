@@ -39,12 +39,18 @@ class RecipeDetailPage extends StatefulWidget {
     this.publicRecipeId,
     this.sharedSourceGroupId,
     this.canEditPublicRecipes = false,
+    this.onTagTap,
   });
 
   final String groupId;
   final String recipeId;
   final bool editMode;
   final bool aiEnabled;
+
+  /// Called instead of the default behaviour when a tag chip is tapped (view
+  /// mode only). The caller is responsible for closing this page and acting on
+  /// the tag (e.g. entering it into a search field).
+  final void Function(String tag)? onTagTap;
 
   /// When set, the page opens as a read-only preview of the public recipe with
   /// this id (localized), showing a "Save in own recipes" button instead of the
@@ -927,6 +933,20 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
 
+            if (attribution != null && attribution!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Icon(Icons.link, size: 14,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 4),
+                    Expanded(child: _AttributionText(attribution!)),
+                  ],
+                ),
+              ),
+
             // ── Tags + times ─────────────────────────────────────────────
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -958,20 +978,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 ],
               ),
             ),
-
-            if (attribution != null && attribution!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.link, size: 14,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant),
-                    const SizedBox(width: 4),
-                    Expanded(child: _AttributionText(attribution!)),
-                  ],
-                ),
-              ),
 
             const SizedBox(height: 12),
 
@@ -1359,32 +1365,39 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   Widget _buildTagChip(String tag) {
     final cs = Theme.of(context).colorScheme;
+    final onTap = widget.onTagTap == null ? null : () => widget.onTagTap!(tag);
     final icon = dietaryTagIcon(tag);
     if (icon != null) {
-      return Tooltip(
-        message: tag,
-        child: Container(
-          decoration: BoxDecoration(
-            color: cs.primaryContainer,
-            borderRadius: BorderRadius.circular(20),
+      return GestureDetector(
+        onTap: onTap,
+        child: Tooltip(
+          message: tag,
+          child: Container(
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(6),
+            child: Icon(icon, size: 16, color: cs.onPrimaryContainer),
           ),
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 16, color: cs.onPrimaryContainer),
         ),
       );
     }
-    return Chip(
-      label: Text(tag,
-          style: Theme.of(context)
-              .textTheme
-              .labelSmall
-              ?.copyWith(color: cs.onPrimaryContainer)),
-      labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      backgroundColor: cs.primaryContainer,
-      side: BorderSide.none,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      visualDensity: VisualDensity.compact,
+    return GestureDetector(
+      onTap: onTap,
+      child: Chip(
+        label: Text(tag,
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: cs.onPrimaryContainer)),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        backgroundColor: cs.primaryContainer,
+        side: BorderSide.none,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+      ),
     );
   }
 

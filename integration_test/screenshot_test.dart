@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'package:couple_planner/main.dart' as app;
-import 'package:couple_planner/features/recipes/pages/recipe_page.dart' show RecipeCard;
+import 'package:couple_planner/features/recipes/widgets/recipe_card.dart' show RecipeCard;
 
 // Tester credentials and the device label are injected via --dart-define from
 // the workflow (TESTER_EMAIL / TESTER_PASSWORD / DEVICE_LABEL).

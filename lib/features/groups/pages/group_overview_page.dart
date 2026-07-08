@@ -9,6 +9,8 @@ import 'package:material_design_icons_flutter/material_design_icons_flutter.dart
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_settings_page.dart';
+import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.dart';
+import 'package:couple_planner/features/recipes/pages/public_recipes_admin_page.dart';
 import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
 
@@ -20,11 +22,15 @@ class GroupOverviewPage extends StatefulWidget {
     required this.groupIds,
     required this.selectedGroup,
     required this.onSelect,
+    this.canEditIngredients = false,
+    this.canEditPublicRecipes = false,
   });
 
   final List<String> groupIds;
   final String? selectedGroup;
   final void Function(String groupId) onSelect;
+  final bool canEditIngredients;
+  final bool canEditPublicRecipes;
 
   @override
   State<GroupOverviewPage> createState() => _GroupOverviewPageState();
@@ -102,7 +108,7 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
                   children: [
                     if (_groupIds.length > 1)
                       IconButton(
-                        icon: Icon(MdiIcons.bookPlusMultiple),
+                        icon: Icon(Icons.copy_outlined),
                         tooltip: 'Copy recipes',
                         constraints: const BoxConstraints(),
                         onPressed: () => Navigator.of(context).push(
@@ -135,6 +141,26 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
             ),
           ..._buildRecipeViewerSection(),
           const Divider(),
+          if (widget.canEditIngredients)
+            ListTile(
+              leading: const Icon(Icons.fact_check),
+              title: const Text('Ingredients'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const IngredientAdminPage()),
+              ),
+            ),
+          if (widget.canEditPublicRecipes)
+            ListTile(
+              leading: const Icon(Icons.restaurant_menu),
+              title: const Text('Public recipes'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => PublicRecipesAdminPage(groupId: widget.selectedGroup ?? ''),
+                ),
+              ),
+            ),
           ListTile(
             leading: const Icon(Icons.tune),
             title: const Text('App Settings'),

@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
-import 'package:couple_planner/features/recipes/pages/recipe_page.dart' show RecipeCard;
+import 'package:couple_planner/features/recipes/widgets/recipe_card.dart' show RecipeCard;
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
 
 /// Browses another group's recipes (as a recipe viewer) and lets the user add

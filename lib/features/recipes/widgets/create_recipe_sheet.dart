@@ -10,9 +10,9 @@ class CreateRecipeResult {
   final String? text;
 }
 
-/// Text-first create menu (design 3): a focused field for a name, description
-/// or link, with a photo and a blank-recipe option beneath it. The AI-driven
-/// options are only offered when [aiEnabled].
+/// Create-recipe menu: a blank recipe is the default action. AI-driven
+/// creation (from a photo or from text/a link) is offered underneath as a
+/// secondary option, only when [aiEnabled].
 class CreateRecipeSheet extends StatefulWidget {
   const CreateRecipeSheet({super.key, required this.aiEnabled});
 
@@ -31,76 +31,87 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
     super.dispose();
   }
 
-  void _submitText() {
+  void _createBlank() {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    Navigator.pop(context, CreateRecipeResult(CreateRecipeType.text, text));
+    Navigator.pop(
+      context,
+      CreateRecipeResult(CreateRecipeType.blank, text.isEmpty ? null : text),
+    );
   }
 
-  Widget _option(IconData icon, String label, VoidCallback onTap) {
-    return OutlinedButton(
-      onPressed: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon),
-            const SizedBox(height: 8),
-            Text(label, textAlign: TextAlign.center),
-          ],
-        ),
-      ),
-    );
+  void _createWithAi(CreateRecipeType type) {
+    final text = _controller.text.trim();
+    Navigator.pop(context, CreateRecipeResult(type, text.isEmpty ? null : text));
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final insets = MediaQuery.of(context).viewInsets.bottom;
+
     return Padding(
-      padding: EdgeInsets.fromLTRB(16, 4, 16, 16 + insets),
+      padding: EdgeInsets.fromLTRB(20, 8, 20, 20 + insets),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (widget.aiEnabled) ...[
-            TextField(
-              controller: _controller,
-              autofocus: true,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _submitText(),
-              decoration: InputDecoration(
-                hintText: 'Name, description or link…',
-                prefixIcon: const Icon(Icons.auto_awesome),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.arrow_forward),
-                  onPressed: _submitText,
-                ),
-                border: const OutlineInputBorder(),
-              ),
+          Text('New recipe', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 20),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _createBlank(),
+            decoration: const InputDecoration(
+              labelText: 'Name',
+              hintText: "e.g. Grandma's lasagna",
+              prefixIcon: Icon(Icons.edit_note),
             ),
-            const SizedBox(height: 12),
-          ],
-          Row(
-            children: [
-              if (widget.aiEnabled) ...[
+          ),
+          const SizedBox(height: 20),
+          FilledButton.icon(
+            onPressed: _createBlank,
+            icon: const Icon(Icons.add),
+            label: const Text('Create recipe'),
+          ),
+          if (widget.aiEnabled) ...[
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(child: Divider(color: cs.outlineVariant)),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Text(
+                    'or use AI',
+                    style: theme.textTheme.labelMedium
+                        ?.copyWith(color: cs.onSurfaceVariant),
+                  ),
+                ),
+                Expanded(child: Divider(color: cs.outlineVariant)),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
                 Expanded(
-                  child: _option(Icons.photo_camera, 'From photo',
-                      () => Navigator.pop(context, const CreateRecipeResult(CreateRecipeType.photo))),
+                  child: OutlinedButton.icon(
+                    onPressed: () => _createWithAi(CreateRecipeType.photo),
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text('From photo'),
+                  ),
                 ),
                 const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _createWithAi(CreateRecipeType.text),
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                    label: const Text('From text'),
+                  ),
+                ),
               ],
-              Expanded(
-                child: _option(Icons.edit_note, 'Blank recipe', () {
-                  final text = _controller.text.trim();
-                  Navigator.pop(
-                    context,
-                    CreateRecipeResult(CreateRecipeType.blank, text.isEmpty ? null : text),
-                  );
-                }),
-              ),
-            ],
-          ),
+            ),
+          ],
         ],
       ),
     );

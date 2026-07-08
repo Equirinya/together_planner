@@ -12,7 +12,7 @@ import 'package:couple_planner/features/ingredients/widgets/avatar.dart' show Av
 DocumentReference<Map<String, dynamic>> _ingRef(String id) =>
     FirebaseFirestore.instance.collection('ingredients').doc(id);
 
-Future<void> _confirmDelete(BuildContext context, String id) async {
+Future<bool> _confirmDelete(BuildContext context, String id) async {
   final ok = await showDialog<bool>(
     context: context,
     builder: (_) => AlertDialog(
@@ -23,11 +23,13 @@ Future<void> _confirmDelete(BuildContext context, String id) async {
       ],
     ),
   );
-  if (ok != true) return;
+  if (ok != true) return false;
   try {
     await _ingRef(id).delete();
+    return true;
   } catch (e) {
     if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    return false;
   }
 }
 
@@ -43,59 +45,112 @@ Future<void> _regenerateIcon(BuildContext context, String id) async {
   }
 }
 
-class IngredientAdminPage extends StatelessWidget {
+class IngredientAdminPage extends StatefulWidget {
   const IngredientAdminPage({super.key});
 
   @override
+  State<IngredientAdminPage> createState() => _IngredientAdminPageState();
+}
+
+class _IngredientAdminPageState extends State<IngredientAdminPage> {
+  static const _pageSize = 30;
+
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
+  final _scrollController = ScrollController();
+  DocumentSnapshot<Map<String, dynamic>>? _lastDoc;
+  bool _loading = false;
+  bool _hasMore = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMore();
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+        _loadMore();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadMore() async {
+    if (_loading || !_hasMore) return;
+    setState(() => _loading = true);
+    var query = FirebaseFirestore.instance
+        .collection('ingredients')
+        .orderBy('createdAt', descending: true)
+        .limit(_pageSize);
+    if (_lastDoc != null) query = query.startAfterDocument(_lastDoc!);
+    final snap = await query.get();
+    if (!mounted) return;
+    setState(() {
+      _docs.addAll(snap.docs);
+      if (snap.docs.isNotEmpty) _lastDoc = snap.docs.last;
+      _hasMore = snap.docs.length == _pageSize;
+      _loading = false;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final col = FirebaseFirestore.instance.collection('ingredients').orderBy('createdAt', descending: true);
     return Scaffold(
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: col.snapshots(),
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final docs = snap.data!.docs;
-          return ListView.builder(
-            itemCount: docs.length,
-            itemBuilder: (context, i) {
-              final d = docs[i];
-              final name = (d.data()['name'] as Map?)?.values.firstOrNull?.toString() ?? d.id;
-              final category = (d.data()['category'] ?? '').toString();
-              return ListTile(
-                leading: Avatar(ingredientId: d.id),
-                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: category.isEmpty
-                    ? null
-                    : Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircleAvatar(
-                            radius: 9,
-                            child: StorageImage(
-                              storagePath: 'categories/$category.png',
-                              fit: BoxFit.contain,
-                              memCacheWidth: 64,
-                              memCacheHeight: 64,
-                              errorWidget: const SizedBox.shrink(),
-                              placeholder: const SizedBox.shrink(),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(category),
-                        ],
+      body: ListView.builder(
+        controller: _scrollController,
+        itemCount: _docs.length + (_hasMore ? 1 : 0),
+        itemBuilder: (context, i) {
+          if (i >= _docs.length) {
+            return const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final d = _docs[i];
+          final name = (d.data()['name'] as Map?)?.values.firstOrNull?.toString() ?? d.id;
+          final category = (d.data()['category'] ?? '').toString();
+          return ListTile(
+            leading: Avatar(ingredientId: d.id),
+            title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+            subtitle: category.isEmpty
+                ? null
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircleAvatar(
+                        radius: 9,
+                        child: StorageImage(
+                          storagePath: 'categories/$category.png',
+                          fit: BoxFit.contain,
+                          memCacheWidth: 64,
+                          memCacheHeight: 64,
+                          errorWidget: const SizedBox.shrink(),
+                          placeholder: const SizedBox.shrink(),
+                        ),
                       ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(icon: const Icon(Icons.refresh), onPressed: () => _regenerateIcon(context, d.id)),
-                    IconButton(icon: const Icon(Icons.delete), onPressed: () => _confirmDelete(context, d.id)),
-                  ],
+                      const SizedBox(width: 6),
+                      Text(category),
+                    ],
+                  ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(icon: const Icon(Icons.refresh), onPressed: () => _regenerateIcon(context, d.id)),
+                IconButton(
+                  icon: const Icon(Icons.delete),
+                  onPressed: () async {
+                    final deleted = await _confirmDelete(context, d.id);
+                    if (deleted && mounted) setState(() => _docs.removeWhere((doc) => doc.id == d.id));
+                  },
                 ),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => IngredientEditPage(id: d.id)),
-                ),
-              );
-            },
+              ],
+            ),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => IngredientEditPage(id: d.id)),
+            ),
           );
         },
       ),

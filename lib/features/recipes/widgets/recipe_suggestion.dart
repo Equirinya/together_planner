@@ -92,6 +92,7 @@ class RecipeSuggestionCard extends StatelessWidget {
                   final sd = constraints.maxWidth < constraints.maxHeight
                       ? constraints.maxWidth
                       : constraints.maxHeight;
+                  final dpr = MediaQuery.of(context).devicePixelRatio;
                   return Stack(
                     children: [
                       if (hasImage) ...[
@@ -99,6 +100,7 @@ class RecipeSuggestionCard extends StatelessWidget {
                           child: StorageImage(
                             storagePath: suggestion.publicImage!,
                             fit: BoxFit.cover,
+                            memCacheHeight: (constraints.maxHeight * dpr).toInt(),
                           ),
                         ),
                         Container(color: Colors.black26),
