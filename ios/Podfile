@@ -36,17 +36,14 @@ target 'Runner' do
   target 'RunnerTests' do
     inherit! :search_paths
   end
-end
 
-# The Share Extension reuses the receive_sharing_intent pod. inherit! :search_paths
-# alone only shares header/framework search paths with Runner, it does not link
-# the pod as a dependency of this target, so the pod must also be declared here
-# directly for `import receive_sharing_intent` to resolve in Swift.
-target 'Share Extension' do
-  use_frameworks!
-  inherit! :search_paths
-
-  pod 'receive_sharing_intent', :path => '.symlinks/plugins/receive_sharing_intent/ios'
+  # Share Extension nested here (per receive_sharing_intent's setup instructions)
+  # so it reuses the already-built Runner framework via search paths, instead of
+  # compiling its own copy of the pod under APPLICATION_EXTENSION_API_ONLY, which
+  # fails to compile the plugin's app-delegate-only code paths.
+  target 'Share Extension' do
+    inherit! :search_paths
+  end
 end
 
 post_install do |installer|
