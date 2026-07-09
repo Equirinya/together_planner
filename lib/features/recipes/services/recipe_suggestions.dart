@@ -461,60 +461,83 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
         ...tags,
       }.toList();
       if (tokens.isEmpty) return [];
-      final snap = await FirebaseFirestore.instance
-          .collection('public_recipes')
-          .where('searchTokens', arrayContainsAny: tokens.take(10).toList())
-          .limit(20)
-          .get();
       final lang = LanguageService.instance.code.value;
       final tokenSet = tokens.toSet();
+      final col = FirebaseFirestore.instance
+          .collection('public_recipes')
+          .where('searchTokens', arrayContainsAny: tokens.take(10).toList())
+          .orderBy(FieldPath.documentId);
       // Public recipes keep an English base plus a `translations` map for the
       // languages listed in `languages`. Recipes available in the user's
       // language come first (shown translated); within each language bucket the
       // best matches — more query tokens hit, then more popular — come first.
       final ranked = <({bool hasOwn, double score, RecipeSuggestion s})>[];
-      for (final d in snap.docs) {
-        final data = d.data();
-        final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
-        final hasOwn = lang != 'en' && languages.contains(lang);
-        var title = (data['name'] ?? '').toString();
-        if (hasOwn) {
-          final localized = (data['translations'] as Map?)?[lang] as Map?;
-          final name = (localized?['name'] ?? '').toString();
-          if (name.isNotEmpty) title = name;
+
+      // arrayContainsAny only matches ANY of the requested tokens, so with a
+      // `#tag` filter most of a page can be pruned by the exact-tag check
+      // below. Page through in batches of 20 (up to 50 total) until there are
+      // enough actual tag matches, instead of stopping after the first 20 raw
+      // hits regardless of how many survive the filter.
+      const batchSize = 20;
+      const maxFetch = 50;
+      const enoughMatches = 20;
+      QueryDocumentSnapshot<Map<String, dynamic>>? cursor;
+      var fetched = 0;
+      while (fetched < maxFetch) {
+        var query = col.limit(batchSize);
+        if (cursor != null) query = query.startAfterDocument(cursor);
+        final snap = await query.get();
+        if (snap.docs.isEmpty) break;
+        fetched += snap.docs.length;
+        cursor = snap.docs.last;
+
+        for (final d in snap.docs) {
+          final data = d.data();
+          final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
+          final hasOwn = lang != 'en' && languages.contains(lang);
+          var title = (data['name'] ?? '').toString();
+          if (hasOwn) {
+            final localized = (data['translations'] as Map?)?[lang] as Map?;
+            final name = (localized?['name'] ?? '').toString();
+            if (name.isNotEmpty) title = name;
+          }
+          if (tags.isNotEmpty) {
+            // Check the base tags plus every language's translated tags (not
+            // just the current UI language), so a tag only translated into a
+            // language other than the user's still matches.
+            final translations = data['translations'] as Map?;
+            final docTags = {
+              ...(data['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
+              for (final t in translations?.values ?? const [])
+                ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
+            };
+            if (!tags.every(docTags.contains)) continue;
+          }
+          final recipeTokens =
+              (data['searchTokens'] as List?)?.map((e) => e.toString()).toSet() ?? const <String>{};
+          final relevance = tokenSet.where(recipeTokens.contains).length;
+          final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
+          ranked.add((
+            hasOwn: hasOwn,
+            score: relevance * 10 + math.log(1 + popularity),
+            s: RecipeSuggestion(
+              kind: SuggestionKind.public,
+              title: title,
+              publicId: d.id,
+              publicImage: data['image'] as String?,
+            ),
+          ));
         }
-        if (tags.isNotEmpty) {
-          // Check the base tags plus every language's translated tags (not
-          // just the current UI language), so a tag only translated into a
-          // language other than the user's still matches.
-          final translations = data['translations'] as Map?;
-          final docTags = {
-            ...(data['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
-            for (final t in translations?.values ?? const [])
-              ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
-          };
-          if (!tags.every(docTags.contains)) continue;
-        }
-        final recipeTokens =
-            (data['searchTokens'] as List?)?.map((e) => e.toString()).toSet() ?? const <String>{};
-        final relevance = tokenSet.where(recipeTokens.contains).length;
-        final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
-        ranked.add((
-          hasOwn: hasOwn,
-          score: relevance * 10 + math.log(1 + popularity),
-          s: RecipeSuggestion(
-            kind: SuggestionKind.public,
-            title: title,
-            publicId: d.id,
-            publicImage: data['image'] as String?,
-          ),
-        ));
+
+        if (snap.docs.length < batchSize) break; // no more docs to page through
+        if (ranked.length >= enoughMatches) break; // enough matches already
       }
+
       ranked.sort((a, b) {
         if (a.hasOwn != b.hasOwn) return a.hasOwn ? -1 : 1;
         return b.score.compareTo(a.score);
       });
-      return ranked.map((e) => e.s).take(4).toList();
+      return ranked.map((e) => e.s).toList();
     } catch (_) {
       return [];
     }

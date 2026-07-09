@@ -25,6 +25,10 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
 
   final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
   final Set<String> _regenerating = {};
+  final Set<String> _regeneratingTags = {};
+  // Overrides the tile's displayed tags right after a successful regenerate,
+  // since _docs is a static list of snapshots (not a live listener).
+  final Map<String, List<String>> _tagOverrides = {};
 
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
   final _scrollController = ScrollController();
@@ -99,6 +103,29 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
     }
   }
 
+  Future<void> _regenerateTags(String recipeId) async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _regeneratingTags.add(recipeId));
+    try {
+      final res = await _functions
+          .httpsCallable('recipes-regeneratePublicRecipeTags')
+          .call({'recipeId': recipeId});
+      final data = res.data as Map;
+      final dietary = data['dietary'] as List?;
+      final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList();
+      if (mounted) {
+        if (tags != null) setState(() => _tagOverrides[recipeId] = tags);
+        messenger.showSnackBar(
+          SnackBar(content: Text('Dietary tags: ${dietary?.isEmpty ?? true ? 'none' : dietary!.join(', ')}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Could not regenerate tags: $e')));
+    } finally {
+      if (mounted) setState(() => _regeneratingTags.remove(recipeId));
+    }
+  }
+
   String _titleFor(QueryDocumentSnapshot<Map<String, dynamic>> d) {
     final data = d.data();
     final lang = LanguageService.instance.code.value;
@@ -152,7 +179,9 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                 final data = d.data();
                 final title = _titleFor(d);
                 final image = data['image'] as String?;
-                final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList() ?? const [];
+                final tags = _tagOverrides[d.id] ??
+                    (data['tags'] as List?)?.map((e) => e.toString()).toList() ??
+                    const [];
                 final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
                 final dateStr = createdAt == null
                     ? null
@@ -162,6 +191,7 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                   if (tags.isNotEmpty) tags.join(', '),
                 ];
                 final isRegenerating = _regenerating.contains(d.id);
+                final isRegeneratingTags = _regeneratingTags.contains(d.id);
 
                 return ListTile(
                   leading: ClipRRect(
@@ -192,6 +222,17 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _ResolveIngredientsButton(recipeId: d.id, functions: _functions),
+                      IconButton(
+                        icon: isRegeneratingTags
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.local_dining),
+                        tooltip: 'Regenerate dietary tags',
+                        onPressed: isRegeneratingTags ? null : () => _regenerateTags(d.id),
+                      ),
                       if (!(image?.isNotEmpty ?? false))
                         IconButton(
                           icon: isRegenerating

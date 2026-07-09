@@ -142,6 +142,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 0;
   final Set<int> _visitedIndices = {};
+  final RecipePageController _recipePageController = RecipePageController();
   String? _selectedGroup;
   String? _cachedGroupId;
   bool _groupDocReady = false;
@@ -638,7 +639,7 @@ class _HomePageState extends State<HomePage> {
       case 'shopping_list':
         return ShoppingListPage(groupId: _selectedGroup!);
       case 'recipes':
-        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes);
+        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes, controller: _recipePageController);
       case 'todos':
         // Replace with your real TodosPage when ready
         return const _PlaceholderPage(label: 'To-Do\'s');
@@ -663,7 +664,30 @@ class _HomePageState extends State<HomePage> {
     final bool noGroups = acceptedGroups != null && acceptedGroups!.isEmpty && (_selectedGroup == null || _selectedGroup!.isEmpty);
     final bool shoppingListEnabled = _enabledFeatures.contains('shopping_list');
 
-    return Scaffold(
+    return AnimatedBuilder(
+      animation: Listenable.merge(
+          [_recipePageController.hasSearch, _recipePageController.keyboardVisible]),
+      builder: (context, child) {
+        final hasSearch = _recipePageController.hasSearch.value;
+        final keyboardVisible = _recipePageController.keyboardVisible.value;
+        final onRecipes = _currentFeatureKey == 'recipes';
+        return PopScope(
+          // On the recipes tab, back first dismisses the keyboard if it's
+          // open; only once it's closed does back clear an active search,
+          // before finally falling through to the normal back/exit behaviour.
+          canPop: !(onRecipes && (keyboardVisible || hasSearch)),
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            if (keyboardVisible) {
+              FocusManager.instance.primaryFocus?.unfocus();
+              return;
+            }
+            _recipePageController.clearSearchIfActive();
+          },
+          child: child!,
+        );
+      },
+      child: Scaffold(
       bottomNavigationBar: groupReady
           ? NavigationBar(
               height: 60,
@@ -745,6 +769,7 @@ class _HomePageState extends State<HomePage> {
               ),
             )
           : const Center(child: CupertinoActivityIndicator()),
+      ),
       ),
     );
   }

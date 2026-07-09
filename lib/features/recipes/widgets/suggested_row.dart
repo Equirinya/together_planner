@@ -187,6 +187,7 @@ class SuggestedRowWidget extends StatefulWidget {
   final VoidCallback? onDragStarted;
   final VoidCallback? onDragEnd;
   final void Function(RecipeSuggestion)? onDragStartedWithSuggestion;
+  final void Function(String tag)? onTagTap;
 
   const SuggestedRowWidget({
     super.key,
@@ -200,6 +201,7 @@ class SuggestedRowWidget extends StatefulWidget {
     this.onDragStarted,
     this.onDragEnd,
     this.onDragStartedWithSuggestion,
+    this.onTagTap,
   });
 
   @override
@@ -288,6 +290,7 @@ class _SuggestedRowWidgetState extends State<SuggestedRowWidget> {
                         aiEnabled: widget.aiEnabled,
                         publicRecipeId: s.publicId,
                         canEditPublicRecipes: widget.canEditPublicRecipes,
+                        onTagTap: widget.onTagTap,
                         initialData: {
                           'name': s.title,
                           'description': '',

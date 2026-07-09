@@ -27,11 +27,28 @@ import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dar
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
+/// Lets a parent widget (the bottom-nav host) query whether the recipe page's
+/// search is currently active and clear it, so a system back press can close
+/// the search before falling through to the app's normal back behaviour.
+class RecipePageController {
+  VoidCallback? _clearSearch;
+  final ValueNotifier<bool> hasSearch = ValueNotifier(false);
+  final ValueNotifier<bool> keyboardVisible = ValueNotifier(false);
+
+  /// Clears the search if one is active. Returns whether it did so.
+  bool clearSearchIfActive() {
+    if (!hasSearch.value) return false;
+    _clearSearch?.call();
+    return true;
+  }
+}
+
 class RecipePage extends StatefulWidget {
   final String groupId;
   final bool shoppingListEnabled;
   final bool aiEnabled;
   final bool canEditPublicRecipes;
+  final RecipePageController? controller;
 
   const RecipePage({
     super.key,
@@ -39,6 +56,7 @@ class RecipePage extends StatefulWidget {
     required this.shoppingListEnabled,
     required this.aiEnabled,
     this.canEditPublicRecipes = false,
+    this.controller,
   });
 
   @override
@@ -155,6 +173,7 @@ class _RecipePageState extends State<RecipePage>
   @override
   void initState() {
     super.initState();
+    widget.controller?._clearSearch = _clearSearch;
     groupDoc = FirebaseFirestore.instance.collection('groups').doc(widget.groupId);
 
     final cookingPlanStream = groupDoc
@@ -215,6 +234,7 @@ class _RecipePageState extends State<RecipePage>
     keyboardSubscription = keyboardVisibilityController.onChange.listen((visible) {
       if (!visible) FocusManager.instance.primaryFocus?.unfocus();
       setState(() => keyboardVisible = visible);
+      widget.controller?.keyboardVisible.value = visible;
     });
 
     // Dietary preferences drive the AI name suggestions, which public recipes
@@ -247,7 +267,17 @@ class _RecipePageState extends State<RecipePage>
   }
 
   @override
+  void didUpdateWidget(covariant RecipePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.controller != oldWidget.controller) {
+      oldWidget.controller?._clearSearch = null;
+      widget.controller?._clearSearch = _clearSearch;
+    }
+  }
+
+  @override
   void dispose() {
+    widget.controller?._clearSearch = null;
     RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
     recipesListener?.cancel();
@@ -470,9 +500,26 @@ class _RecipePageState extends State<RecipePage>
     final value = '#$tag ';
     _searchController.text = value;
     searchQuery = value;
+    widget.controller?.hasSearch.value = true;
     generateSearchedRecipes();
     onSearchChangedAi(value);
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
+  }
+
+  /// Clears the search field, reverting the recipe grid to its unsearched
+  /// state. Shared by the search bar's clear button and the back-button
+  /// handling in the app's bottom-nav host (which clears search on the first
+  /// back press before falling through to the normal back behaviour).
+  void _clearSearch() {
+    _searchController.clear();
+    searchQuery = '';
+    widget.controller?.hasSearch.value = false;
+    if (_searchActive) {
+      _searchActive = false;
+      _subscribeRecipes();
+    }
+    generateSearchedRecipes();
+    onSearchChangedAi('');
   }
 
   /// Resolves any still-pending (unmatched) ingredients of a freshly generated
@@ -1152,6 +1199,7 @@ class _RecipePageState extends State<RecipePage>
                         aiEnabled: widget.aiEnabled,
                         canEditPublicRecipes: widget.canEditPublicRecipes,
                         crossAxisCount: crossAxisCount,
+                        onTagTap: _onDetailTagTap,
                         onDragStarted: () => setState(() => _isDraggingSuggestion = true),
                         onDragEnd: () => setState(() => _isDraggingSuggestion = false),
                         onDragStartedWithSuggestion: (s) {
@@ -1254,6 +1302,7 @@ class _RecipePageState extends State<RecipePage>
                             final wasEmpty = searchQuery.trim().isEmpty;
                             final isEmptyNow = value.trim().isEmpty;
                             searchQuery = value;
+                            widget.controller?.hasSearch.value = !isEmptyNow;
                             // Widen the loaded recipe window to the whole group while
                             // searching, so search isn't limited to whatever page had
                             // already been scrolled into view; revert once cleared.
@@ -1279,16 +1328,7 @@ class _RecipePageState extends State<RecipePage>
                               ),
                             if (searchQuery.isNotEmpty)
                               IconButton(
-                                onPressed: () {
-                                  _searchController.clear();
-                                  searchQuery = '';
-                                  if (_searchActive) {
-                                    _searchActive = false;
-                                    _subscribeRecipes();
-                                  }
-                                  generateSearchedRecipes();
-                                  onSearchChangedAi('');
-                                },
+                                onPressed: _clearSearch,
                                 icon: const Icon(Icons.close),
                               ),
                           ],
