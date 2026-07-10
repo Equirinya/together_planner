@@ -26,9 +26,6 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
   final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
   final Set<String> _regenerating = {};
   final Set<String> _regeneratingTags = {};
-  // Overrides the tile's displayed tags right after a successful regenerate,
-  // since _docs is a static list of snapshots (not a live listener).
-  final Map<String, List<String>> _tagOverrides = {};
 
   final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
   final _scrollController = ScrollController();
@@ -110,11 +107,8 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
       final res = await _functions
           .httpsCallable('recipes-regeneratePublicRecipeTags')
           .call({'recipeId': recipeId});
-      final data = res.data as Map;
-      final dietary = data['dietary'] as List?;
-      final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList();
+      final dietary = (res.data as Map)['dietary'] as List?;
       if (mounted) {
-        if (tags != null) setState(() => _tagOverrides[recipeId] = tags);
         messenger.showSnackBar(
           SnackBar(content: Text('Dietary tags: ${dietary?.isEmpty ?? true ? 'none' : dietary!.join(', ')}')),
         );
@@ -179,9 +173,7 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                 final data = d.data();
                 final title = _titleFor(d);
                 final image = data['image'] as String?;
-                final tags = _tagOverrides[d.id] ??
-                    (data['tags'] as List?)?.map((e) => e.toString()).toList() ??
-                    const [];
+                final tags = (data['tags'] as List?)?.map((e) => e.toString()).toList() ?? const [];
                 final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
                 final dateStr = createdAt == null
                     ? null

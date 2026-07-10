@@ -1,11 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-// import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +19,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:app_links/app_links.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:quick_actions/quick_actions.dart';
 
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
@@ -159,6 +161,14 @@ class _HomePageState extends State<HomePage> {
   /// in memory and replayed once the group document loads.
   String? _pendingSharedUrl;
 
+  /// A recipe image shared before the group/AI were ready (e.g. cold start),
+  /// held in memory and replayed once the group document loads.
+  ({List<int> bytes, String mimeType})? _pendingSharedImage;
+
+  /// Whether the instant shimmering placeholder for a pending shared link is
+  /// currently on screen, awaiting the real [RecipeDetailPage] to replace it.
+  bool _shareSkeletonShown = false;
+
   /// An invite tapped while signed-out, held until the account exists so we can
   /// open the join screen right after onboarding.
   ({String groupId, String inviteId})? _pendingInvite;
@@ -166,6 +176,9 @@ class _HomePageState extends State<HomePage> {
   // ── session ────────────────────────────────────────────────────────────────
   StreamSubscription<User?>? _authStateSub;
   bool _wasAuthed = false;
+
+  // ── push notifications (FCM token) ──────────────────────────────────────────
+  StreamSubscription<String>? _fcmTokenSub;
 
   final db = FirebaseFirestore.instance;
 
@@ -193,6 +206,16 @@ class _HomePageState extends State<HomePage> {
   /// Server-set profile flag granting public recipe deletion.
   bool _canEditPublicRecipes = false;
 
+  // ── home screen shortcuts (Android App Shortcuts / iOS Quick Actions) ──────
+  final QuickActions _quickActions = const QuickActions();
+
+  /// Cached {name, enabledFeatures} per group id, so shortcuts can be built
+  /// for every group the user belongs to, not just the selected one.
+  final Map<String, ({String name, List<String> enabledFeatures})> _groupInfoCache = {};
+
+  /// Feature to jump to once a shortcut's target group finishes loading.
+  String? _pendingShortcutFeature;
+
   // ---------------------------------------------------------------------------
   // Init / dispose
   // ---------------------------------------------------------------------------
@@ -204,6 +227,8 @@ class _HomePageState extends State<HomePage> {
     _testUserLoggedIn();
     _initDeepLinks();
     _watchSession();
+    _listenForTokenRefresh();
+    _quickActions.initialize(_handleQuickAction);
     LanguageService.instance.code.addListener(_persistLanguage);
   }
 
@@ -213,6 +238,28 @@ class _HomePageState extends State<HomePage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     db.collection('users').doc(uid).update({'language': LanguageService.instance.code.value}).catchError((_) {});
+  }
+
+  /// Requests notification permission and returns the device's FCM token, or
+  /// null if permission was denied or the token couldn't be fetched.
+  Future<String?> _fetchFcmToken() async {
+    try {
+      final settings = await FirebaseMessaging.instance.requestPermission();
+      if (settings.authorizationStatus == AuthorizationStatus.denied) return null;
+      return await FirebaseMessaging.instance.getToken();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Keep the stored FCM token in sync if it rotates while the app is
+  /// running. No-op while signed out.
+  void _listenForTokenRefresh() {
+    _fcmTokenSub = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      db.collection('users').doc(uid).update({'fcmToken': token}).catchError((_) {});
+    });
   }
 
   /// Detect a mid-session logout (token revoked — e.g. password changed
@@ -247,10 +294,15 @@ class _HomePageState extends State<HomePage> {
     } catch (_) {}
   }
 
-  /// Extracts the first URL from a shared payload and starts a recipe from it.
+  /// Extracts a URL or an image from a shared payload and starts a recipe
+  /// from it.
   void _handleSharedMedia(List<SharedMediaFile> shared) {
     if (shared.isEmpty || !mounted) return;
     for (final file in shared) {
+      if (file.type == SharedMediaType.image) {
+        _openRecipeFromImage(file);
+        return;
+      }
       final url = _urlRe.firstMatch(file.path)?.group(0);
       if (url != null) {
         _openRecipeFromUrl(url);
@@ -264,6 +316,14 @@ class _HomePageState extends State<HomePage> {
   /// a selected group, and AI enabled for that group.
   Future<void> _openRecipeFromUrl(String url) async {
     if (!mounted) return;
+    // Show the shimmering placeholder immediately so something appears on
+    // screen the moment the link arrives, even before we know the doc id.
+    if (!_shareSkeletonShown) {
+      _shareSkeletonShown = true;
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => const RecipeDetailSkeleton(),
+      ));
+    }
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (_selectedGroup == null || !_aiEnabled || uid == null) {
       // Not ready yet (cold start): remember it and replay once the group loads.
@@ -286,7 +346,8 @@ class _HomePageState extends State<HomePage> {
       'attribution': url,
     });
     if (!mounted) return;
-    Navigator.of(context).push(MaterialPageRoute(
+    _shareSkeletonShown = false;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
       builder: (_) => RecipeDetailPage(
         groupId: _selectedGroup!,
         recipeId: ref.id,
@@ -312,6 +373,85 @@ class _HomePageState extends State<HomePage> {
       'recipeId': ref.id,
       'source': 'url',
       'url': url,
+      'lang': LanguageService.instance.code.value,
+    }).ignore();
+  }
+
+  /// Reads a shared image file and starts a recipe from it.
+  Future<void> _openRecipeFromImage(SharedMediaFile file) async {
+    if (!mounted) return;
+    final List<int> bytes;
+    try {
+      bytes = await File(file.path).readAsBytes();
+    } catch (_) {
+      return;
+    }
+    await _openRecipeFromImageBytes(bytes, file.mimeType ?? 'image/jpeg');
+  }
+
+  /// Creates a recipe in the active group from a shared image and opens it in
+  /// generating mode while the backend fills it in, via the same
+  /// `generateRecipeStaged` photo flow used when picking a photo from the
+  /// create menu. Requires a signed-in user, a selected group, and AI enabled
+  /// for that group.
+  Future<void> _openRecipeFromImageBytes(List<int> bytes, String mimeType) async {
+    if (!mounted) return;
+    // Show the shimmering placeholder immediately so something appears on
+    // screen the moment the image arrives, even before we know the doc id.
+    if (!_shareSkeletonShown) {
+      _shareSkeletonShown = true;
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => const RecipeDetailSkeleton(),
+      ));
+    }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (_selectedGroup == null || !_aiEnabled || uid == null) {
+      // Not ready yet (cold start): remember it and replay once the group loads.
+      _pendingSharedImage = (bytes: bytes, mimeType: mimeType);
+      return;
+    }
+    final recipes = db.collection('groups').doc(_selectedGroup).collection('recipes');
+    final ref = await recipes.add({
+      'name': '',
+      'description': '',
+      'creator': uid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'lastUsedAt': null,
+      'preparationTime': 0,
+      'time': 0,
+      'servings': 2,
+      'tags': <String>[],
+      'images': <String>[],
+      'steps': <String>[],
+    });
+    if (!mounted) return;
+    _shareSkeletonShown = false;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+      builder: (_) => RecipeDetailPage(
+        groupId: _selectedGroup!,
+        recipeId: ref.id,
+        aiEnabled: true,
+        generating: true,
+        initialData: {
+          'name': '',
+          'description': '',
+          'images': const <String>[],
+          'steps': const <String>[],
+          'tags': const <String>[],
+          'servings': 2,
+          'time': 0,
+          'preparationTime': 0,
+        },
+      ),
+    ));
+    FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable('recipes-generateRecipeStaged')
+        .call(<String, dynamic>{
+      'groupId': _selectedGroup,
+      'recipeId': ref.id,
+      'source': 'photo',
+      'imageBase64': base64Encode(bytes),
+      'imageMimeType': mimeType,
       'lang': LanguageService.instance.code.value,
     }).ignore();
   }
@@ -369,6 +509,89 @@ class _HomePageState extends State<HomePage> {
     _subscribeToGroupDoc(groupId);
   }
 
+  // ---------------------------------------------------------------------------
+  // Home screen shortcuts
+  // ---------------------------------------------------------------------------
+
+  /// Most launchers only show a handful of home-screen shortcuts (commonly 4),
+  /// so once every group's features are combined we cap the list and let the
+  /// most-recently-used groups keep their slot.
+  static const int _maxShortcuts = 4;
+
+  /// Handles a tap on a home screen shortcut, identified by a
+  /// `group:<groupId>:<featureKey>` type string.
+  void _handleQuickAction(String type) {
+    if (!type.startsWith('group:')) return;
+    final rest = type.substring('group:'.length);
+    final sep = rest.lastIndexOf(':');
+    if (sep == -1) return;
+    final groupId = rest.substring(0, sep);
+    final featureKey = rest.substring(sep + 1);
+    if (groupId.isEmpty || featureKey.isEmpty) return;
+
+    if (_selectedGroup == groupId && _groupDocReady) {
+      final i = _enabledFeatures.indexOf(featureKey);
+      if (i != -1 && mounted) setState(() => _selectedIndex = i);
+    } else {
+      _pendingShortcutFeature = featureKey;
+      _selectGroup(groupId);
+    }
+  }
+
+  /// Parses the {name, enabledFeatures} shortcut-relevant fields out of a
+  /// group document, mirroring the parsing in [_subscribeToGroupDoc].
+  ({String name, List<String> enabledFeatures}) _groupInfoFromDoc(Map<String, dynamic> data) {
+    final raw = data['enabledFeatures'];
+    final parsed = raw is List ? raw.map((e) => e.toString()).where(_allFeatures.contains).toList() : List<String>.of(_defaultEnabledFeatures);
+    return (
+      name: (data['name'] ?? 'Group').toString(),
+      enabledFeatures: parsed.isNotEmpty ? parsed : List<String>.of(_defaultEnabledFeatures),
+    );
+  }
+
+  /// Rebuilds the home screen shortcuts from every group the user belongs to,
+  /// most-recently-used first, capped at [_maxShortcuts].
+  Future<void> _refreshShortcuts() async {
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    final groups = acceptedGroups;
+    if (groups == null) return;
+
+    final sorted = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(groups)
+      ..sort((a, b) {
+        final at = a.data()['lastUsed'] as Timestamp?;
+        final bt = b.data()['lastUsed'] as Timestamp?;
+        if (at == null && bt == null) return 0;
+        if (at == null) return 1;
+        if (bt == null) return -1;
+        return bt.compareTo(at);
+      });
+
+    final missing = sorted.map((d) => d.id).where((id) => !_groupInfoCache.containsKey(id));
+    await Future.wait(missing.map((id) async {
+      final snap = await db.collection('groups').doc(id).get();
+      if (snap.exists) _groupInfoCache[id] = _groupInfoFromDoc(snap.data()!);
+    }));
+    if (!mounted) return;
+
+    final items = <ShortcutItem>[];
+    for (final doc in sorted) {
+      if (items.length >= _maxShortcuts) break;
+      final info = _groupInfoCache[doc.id];
+      if (info == null) continue;
+      for (final key in info.enabledFeatures) {
+        if (items.length >= _maxShortcuts) break;
+        final meta = _featureMeta[key];
+        if (meta == null) continue;
+        items.add(ShortcutItem(
+          type: 'group:${doc.id}:$key',
+          localizedTitle: '${meta.label} · ${info.name}',
+        ));
+      }
+    }
+
+    await _quickActions.setShortcutItems(items);
+  }
+
   Future<void> _createGroup() async {
     final newId = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => const CreateGroupPage()),
@@ -415,6 +638,7 @@ class _HomePageState extends State<HomePage> {
     _linkSub?.cancel();
     _shareSub?.cancel();
     _authStateSub?.cancel();
+    _fcmTokenSub?.cancel();
     LanguageService.instance.code.removeListener(_persistLanguage);
     super.dispose();
   }
@@ -489,11 +713,18 @@ class _HomePageState extends State<HomePage> {
           }
 
           setState(() {});
+          _refreshShortcuts();
         });
 
         // Update user record
         final packageInfo = await PackageInfo.fromPlatform();
-        await db.collection('users').doc(uid).update({'lastLogin': FieldValue.serverTimestamp(), 'appVersion': packageInfo.version, 'language': LanguageService.instance.code.value}).catchError((
+        final fcmToken = await _fetchFcmToken();
+        await db.collection('users').doc(uid).update({
+          'lastLogin': FieldValue.serverTimestamp(),
+          'appVersion': packageInfo.version,
+          'language': LanguageService.instance.code.value,
+          if (fcmToken != null) 'fcmToken': fcmToken,
+        }).catchError((
           error,
         ) {
           if (kDebugMode) print("Failed to update user: $error");
@@ -573,22 +804,37 @@ class _HomePageState extends State<HomePage> {
 
       final bool aiEnabled = data['ai'] as bool? ?? false;
 
+      // A shortcut tap targeting this group takes priority over the group's
+      // own default page, but only for the tap that requested it.
+      final String? shortcutFeature = _pendingShortcutFeature;
+      _pendingShortcutFeature = null;
+
       setState(() {
         _groupDocReady = true;
         _enabledFeatures = enabled;
         _groupDefaultPage = defaultPage;
         _aiEnabled = aiEnabled;
 
-        // Resolve selected index: honour group preference, else keep current
-        // feature if it's still available, else fall back to 0.
-        _selectedIndex = _resolveSelectedIndex(preferredFeature: _groupDefaultPage, currentFeature: _currentFeatureKey, features: _enabledFeatures);
+        // Resolve selected index: honour a pending shortcut, then the group
+        // preference, else keep current feature if it's still available, else
+        // fall back to 0.
+        _selectedIndex = _resolveSelectedIndex(preferredFeature: shortcutFeature ?? _groupDefaultPage, currentFeature: _currentFeatureKey, features: _enabledFeatures);
       });
+
+      _groupInfoCache[groupId] = _groupInfoFromDoc(data);
+      _refreshShortcuts();
 
       // Replay a recipe link that was shared before the group was ready.
       if (_aiEnabled && _pendingSharedUrl != null) {
         final url = _pendingSharedUrl!;
         _pendingSharedUrl = null;
         _openRecipeFromUrl(url);
+      }
+      // Replay a recipe image that was shared before the group was ready.
+      if (_aiEnabled && _pendingSharedImage != null) {
+        final pending = _pendingSharedImage!;
+        _pendingSharedImage = null;
+        _openRecipeFromImageBytes(pending.bytes, pending.mimeType);
       }
     });
   }

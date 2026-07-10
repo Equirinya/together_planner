@@ -9,6 +9,7 @@ import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sh
 import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -188,6 +189,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                   _ShoppingItem(
                     key: ValueKey(item['id']),
                     item: item,
+                    groupId: widget.groupId,
                     lang: _lang,
                     isNew: isNew(item),
                     onMarkDone: () => _markDone(item),
@@ -327,6 +329,7 @@ class _ShoppingItem extends StatelessWidget {
   const _ShoppingItem({
     super.key,
     required this.item,
+    required this.groupId,
     required this.lang,
     required this.isNew,
     required this.onMarkDone,
@@ -334,6 +337,7 @@ class _ShoppingItem extends StatelessWidget {
   });
 
   final Map<String, dynamic> item;
+  final String groupId;
   final String lang;
   final bool isNew;
   final VoidCallback onMarkDone;
@@ -366,8 +370,7 @@ class _ShoppingItem extends StatelessWidget {
         )
             : null,
         child: ListTile(
-          // When there's no quantity, tap the tile itself to set one.
-          onTap: q == null ? () => _openQuantityEditor(context, null, null) : null,
+          onLongPress: () => _showRecipeSources(context),
           leading: Avatar(
             ingredientId: (item['ingredientId'] ?? kUnknownIngredient).toString(),
           ),
@@ -385,14 +388,16 @@ class _ShoppingItem extends StatelessWidget {
           subtitle: (item['description'] as String?)?.isNotEmpty == true
               ? Text(item['description'] as String)
               : null,
-          trailing: q == null
-              ? null
-              : GestureDetector(
+          // The quantity/unit editor is opened from the right end whether or
+          // not there is a quantity yet.
+          trailing: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => _openQuantityEditor(context, q.unitId, q.qty),
+            onTap: () => _openQuantityEditor(context, q?.unitId, q?.qty),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Text(
+              child: q == null
+                  ? const SizedBox(width: 32, height: 32)
+                  : Text(
                 '${fmtQty(q.qty)} '
                     '${UnitsCache.instance.display(q.unitId, lang, q.qty)}',
                 style: Theme.of(context).textTheme.titleMedium,
@@ -422,6 +427,162 @@ class _ShoppingItem extends StatelessWidget {
         initialQty: qty ?? 0, // start at 0 when no quantity was set
         lang: lang,
         onChanged: onQuantityChanged,
+      ),
+    );
+  }
+
+  void _showRecipeSources(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => _RecipeSourcesDialog(
+        groupId: groupId,
+        itemId: item['id'] as String,
+        lang: lang,
+        onOpenRecipe: (recipeId) {
+          Navigator.of(dialogCtx).pop();
+          Navigator.of(context).push(MaterialPageRoute(
+            builder: (_) =>
+                RecipeDetailPage(groupId: groupId, recipeId: recipeId),
+          ));
+        },
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Recipe sources popup
+// =============================================================================
+
+/// A single recipe that contributed this shopping-list item, with the summed
+/// amount it added (across all its cooking plans).
+class _RecipeSource {
+  _RecipeSource({
+    required this.recipeId,
+    required this.name,
+    required this.image,
+    required this.quantity,
+  });
+
+  final String recipeId;
+  final String name;
+  final String? image;
+  final Map<String, num> quantity;
+}
+
+/// Dialog listing the recipes a shopping-list item was added from. Each row
+/// shows the recipe's cropped square image, its name and the amount it
+/// contributed; tapping a row opens the recipe.
+class _RecipeSourcesDialog extends StatelessWidget {
+  const _RecipeSourcesDialog({
+    required this.groupId,
+    required this.itemId,
+    required this.lang,
+    required this.onOpenRecipe,
+  });
+
+  final String groupId;
+  final String itemId;
+  final String lang;
+  final void Function(String recipeId) onOpenRecipe;
+
+  Future<List<_RecipeSource>> _load() async {
+    final db = FirebaseFirestore.instance;
+    final group = db.collection('groups').doc(groupId);
+    final plansSnap = await group
+        .collection('cooking_plan')
+        .where('itemIds', arrayContains: itemId)
+        .get();
+
+    // Sum the contributed amounts per recipe across all matching plans.
+    final byRecipe = <String, Map<String, num>>{};
+    for (final plan in plansSnap.docs) {
+      final data = plan.data();
+      final recipeId = (data['recipe'] ?? '').toString();
+      if (recipeId.isEmpty) continue;
+      final itemIds = List<String>.from(data['itemIds'] ?? const []);
+      final quantities = List<dynamic>.from(data['quantities'] ?? const []);
+      final idx = itemIds.indexOf(itemId);
+      final agg = byRecipe.putIfAbsent(recipeId, () => <String, num>{});
+      if (idx >= 0 && idx < quantities.length && quantities[idx] is Map) {
+        (quantities[idx] as Map).forEach((k, v) {
+          if (v is num) agg[k.toString()] = (agg[k.toString()] ?? 0) + v;
+        });
+      }
+    }
+
+    final sources = <_RecipeSource>[];
+    await Future.wait(byRecipe.entries.map((e) async {
+      final snap = await group.collection('recipes').doc(e.key).get();
+      if (!snap.exists) return;
+      final rd = snap.data()!;
+      final imgs = List<String>.from(rd['images'] ?? const []);
+      sources.add(_RecipeSource(
+        recipeId: e.key,
+        name: (rd['name'] ?? 'Unnamed Recipe').toString(),
+        image: imgs.isNotEmpty ? imgs.first : null,
+        quantity: e.value,
+      ));
+    }));
+    return sources;
+  }
+
+  String _amountLabel(Map<String, num> q) => q.entries
+      .map((e) =>
+          '${fmtQty(e.value)} ${UnitsCache.instance.display(e.key, lang, e.value)}')
+      .join(', ');
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('From recipes'),
+      contentPadding: const EdgeInsets.symmetric(vertical: 8),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: FutureBuilder<List<_RecipeSource>>(
+          future: _load(),
+          builder: (context, snap) {
+            if (!snap.hasData) {
+              return const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final sources = snap.data!;
+            if (sources.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('This item is not from any recipe.'),
+              );
+            }
+            return ListView(
+              shrinkWrap: true,
+              children: [
+                for (final s in sources)
+                  ListTile(
+                    leading: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: SizedBox(
+                        width: 48,
+                        height: 48,
+                        child: s.image == null
+                            ? Icon(Icons.restaurant_menu,
+                                color: Theme.of(context).colorScheme.onSurfaceVariant)
+                            : StorageImage(
+                                storagePath: s.image!,
+                                fit: BoxFit.cover,
+                                memCacheWidth: 96,
+                              ),
+                      ),
+                    ),
+                    title: Text(s.name),
+                    subtitle: s.quantity.isEmpty ? null : Text(_amountLabel(s.quantity)),
+                    onTap: () => onOpenRecipe(s.recipeId),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
