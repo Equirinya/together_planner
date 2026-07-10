@@ -296,7 +296,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         'ingredientId': (dd['ingredientId'] as String?) ?? kUnknownIngredient,
         'displayName': il?['displayName'] ?? dd['displayName'] ?? '',
         'description': il?['description'] ?? dd['description'] ?? '',
-        'quantity': <String, dynamic>{},
+        'quantity': Map<String, dynamic>.from(dd['quantity'] ?? const {}),
       });
     }
 
