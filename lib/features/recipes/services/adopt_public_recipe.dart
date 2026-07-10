@@ -108,7 +108,7 @@ Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPrelo
       'ingredientId': resolvedIngId,
       'displayName': ingLocalized?['displayName'] ?? data['displayName'] ?? '',
       'description': ingLocalized?['description'] ?? data['description'] ?? '',
-      'quantity': <String, dynamic>{},
+      'quantity': Map<String, dynamic>.from(data['quantity'] ?? const {}),
       'doneAt': null,
       'category': '',
       'createdAt': FieldValue.serverTimestamp(),
