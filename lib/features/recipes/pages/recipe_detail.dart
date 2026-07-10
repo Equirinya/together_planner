@@ -116,6 +116,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   late List<String> images;
   late List<String> steps;
   late List<String> tags;
+  // Standard diet labels the recipe satisfies (public recipes only — not
+  // shown/edited as a regular tag, see _dietaryChipsToShow).
+  List<String> dietary = [];
+  List<String> _userDietaryPrefs = [];
   String? attribution;
   late int totalHour;
   late int totalMinute;
@@ -171,6 +175,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
     if (_isPublicPreview) {
       _loadPublicPreview();
+      _loadUserDietaryPrefs();
       return;
     }
     if (_isSharedPreview) {
@@ -224,6 +229,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     steps = List<String>.from(data['steps'] ?? []);
     if (steps.isEmpty) steps = [''];
     tags = List<String>.from(data['tags'] ?? []);
+    dietary = List<String>.from(data['dietary'] ?? []);
     attribution = data['attribution']?.toString();
     totalHour = ((data['time'] ?? 0) / 60).floor();
     totalMinute = (data['time'] ?? 0) % 60;
@@ -266,6 +272,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       'name': field<String>('name', ''),
       'description': field<String>('description', ''),
       'tags': field<List<dynamic>>('tags', const []),
+      'dietary': List<dynamic>.from(p['dietary'] ?? const []),
       'steps': field<List<dynamic>>('steps', const []),
       'images': (imagePath is String && imagePath.isNotEmpty)
           ? <String>[imagePath]
@@ -298,6 +305,16 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       _applyData(data);
       ingredients = ings;
     });
+  }
+
+  /// Loads the signed-in user's own dietary preferences, used to decide which
+  /// of a public recipe's [dietary] labels are worth calling out as chips.
+  Future<void> _loadUserDietaryPrefs() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final prefs = List<String>.from(snap.data()?['dietaryPreferences'] ?? []);
+    if (mounted) setState(() => _userDietaryPrefs = prefs);
   }
 
   /// Loads another group's recipe (the recipe-viewer flow) into the page for a
@@ -714,7 +731,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Future<void> _saveAndExit() async {
     var name = nameController!.text.trim();
     if (name.isEmpty) name = 'New Recipe';
-    await docRef.update({
+    final update = docRef.update({
       'name': name,
       'description': descriptionController!.text,
       'steps': stepsControllers!
@@ -729,6 +746,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       'servings': servings,
     });
     if (_isRecipeEmpty()) {
+      await update;
       await docRef.delete();
       if (mounted) Navigator.of(context).pop();
       return;
@@ -967,7 +985,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       : Wrap(
                           spacing: 6,
                           runSpacing: 4,
-                          children: tags.map(_buildTagChip).toList(),
+                          children: [
+                            // Diet-recognized chips (icons) always lead, then
+                            // the rest of the plain tags.
+                            ...tags.where((t) => dietaryTagIcon(t) != null).map(_buildTagChip),
+                            ..._dietaryChipsToShow.map(_buildTagChip),
+                            ...tags.where((t) => dietaryTagIcon(t) == null).map(_buildTagChip),
+                          ],
                         ),
                   const SizedBox(height: 6),
                   Row(
@@ -1364,6 +1388,43 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   // ── component helpers ─────────────────────────────────────────────────────
+
+  // Vegan implies vegetarian implies pescatarian, so only the tightest one
+  // that applies is worth showing.
+  static const _kPrimaryDietOrder = ['Vegan', 'Vegetarian', 'Pescatarian'];
+
+  /// Picks which of [dietary]'s standard diet labels to show as chips: the
+  /// ones the signed-in user has selected for themselves, plus the strongest
+  /// of vegan/vegetarian/pescatarian the recipe satisfies (shown regardless
+  /// of the user's own preferences). Keeps the recipe's own casing. Skips any
+  /// diet already represented among the regular [tags] (matched by icon, not
+  /// text, so e.g. a "Vegetarisch" tag also suppresses the "Vegetarian" chip)
+  /// so the same diet never shows up twice.
+  List<String> get _dietaryChipsToShow {
+    if (dietary.isEmpty) return const [];
+    final tagIcons = tags.map(dietaryTagIcon).whereType<IconData>().toSet();
+    final chips = <String, String>{}; // lowercase -> original casing
+    void addIfPresent(String label) {
+      for (final d in dietary) {
+        if (d.toLowerCase() == label.toLowerCase()) {
+          if (tagIcons.contains(dietaryTagIcon(d))) return;
+          chips[d.toLowerCase()] = d;
+          return;
+        }
+      }
+    }
+
+    for (final pref in _userDietaryPrefs) {
+      addIfPresent(pref);
+    }
+    for (final primary in _kPrimaryDietOrder) {
+      if (dietary.any((d) => d.toLowerCase() == primary.toLowerCase())) {
+        addIfPresent(primary);
+        break;
+      }
+    }
+    return chips.values.toList();
+  }
 
   Widget _buildTagChip(String tag) {
     final cs = Theme.of(context).colorScheme;
@@ -1880,6 +1941,74 @@ class _AiBadge extends StatelessWidget {
                   .labelSmall
                   ?.copyWith(color: cs.onSecondaryContainer)),
         ],
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Loading placeholder
+// =============================================================================
+
+/// A static shimmering skeleton shaped like [RecipeDetailPage] in its
+/// generating state. Pushed the instant a recipe link is shared, before the
+/// active group / backing Firestore doc are even known, so something appears
+/// on screen right away instead of a blank pause.
+class RecipeDetailSkeleton extends StatelessWidget {
+  const RecipeDetailSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    Widget shimmerBox({double? height, double? width, double radius = 8}) {
+      return _Shimmer(
+        child: Container(
+          height: height,
+          width: width,
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(radius),
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: SizedBox(
+                height: MediaQuery.of(context).size.height * 0.3,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(28),
+                  child: shimmerBox(radius: 28),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: shimmerBox(
+                  height: 28, width: MediaQuery.of(context).size.width * 0.6),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: shimmerBox(
+                  height: 16, width: MediaQuery.of(context).size.width * 0.4),
+            ),
+            const SizedBox(height: 12),
+            for (int i = 0; i < 3; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 6),
+                child: shimmerBox(height: 48),
+              ),
+          ],
+        ),
       ),
     );
   }
