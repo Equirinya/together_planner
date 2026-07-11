@@ -13,11 +13,14 @@ import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mesh_gradient/mesh_gradient.dart';
 
 import 'package:couple_planner/features/ingredients/models/ingredients.dart' show kPendingIngredient;
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/ingredients/services/ingredient_index.dart' show resolvePendingItem;
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
 import 'package:couple_planner/features/recipes/widgets/create_recipe_sheet.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_card.dart';
@@ -25,6 +28,7 @@ import 'package:couple_planner/features/recipes/widgets/suggested_row.dart';
 import 'package:couple_planner/features/recipes/widgets/add_to_shopping_list_dialog.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
+import 'package:couple_planner/features/recipes/pages/meal_plan_flow.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
 /// Lets a parent widget (the bottom-nav host) query whether the recipe page's
@@ -64,7 +68,7 @@ class RecipePage extends StatefulWidget {
 }
 
 class _RecipePageState extends State<RecipePage>
-    with RecipeSuggestionsMixin, SuggestedRowMixin {
+    with RecipeSuggestionsMixin, SuggestedRowMixin, WidgetsBindingObserver {
   late DocumentReference<Map<String, dynamic>> groupDoc;
   final int daysToShowPrior = 15;
   final int daysToShowFuture = 30;
@@ -83,6 +87,18 @@ class _RecipePageState extends State<RecipePage>
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? planListener;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> cookingPlans = [];
+  // Whether the cooking-plan stream has delivered its first snapshot yet.
+  // The "Plan next days" trigger day depends on the latest planned day, so it
+  // stays hidden until this is true — otherwise it would flash onto today's
+  // tile (computed from the still-empty `cookingPlans`) and then jump once
+  // the real data arrives.
+  bool _plansLoaded = false;
+  // Tracks the auto meal-plan trigger day across cooking-plan updates so a
+  // move to a new day can fade out on the old one instead of just vanishing;
+  // see the cooking-plan listener in initState and _PlanNextDaysButton.
+  String? _lastTriggerDayKey;
+  String? _fadingTriggerDayKey;
+  Timer? _fadingTriggerTimer;
   final Set<String> _deletingPlanIds = {};
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? recipesListener;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> recipes = [];
@@ -98,6 +114,10 @@ class _RecipePageState extends State<RecipePage>
   // isn't limited to whatever page happened to be loaded already.
   static const int _allRecipesLimit = 100000;
   bool _searchActive = false;
+  // True once the recipes stream has delivered its first snapshot, so the
+  // "no recipes yet" empty state doesn't flash on briefly before real data
+  // arrives.
+  bool _recipesLoaded = false;
 
   // How often each recipe has been cooked (past cooking-plan entries within
   // [_usageWindowDays]) and which recipes are already planned in the future.
@@ -170,9 +190,50 @@ class _RecipePageState extends State<RecipePage>
     return insertIdx;
   }
 
+  /// The day the "Plan the next days" button sits on: the day right after the
+  /// group's last currently-planned day, or today if nothing is planned
+  /// ahead. By construction this guarantees the auto-planner's window can
+  /// never contain an already-planned day.
+  DateTime get _triggerDate {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    DateTime? latestPlanned;
+    for (final plan in cookingPlans) {
+      final ts = plan['plannedFor'];
+      if (ts is! Timestamp) continue;
+      final d = ts.toDate();
+      final day = DateTime(d.year, d.month, d.day);
+      if (day.isBefore(today)) continue;
+      if (latestPlanned == null || day.isAfter(latestPlanned)) latestPlanned = day;
+    }
+    return latestPlanned == null ? today : latestPlanned.add(const Duration(days: 1));
+  }
+
+  /// Opens the auto meal-plan flow starting on [day], with the days stepper
+  /// clamped to how much of the rendered carousel window remains ahead.
+  void _openMealPlanFlow(DateTime day) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final lastRendered = today.add(Duration(days: daysToShowFuture - 1));
+    final maxDays = (lastRendered.difference(day).inDays + 1).clamp(1, 14);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MealPlanSettingsPage(
+          groupId: widget.groupId,
+          groupDoc: groupDoc,
+          startDate: day,
+          maxDays: maxDays,
+          aiEnabled: widget.aiEnabled,
+        ),
+      ),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller?._clearSearch = _clearSearch;
     groupDoc = FirebaseFirestore.instance.collection('groups').doc(widget.groupId);
 
@@ -187,7 +248,21 @@ class _RecipePageState extends State<RecipePage>
         .orderBy('plannedFor')
         .snapshots();
     planListener = cookingPlanStream.listen((snapshot) {
-      setState(() => cookingPlans = snapshot.docs);
+      setState(() {
+        cookingPlans = snapshot.docs;
+        _plansLoaded = true;
+        final newTriggerDate = _triggerDate;
+        final newTriggerDayKey =
+            '${newTriggerDate.year}-${newTriggerDate.month}-${newTriggerDate.day}';
+        if (_lastTriggerDayKey != null && _lastTriggerDayKey != newTriggerDayKey) {
+          _fadingTriggerDayKey = _lastTriggerDayKey;
+          _fadingTriggerTimer?.cancel();
+          _fadingTriggerTimer = Timer(const Duration(milliseconds: 300), () {
+            if (mounted) setState(() => _fadingTriggerDayKey = null);
+          });
+        }
+        _lastTriggerDayKey = newTriggerDayKey;
+      });
     });
 
     _subscribeRecipes();
@@ -277,9 +352,11 @@ class _RecipePageState extends State<RecipePage>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller?._clearSearch = null;
     RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
+    _fadingTriggerTimer?.cancel();
     recipesListener?.cancel();
     usageListener?.cancel();
     keyboardSubscription.cancel();
@@ -287,6 +364,16 @@ class _RecipePageState extends State<RecipePage>
     _scrollController.removeListener(_maybeLoadMoreRecipes);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  // The suggested row is seeded by calendar day (see loadSuggestedRow), so a
+  // session left open across midnight would otherwise keep showing
+  // yesterday's picks until the app is restarted. Re-check on resume.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _suggestionsEnabled) {
+      refreshSuggestedRowIfStale();
+    }
   }
 
   /// (Re)subscribes to the group's recipes with the current [_recipeLimit], or
@@ -311,6 +398,7 @@ class _RecipePageState extends State<RecipePage>
     recipesListener = query.limit(limit).snapshots().listen((snapshot) {
       setState(() {
         recipes = snapshot.docs;
+        _recipesLoaded = true;
         // A full page means there may be more to load on scroll.
         _recipesMaybeMore = !_searchActive && snapshot.docs.length >= _recipeLimit;
         generateSearchedRecipes();
@@ -802,6 +890,146 @@ class _RecipePageState extends State<RecipePage>
     }).ignore();
   }
 
+  // ── empty state (group has no recipes yet) ─────────────────────────────────
+
+  /// Shown centered in the grid area once the recipes stream has confirmed the
+  /// group has no recipes and the user isn't searching. Points at the two
+  /// entry points that already live on this page (the Smart Meal Planner tile
+  /// above and the + button below) rather than duplicating them, and only adds
+  /// a real button for copying from another group since that has no other
+  /// entry point here.
+  Widget _buildEmptyRecipesState(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final hintColor = colorScheme.outline.withOpacity(0.75);
+    final hintStyle = textTheme.bodySmall?.copyWith(
+      color: hintColor,
+      fontStyle: FontStyle.italic,
+    );
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    return Stack(
+      children: [
+        Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.menu_book_outlined, size: 48, color: colorScheme.outline),
+                const SizedBox(height: 12),
+                Text('Looks so empty here!', style: textTheme.titleLarge),
+                const SizedBox(height: 4),
+                Text(
+                  'This group has no recipes yet.',
+                  style: hintStyle,
+                  textAlign: TextAlign.center,
+                ),
+                if (widget.aiEnabled) ...[
+                  const SizedBox(height: 28),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Transform.rotate(
+                        angle: -0.15,
+                        child: Icon(Icons.arrow_upward_rounded, size: 16, color: hintColor),
+                      ),
+                      const SizedBox(width: 6),
+                      Text('try the Smart Meal Planner above', style: hintStyle),
+                    ],
+                  ),
+                ],
+                if (uid != null)
+                  FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    future: FirebaseFirestore.instance
+                        .collection('users')
+                        .doc(uid)
+                        .collection('groups')
+                        .get(),
+                    builder: (context, snapshot) {
+                      final otherGroupIds = (snapshot.data?.docs ?? const [])
+                          .map((d) => d.id)
+                          .where((id) => id != widget.groupId)
+                          .toList();
+                      if (otherGroupIds.isEmpty) return const SizedBox.shrink();
+                      return Column(
+                        children: [
+                          const SizedBox(height: 16),
+                          TextButton.icon(
+                            onPressed: () => _openCopyFromGroupPicker(otherGroupIds),
+                            icon: const Icon(Icons.copy_outlined),
+                            label: const Text('Copy recipes from another group'),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ),
+        // Points down toward the + button, which sits in the bottom-right
+        // corner of the screen (see the AnimatedContainer/IconButton near the
+        // end of build()) rather than centered, so this hint is anchored to
+        // that same corner and angled diagonally instead of straight down.
+        Positioned(
+          right: 20,
+          bottom: 72,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('or tap + for your own', style: hintStyle),
+              const SizedBox(width: 6),
+              Transform.rotate(
+                angle: 0.7,
+                child: Icon(Icons.arrow_forward_rounded, size: 16, color: hintColor),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Opens [SharedRecipesPage] for one of [otherGroupIds], letting the user
+  /// pick which group to browse when they belong to more than one.
+  Future<void> _openCopyFromGroupPicker(List<String> otherGroupIds) async {
+    if (otherGroupIds.length == 1) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SharedRecipesPage(sourceGroupId: otherGroupIds.first),
+        ),
+      );
+      return;
+    }
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final id in otherGroupIds)
+              ListTile(
+                leading: const Icon(Icons.group_outlined),
+                title: LoadDocumentBuilder(
+                  docRef: FirebaseFirestore.instance.collection('groups').doc(id),
+                  builder: (data) => Text((data['name'] ?? 'Group').toString()),
+                ),
+                onTap: () => Navigator.pop(context, id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null && mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => SharedRecipesPage(sourceGroupId: chosen)),
+      );
+    }
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -984,6 +1212,9 @@ class _RecipePageState extends State<RecipePage>
         (showSuggestedRow || (widget.aiEnabled && suggestionTiles.isNotEmpty))
             ? smallerdim / crossAxisCount * 3 / 4 + 1
             : 0.0;
+
+    final triggerDate = _triggerDate;
+    final triggerDayKey = '${triggerDate.year}-${triggerDate.month}-${triggerDate.day}';
 
     return Column(
       mainAxisSize: MainAxisSize.max,
@@ -1171,6 +1402,25 @@ class _RecipePageState extends State<RecipePage>
                               ),
                             ),
                           ),
+                          // The auto meal-plan trigger: shown only on the
+                          // single soonest day at/after today that has no
+                          // plan yet (see _triggerDate), and only when AI
+                          // features are enabled. Pinned below the scrollable
+                          // plan list (not part of it) and sized like a
+                          // cropped recipe card so it holds a fixed size
+                          // instead of reflowing as the carousel's weighted
+                          // widths change while scrolling. Kept mounted (as
+                          // invisible) on the previous trigger day for a
+                          // moment after the trigger moves, so it fades out
+                          // there instead of just vanishing.
+                          if (widget.aiEnabled &&
+                              _plansLoaded &&
+                              (dayKey == triggerDayKey || dayKey == _fadingTriggerDayKey))
+                            _PlanNextDaysButton(
+                              crossAxisCount: planCrossAxisCount,
+                              visible: dayKey == triggerDayKey,
+                              onTap: () => _openMealPlanFlow(day),
+                            ),
                         ],
                       ),
                     );
@@ -1262,6 +1512,11 @@ class _RecipePageState extends State<RecipePage>
                       ]),
                     ),
                   ),
+                  if (recipes.isEmpty && searchQuery.trim().isEmpty && _recipesLoaded)
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: _buildEmptyRecipesState(context),
+                    ),
                 ],
               ),
               // ── Search bar ─────────────────────────────────────────────
@@ -1445,6 +1700,151 @@ class _RecipePageState extends State<RecipePage>
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─── Plan-next-days trigger button ──────────────────────────────────────────
+
+/// The "Plan next days" call-to-action shown on the carousel's trigger day.
+/// Spans the full width of the day cell, flush with its edges, so it reads
+/// as part of the carousel box rather than a floating card.
+///
+/// Stays mounted (as [visible]: false) for a moment after the trigger day
+/// moves elsewhere, so it can fade out instead of just disappearing; see
+/// _RecipePageState's fade-out timer around the cooking-plan listener.
+class _PlanNextDaysButton extends StatefulWidget {
+  const _PlanNextDaysButton({
+    required this.crossAxisCount,
+    required this.visible,
+    required this.onTap,
+  });
+
+  final int crossAxisCount;
+  final bool visible;
+  final VoidCallback onTap;
+
+  // Fixed height for the button, given directly via a SizedBox so it holds
+  // a stable size instead of reflowing as the carousel's weighted widths
+  // change while scrolling.
+  static const double _height = 140;
+
+  @override
+  State<_PlanNextDaysButton> createState() => _PlanNextDaysButtonState();
+}
+
+class _PlanNextDaysButtonState extends State<_PlanNextDaysButton> {
+  // False until the first frame after this instance mounts, so it fades in
+  // rather than popping in at full opacity.
+  bool _shown = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) setState(() => _shown = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final size = MediaQuery.of(context).size;
+    final smallerdim = size.width < size.height ? size.width : size.height;
+    // Full content size at this crossAxisCount, used below to keep the whole
+    // card (background and label alike) from shrinking as the carousel's
+    // weighted widths change while scrolling — it just gets cropped instead,
+    // like the recipe cards.
+    final fullContentWidth = smallerdim / widget.crossAxisCount - 8;
+    // Gentle, on-brand hues for the mesh: the theme's key colours pulled just
+    // partway off the surface, so the card shifts subtly instead of clashing
+    // with the rest of the recipe grid.
+    final meshColors = [
+      Color.lerp(colorScheme.surface, colorScheme.primary, 0.35)!,
+      Color.lerp(colorScheme.surface, colorScheme.tertiary, 0.4)!,
+      Color.lerp(colorScheme.surface, colorScheme.secondary, 0.35)!,
+      Color.lerp(colorScheme.surface, colorScheme.primaryContainer, 0.75)!,
+    ];
+
+    return SizedBox(
+      width: double.infinity,
+      height: _PlanNextDaysButton._height,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+        opacity: _shown && widget.visible ? 1 : 0,
+        child: IgnorePointer(
+          ignoring: !widget.visible,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: widget.onTap,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Fill the day cell's actual current width, but never
+                  // shrink below fullContentWidth: when the cell goes
+                  // narrower than that during scrolling, hold this size and
+                  // let OverflowBox crop it (centered) instead.
+                  final availWidth =
+                      constraints.maxWidth.isFinite ? constraints.maxWidth : fullContentWidth;
+                  final contentWidth =
+                      fullContentWidth > availWidth ? fullContentWidth : availWidth;
+                  return OverflowBox(
+                    minWidth: contentWidth,
+                    maxWidth: contentWidth,
+                    minHeight: _PlanNextDaysButton._height,
+                    maxHeight: _PlanNextDaysButton._height,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                    // Fades in from the scrollable plan list above so the card
+                    // reads as an extension of it instead of a hard-edged strip.
+                    ShaderMask(
+                      shaderCallback: (rect) => const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.center,
+                        colors: [Colors.transparent, Colors.white],
+                      ).createShader(rect),
+                      blendMode: BlendMode.dstIn,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          AnimatedMeshGradient(
+                            colors: meshColors,
+                            options: AnimatedMeshGradientOptions(speed: 0.15),
+                          ),
+                          Container(color: Colors.black.withOpacity(0.1)),
+                        ],
+                      ),
+                    ),
+                    Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.auto_awesome, color: Colors.white),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Smart Meal\nPlanner',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelLarge
+                                ?.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
+                            maxLines: 2,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

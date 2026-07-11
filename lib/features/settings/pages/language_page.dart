@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/core/restart_widget.dart';
 
 /// Lets the user follow the device language or override it with any language.
 /// App strings stay English for now; the choice is the language sent alongside
@@ -21,7 +22,10 @@ class _LanguagePageState extends State<LanguagePage> {
     final device = languageOptionFor(service.deviceCode);
     final q = _query.trim().toLowerCase();
     final matches = q.isEmpty
-        ? kLanguages
+        ? [
+            languageOptionFor('en')!,
+            ...kLanguages.where((l) => l.code != 'en'),
+          ]
         : kLanguages
             .where((l) =>
                 l.name.toLowerCase().contains(q) ||
@@ -71,6 +75,8 @@ class _LanguagePageState extends State<LanguagePage> {
 
   Future<void> _select(String? code) async {
     await LanguageService.instance.setOverride(code);
-    if (mounted) Navigator.of(context).pop();
+    if (!mounted) return;
+    Navigator.of(context).pop();
+    RestartWidget.restartApp(context);
   }
 }

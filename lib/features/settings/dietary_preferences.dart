@@ -81,13 +81,54 @@ String _normalizeDietaryTag(String tag) =>
 IconData? dietaryTagIcon(String tag) =>
     _kDietaryTagIcons[_normalizeDietaryTag(tag)];
 
+/// Maps each canonical (English, as in [kDietaryOptions]) standard diet label
+/// to every recognized synonym across supported content languages, normalized
+/// via [_normalizeDietaryTag]. Used to match a `#tag` search term against a
+/// recipe's `dietary` field (always stored as canonical English labels)
+/// regardless of which language the search term or the recipe happen to be in.
+/// To add a language, append its normalized terms to the relevant entry.
+final Map<String, Set<String>> _kDietarySynonyms = {
+  'Vegan': {'vegan'},
+  'Vegetarian': {'vegetarian', 'vegetarisch'},
+  'Pescatarian': {'pescatarian', 'pescetarisch'},
+  'Gluten-free': {'glutenfree', 'glutenfrei'},
+  'Lactose-free': {'lactosefree', 'laktosefrei'},
+  'Nut-free': {'nutfree', 'nussfrei'},
+  'Halal': {'halal'},
+  'Kosher': {'kosher', 'koscher'},
+  'Jain': {'jain'},
+  'Low-carb': {'lowcarb', 'kohlenhydratarm'},
+};
+
+/// Returns the canonical (English) dietary label that [tag] refers to (e.g.
+/// "glutenfrei" or "gluten-free" -> "Gluten-free"), or null if [tag] isn't a
+/// recognized dietary synonym in any supported language.
+String? canonicalDietaryLabel(String tag) {
+  final normalized = _normalizeDietaryTag(tag);
+  for (final entry in _kDietarySynonyms.entries) {
+    if (entry.value.contains(normalized)) return entry.key;
+  }
+  return null;
+}
+
 /// Lets the user pick preset dietary preferences and add their own. Controlled:
 /// reports the full list (presets + custom) via [onChanged].
 class DietaryPreferencesSelector extends StatefulWidget {
-  const DietaryPreferencesSelector({super.key, required this.value, required this.onChanged});
+  const DietaryPreferencesSelector({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.showCustomEntriesInfo = true,
+  });
 
   final List<String> value;
   final ValueChanged<List<String>> onChanged;
+
+  /// Whether to show the "Custom entries aren't considered for suggestions…"
+  /// note below the custom-entry chips. Only true for suggestions-driven
+  /// contexts (the normal dietary settings page) — not relevant where custom
+  /// entries ARE fully considered, e.g. the meal-plan flow.
+  final bool showCustomEntriesInfo;
 
   @override
   State<DietaryPreferencesSelector> createState() => _DietaryPreferencesSelectorState();
@@ -225,22 +266,24 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
           const SizedBox(height: 12),
         ],
         // Info text
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(Icons.info_outline, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                'Custom entries aren\'t considered for suggestions, but are used when generating recipes.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+        if (widget.showCustomEntriesInfo) ...[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.info_outline, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Custom entries aren\'t considered for suggestions, but are used when generating recipes.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
+            ],
+          ),
+          const SizedBox(height: 10),
+        ],
         // Custom entry input
         Row(
           children: [
@@ -248,9 +291,15 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
               child: TextField(
                 controller: _customCtrl,
                 textInputAction: TextInputAction.done,
-                decoration: const InputDecoration(
-                  hintText: 'Add your own…',
-border: OutlineInputBorder(),
+                decoration: InputDecoration(
+                  hintText: 'e.g. "no shellfish", "avoids cilantro"…',
+                  filled: true,
+                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 ),
                 onSubmitted: (_) => _addCustom(),
               ),
@@ -342,7 +391,7 @@ class _OptionRow extends StatelessWidget {
       children: [
         for (int i = 0; i < options.length; i++) ...[
           Expanded(
-            child: _DietaryOptionButton(
+            child: DietaryOptionButton(
               label: options[i].label,
               icon: options[i].icon,
               checked: isChecked(options[i].label),
@@ -424,8 +473,12 @@ class _ConnectedOptionButton extends StatelessWidget {
   }
 }
 
-class _DietaryOptionButton extends StatelessWidget {
-  const _DietaryOptionButton({
+/// A rounded, icon-led selectable card button. Used for the dietary
+/// restriction row below and reused as-is by the meal-plan style selector
+/// (lib/features/recipes/pages/meal_plan_flow.dart) so both pickers share the
+/// same playful visual language.
+class DietaryOptionButton extends StatelessWidget {
+  const DietaryOptionButton({
     required this.label,
     required this.icon,
     required this.checked,

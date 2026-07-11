@@ -20,6 +20,11 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   List<RecipeSuggestion> suggestedPool = [];
   Map<String, int> _dismissed = {};
   static const String _kDismissedKey = 'dismissed_public_recipes';
+  // Calendar day the suggested row was last loaded for (see loadSuggestedRow's
+  // date-seeded pool). Lets refreshSuggestedRowIfStale detect a session left
+  // open across midnight, when the row would otherwise keep showing
+  // yesterday's picks until the next app start.
+  String? _suggestedRowDayKey;
 
   Future<void> loadDismissed() async {
     try {
@@ -58,6 +63,7 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
       final col = FirebaseFirestore.instance.collection('public_recipes');
       const poolSize = 40;
       final now = DateTime.now();
+      _suggestedRowDayKey = '${now.year}-${now.month}-${now.day}';
       final seed =
           _stableHash('${widget.groupId}-${now.year}-${now.month}-${now.day}');
       final pivot = (_stableHash('pivot-$seed') % 100000) / 100000.0;
@@ -164,6 +170,18 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
         suggestedPool = ordered.toList();
       });
     } catch (_) {}
+  }
+
+  /// Reloads the suggested row if the calendar day has advanced since it was
+  /// last loaded. The row's pool is seeded by group + day, so a session left
+  /// open across midnight would otherwise keep showing yesterday's picks
+  /// until the app is restarted.
+  Future<void> refreshSuggestedRowIfStale() async {
+    final now = DateTime.now();
+    final todayKey = '${now.year}-${now.month}-${now.day}';
+    if (_suggestedRowDayKey != todayKey) {
+      await loadSuggestedRow();
+    }
   }
 
   void dismissSuggested(RecipeSuggestion s) {

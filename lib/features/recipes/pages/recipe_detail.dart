@@ -12,6 +12,7 @@ import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
+import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -222,7 +223,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   // ── data loading ──────────────────────────────────────────────────────────
 
-  void _applyData(Map<String, dynamic> data) {
+  void _applyData(Map<String, dynamic> rawData) {
+    final data = localizeRecipeData(rawData, lang);
     recipeData = data;
 
     images = List<String>.from(data['images'] ?? []);
@@ -334,6 +336,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       'name': s['name'] ?? '',
       'description': s['description'] ?? '',
       'tags': List<dynamic>.from(s['tags'] ?? const []),
+      'dietary': List<dynamic>.from(s['dietary'] ?? const []),
+      if (s['translations'] != null) 'translations': s['translations'],
       'steps': List<dynamic>.from(s['steps'] ?? const []),
       'images': List<String>.from(s['images'] ?? const []),
       'servings': s['servings'] ?? 2,
@@ -464,11 +468,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   /// and the one-shot `??=` initialisation in [_applyData] would go stale.
   void _applyStreamData(Map<String, dynamic> data) {
     _applyData(data);
-    nameController?.text = data['name'] ?? '';
-    descriptionController?.text = data['description'] ?? '';
-    final newTags = List<String>.from(data['tags'] ?? []);
+    // Read back through [recipeData] (set by [_applyData]) rather than the raw
+    // [data] param, so these controllers pick up the localized name/tags/steps
+    // too instead of the English base once translations land mid-generation.
+    nameController?.text = recipeData?['name'] ?? '';
+    descriptionController?.text = recipeData?['description'] ?? '';
+    final newTags = List<String>.from(recipeData?['tags'] ?? []);
     tagsController?.text = newTags.map((e) => '#$e ').join('');
-    final newSteps = List<String>.from(data['steps'] ?? []);
+    final newSteps = List<String>.from(recipeData?['steps'] ?? []);
     if (newSteps.isNotEmpty) {
       for (final c in stepsControllers ?? const <TextEditingController>[]) {
         c.dispose();
@@ -479,11 +486,33 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   void _startIngredientsSubscription() {
-    _ingredientsSub = ingredientsRef.snapshots().listen((snap) {
+    _ingredientsSub = ingredientsRef.snapshots().listen((snap) async {
       if (!mounted) return;
-      final list = snap.docs
-          .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
-          .toList();
+      // Matched ingredients already have a curated name in every supported
+      // language on their master /ingredients doc (see resolveOrCreateIngredient
+      // in functions/src/ingredients.ts); prefer that over the recipe's own
+      // (AI-translated) displayName, same as the add-to-shopping-list dialog.
+      // Still-pending ingredients have no matching master doc, so this just
+      // resolves to an empty snapshot for those — harmless.
+      final masterDocs = await Future.wait(snap.docs.map((d) {
+        final id = (d.data()['ingredientId'] ?? '').toString();
+        return FirebaseFirestore.instance.collection('ingredients').doc(id).get();
+      }));
+      if (!mounted) return;
+      final list = <Map<String, dynamic>>[
+        for (int i = 0; i < snap.docs.length; i++)
+          () {
+            final localized = localizeIngredientData(snap.docs[i].data(), lang);
+            final masterName =
+                (masterDocs[i].data()?['name'] as Map?)?[lang]?.toString();
+            return <String, dynamic>{
+              ...localized,
+              if (masterName != null && masterName.isNotEmpty)
+                'displayName': masterName,
+              'id': snap.docs[i].id,
+            };
+          }(),
+      ];
       list.sort((a, b) => categoryRank((a['category'] as String?) ?? '')
           .compareTo(categoryRank((b['category'] as String?) ?? '')));
       setState(() => ingredients = list);

@@ -70,26 +70,27 @@ Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPrelo
   final db = FirebaseFirestore.instance;
   final p = preload.data;
 
-  final localized = lang == _kBaseLanguage
-      ? null
-      : (p['translations'] as Map<String, dynamic>?)?[lang] as Map<String, dynamic>?;
-  T localizedField<T>(String key, T fallback) =>
-      (localized?[key] ?? p[key] ?? fallback) as T;
-
   final recipeRef = db.collection('groups/$groupId/recipes').doc();
 
   final batch = db.batch();
   batch.set(recipeRef, {
-    'name': localizedField<String>('name', ''),
-    'description': localizedField<String>('description', ''),
+    // Group recipes always keep an English base plus a `translations` map
+    // (see generateRecipeStaged in recipes.ts), same as public_recipes — so
+    // this just carries the public recipe's base fields and translations
+    // straight over, rather than "baking in" the currently-active language.
+    'name': p['name'] ?? '',
+    'description': p['description'] ?? '',
     'creator': uid,
     'createdAt': FieldValue.serverTimestamp(),
     'lastUsedAt': FieldValue.serverTimestamp(),
     'preparationTime': p['preparationTime'] ?? 0,
     'time': p['time'] ?? 0,
     'servings': p['servings'] ?? 2,
-    'tags': localizedField<List<dynamic>>('tags', const []),
-    'steps': localizedField<List<dynamic>>('steps', const []),
+    'tags': List<dynamic>.from(p['tags'] ?? const []),
+    'dietary': List<dynamic>.from(p['dietary'] ?? const []),
+    if (p['languages'] != null) 'languages': List<dynamic>.from(p['languages']),
+    if (p['translations'] != null) 'translations': p['translations'],
+    'steps': List<dynamic>.from(p['steps'] ?? const []),
     'images': <String>[],
     'sourcePublicId': publicRecipeId,
     if (p['attribution'] != null) 'attribution': p['attribution'],
@@ -97,17 +98,16 @@ Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPrelo
 
   for (final d in preload.ingredients) {
     final data = d.data();
-    final ingLocalized = lang == _kBaseLanguage
-        ? null
-        : (data['translations'] as Map<String, dynamic>?)?[lang] as Map<String, dynamic>?;
     final publicIngId = (data['ingredientId'] as String?) ?? '';
     final resolvedIngId = (publicIngId.isNotEmpty && publicIngId != kUnknownIngredient)
         ? publicIngId
         : kPendingIngredient;
     batch.set(recipeRef.collection('ingredients').doc(), {
       'ingredientId': resolvedIngId,
-      'displayName': ingLocalized?['displayName'] ?? data['displayName'] ?? '',
-      'description': ingLocalized?['description'] ?? data['description'] ?? '',
+      // English base + translations, same convention as the recipe doc above.
+      'displayName': data['displayName'] ?? '',
+      'description': data['description'] ?? '',
+      if (data['translations'] != null) 'translations': data['translations'],
       'quantity': Map<String, dynamic>.from(data['quantity'] ?? const {}),
       'doneAt': null,
       'category': '',
