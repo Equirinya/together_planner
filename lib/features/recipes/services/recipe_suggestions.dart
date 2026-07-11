@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
+import 'package:couple_planner/features/settings/dietary_preferences.dart' show canonicalDietaryLabel;
 
 /// Ranking of the group's own recipes (via the cooking-plan usage history)
 /// and generation of search-time suggestions (public recipe matches + AI name
@@ -59,8 +60,10 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   /// How long a just-added recipe stays pinned to the very start of the grid.
   static const Duration _newRecipeWindow = Duration(days: 3);
 
-  /// Orders the recipe grid. Recipes added within [_newRecipeWindow] come first
-  /// (newest first) so a freshly added recipe is right at the start. The rest are
+  /// Orders the recipe grid. Recipes added within [_newRecipeWindow] and not yet
+  /// cooked come first (newest first) so a freshly added recipe is right at the
+  /// start; once it's been cooked it drops out of this pinned group even if
+  /// still within the window. The rest are
   /// ranked so the recipes worth cooking again rise to the top: ones cooked often
   /// but not in the last few days. Frequency comes from the cooking plans
   /// ([usageCounts]) with diminishing returns; a "due" factor starts at 0.5
@@ -118,11 +121,16 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
     final ordered = [...list];
     ordered.sort((a, b) {
-      // Just-added recipes first, newest first.
+      // Just-added recipes first, newest first — but only while they're
+      // still untried; once a recipe has been cooked it should compete on
+      // its "cook again" score like everything else instead of staying
+      // pinned at the top for the rest of the new-recipe window.
       final ca = createdOf(a);
       final cb = createdOf(b);
-      final na = ca != null && ca.isAfter(newCutoff);
-      final nb = cb != null && cb.isAfter(newCutoff);
+      final aCooked = (lastUsedDates[a.id] ?? (a.data()['lastUsedAt'] as Timestamp?)?.toDate()) != null;
+      final bCooked = (lastUsedDates[b.id] ?? (b.data()['lastUsedAt'] as Timestamp?)?.toDate()) != null;
+      final na = ca != null && ca.isAfter(newCutoff) && !aCooked;
+      final nb = cb != null && cb.isAfter(newCutoff) && !bCooked;
       if (na != nb) return na ? -1 : 1;
       if (na && nb) {
         return (cb?.millisecondsSinceEpoch ?? 0)
@@ -160,6 +168,37 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     _applySearchedRecipes(parsed, recipes);
   }
 
+  /// Whether every one of [queryTags] is satisfied by [data]'s tags: an exact
+  /// (case-insensitive) match against the base (English) `tags` or any
+  /// language's `translations[*].tags` (group recipes always carry an English
+  /// base plus a `translations` map, see recipes.ts's `generateRecipeStaged`),
+  /// or — for a standard diet like "gluten-free"/"glutenfrei" — a match against
+  /// `dietary` (always stored as canonical English labels) via
+  /// [canonicalDietaryLabel]. This lets a `#tag` search find a recipe
+  /// regardless of which language the query or the recipe itself are in.
+  bool _docMatchesTags(Map<String, dynamic> data, List<String> queryTags) {
+    final docTags = <String>{
+      ...(data['tags'] ?? []).map((e) => e.toString().toLowerCase()),
+    };
+    // A malformed `translations` field on any one recipe shouldn't throw and
+    // drop that recipe (and everything after it in iteration order) out of
+    // every future `#tag` search; just skip its translated tags on error.
+    try {
+      final translations = data['translations'] as Map?;
+      for (final t in translations?.values ?? const []) {
+        docTags.addAll(
+            ((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()));
+      }
+    } catch (_) {}
+    final docDietary = (data['dietary'] ?? []).map((e) => e.toString()).toList();
+    return queryTags.every((q) {
+      if (docTags.contains(q)) return true;
+      final canonical = canonicalDietaryLabel(q);
+      return canonical != null &&
+          docDietary.any((d) => d.toLowerCase() == canonical.toLowerCase());
+    });
+  }
+
   /// Filters [pool] by [parsed]'s tags/text and assigns the result to
   /// [searchedRecipes] — ranked by "cook again" score with no free text, or
   /// by match score once there's free text. [recipes] itself is widened to
@@ -169,12 +208,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       ({List<String> tags, String text}) parsed,
       Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> pool) {
     if (parsed.tags.isNotEmpty) {
-      pool = pool.where((doc) {
-        final docTags = (doc.data()['tags'] ?? [])
-            .map((e) => e.toString().toLowerCase())
-            .toSet();
-        return parsed.tags.every(docTags.contains);
-      });
+      pool = pool.where((doc) => _docMatchesTags(doc.data(), parsed.tags));
     }
     final candidates = pool.toList();
 
@@ -186,12 +220,36 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       final queryWords = query.split(splitRe).where((s) => s.isNotEmpty).toList();
 
       final List<Map<String, dynamic>> scored = [];
+      // Wraps each recipe's scoring so one recipe with an unexpected field
+      // shape can never throw and abort the whole search pass silently,
+      // leaving the grid stuck on whatever it last showed (see the two
+      // narrower try/catches below, which this backs up).
       for (final doc in candidates) {
+        try {
         final data = doc.data();
         final name = (data['name'] ?? '').toString().toLowerCase();
         final description = (data['description'] ?? '').toString().toLowerCase();
         final tags =
         (data['tags'] ?? []).map<String>((e) => e.toString().toLowerCase()).toList();
+        // Every language's translated name/tags (group recipes always carry an
+        // English base plus a `translations` map, see recipes.ts's
+        // `generateRecipeStaged`), and the recipe's canonical dietary labels —
+        // together these make the recipe findable by free text regardless of
+        // which language the query or the recipe itself are in.
+        // Built eagerly (not left as a lazy Iterable) inside a try/catch: a
+        // malformed `translations` field on any one recipe would otherwise
+        // throw only once enumerated below, aborting this whole search pass
+        // silently and leaving the grid stuck on its last successful result.
+        List<String> translatedText = const [];
+        try {
+          final translations = data['translations'] as Map?;
+          translatedText = (translations?.values ?? const []).expand((t) => [
+                ((t as Map?)?['name'] ?? '').toString().toLowerCase(),
+                ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
+              ]).toList();
+        } catch (_) {}
+        final dietary =
+        (data['dietary'] ?? []).map<String>((e) => e.toString().toLowerCase()).toList();
         // The query that surfaced this recipe as a suggestion (see
         // [RecipePage._createRecipeDoc]'s `searchHint`), if any. AI-generated
         // ideas are matched semantically, so the finished recipe's own
@@ -202,6 +260,8 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           ...name.split(splitRe).where((s) => s.isNotEmpty),
           ...description.split(splitRe).where((s) => s.isNotEmpty),
           ...tags,
+          ...translatedText.expand((t) => t.split(splitRe).where((s) => s.isNotEmpty)),
+          ...dietary.expand((d) => d.split(splitRe).where((s) => s.isNotEmpty)),
           ...searchHint.split(splitRe).where((s) => s.isNotEmpty),
         ];
 
@@ -227,6 +287,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
             'last': (data['lastUsedAt'] as Timestamp?)?.toDate(),
           });
         }
+        } catch (_) {}
       }
 
       scored.sort((a, b) {
@@ -511,7 +572,19 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
               for (final t in translations?.values ?? const [])
                 ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
             };
-            if (!tags.every(docTags.contains)) continue;
+            // `dietary` is always canonical English (e.g. "Gluten-free") and
+            // isn't repeated in `tags`/`translations`, so a standard-diet
+            // `#tag` — in English or any supported content language — is
+            // matched separately via [canonicalDietaryLabel].
+            final docDietary =
+                (data['dietary'] as List? ?? const []).map((e) => e.toString()).toList();
+            final matchesTag = (String q) {
+              if (docTags.contains(q)) return true;
+              final canonical = canonicalDietaryLabel(q);
+              return canonical != null &&
+                  docDietary.any((d) => d.toLowerCase() == canonical.toLowerCase());
+            };
+            if (!tags.every(matchesTag)) continue;
           }
           final recipeTokens =
               (data['searchTokens'] as List?)?.map((e) => e.toString()).toSet() ?? const <String>{};

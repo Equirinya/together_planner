@@ -30,6 +30,7 @@ import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/core/restart_widget.dart';
 import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,7 @@ void main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true, cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED);
   await LanguageService.instance.load();
-  runApp(const MyApp());
+  runApp(const RestartWidget(child: MyApp()));
 }
 
 class MyApp extends StatefulWidget {

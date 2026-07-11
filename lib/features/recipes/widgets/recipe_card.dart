@@ -3,9 +3,11 @@ import 'package:animations/animations.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
 
 // ─── RecipeOpenContainer ──────────────────────────────────────────────────────
 
@@ -143,7 +145,9 @@ class RecipeCard extends StatelessWidget {
     final size = MediaQuery.of(context).size;
     final smallerdim = size.width < size.height ? size.width : size.height;
     if (recipeId == null || groupCollection == null) return null;
-    Widget buildContent(Map<String, dynamic> recipeData) {
+    Widget buildContent(Map<String, dynamic> rawData) {
+        final recipeData =
+            localizeRecipeData(rawData, LanguageService.instance.code.value);
         final images = List<String>.from(recipeData['images'] ?? []);
         return LayoutBuilder(
           builder: (context, constraints) {

@@ -3,11 +3,12 @@ import 'package:flutter/cupertino.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import 'package:couple_planner/features/ingredients/models/ingredients.dart' show kDefaultUnitId;
+import 'package:couple_planner/features/ingredients/models/ingredients.dart'
+    show kDefaultUnitId, kPendingIngredient, kUnknownIngredient;
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/ingredients/services/units_cache.dart' show UnitsCache;
-import 'package:couple_planner/features/ingredients/widgets/avatar.dart' show Avatar;
 import 'package:couple_planner/features/ingredients/models/categories.dart' show categoryRank;
+import 'package:couple_planner/features/recipes/widgets/ingredient_row_tile.dart';
 
 /// Immutable snapshot of a recipe ingredient used to (pre)load the shopping
 /// list dialog: id, localised name, base quantities, default add flag and
@@ -81,8 +82,10 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
   /// reused when the dialog opens. Returns an empty list when there are none.
   static Future<List<IngPreload>> loadRows(
       DocumentReference<Map<String, dynamic>> group,
-      String recipeId,
-      ) async {
+      String recipeId, {
+      String? lang,
+      }) async {
+    final effectiveLang = lang ?? LanguageService.instance.code.value;
     // Kick off the independent reads concurrently: the units cache, the
     // recipe's ingredients, and the recipe's past cooking plans.
     final unitsFuture = UnitsCache.instance.ensureLoaded();
@@ -146,7 +149,22 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
       final category = (ingData?['category'] ?? '').toString();
       final rawUnit = (ingData?['defaultUnit'] ?? '').toString();
       final unit = rawUnit.isEmpty ? kDefaultUnitId : rawUnit;
-      final name = (ing.data()['displayName'] ?? ingData?['name']?['en'] ?? id).toString();
+      // Matched ingredients already have a curated name in every supported
+      // language on their master /ingredients doc (see resolveOrCreateIngredient
+      // in functions/src/ingredients.ts) — prefer that over the recipe's own
+      // `displayName`, which is only ever stored in the language the recipe was
+      // generated/entered in. Falls back to the recipe's translated/raw name for
+      // still-pending ingredients, which have no master doc yet.
+      final matched = id != kPendingIngredient && id != kUnknownIngredient;
+      final masterName = (ingData?['name'] as Map?)?[effectiveLang]?.toString();
+      final recipeTranslations = ing.data()['translations'] as Map?;
+      final recipeLocalizedName =
+          (recipeTranslations?[effectiveLang] as Map?)?['displayName']?.toString();
+      final name = ((matched ? masterName : null)?.isNotEmpty ?? false)
+          ? masterName!
+          : (recipeLocalizedName?.isNotEmpty ?? false)
+              ? recipeLocalizedName!
+              : (ing.data()['displayName'] ?? ingData?['name']?['en'] ?? id).toString();
 
       // A quantity map with a real amount is used as-is (a null amount for a
       // present unit is treated as 1). A missing, empty, or zero quantity is
@@ -186,9 +204,6 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
       );
     }
   }
-
-  String _fmt(num v) =>
-      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
 
   Future<void> _submit() async {
     setState(() => saving = true);
@@ -256,7 +271,6 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     final lang = LanguageService.instance.code.value;
     int cmp(_IngRow a, _IngRow b) {
       final c = categoryRank(a.category).compareTo(categoryRank(b.category));
@@ -316,103 +330,40 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
               key: orderKey,
               shrinkWrap: true,
               children: ordered.map((row) {
-                final toggleIcon = Icon(
-                  row.added
-                      ? Icons.remove_shopping_cart
-                      : Icons.add_shopping_cart,
-                );
-                final quantityText = row.cur.entries
-                    .where((e) => e.value != null && e.value! > 0)
-                    .map((e) =>
-                '${_fmt(e.value!)} ${UnitsCache.instance.display(e.key, lang, e.value!)}')
-                    .join(', ');
-                return Dismissible(
+                return IngredientRowTile(
                   key: ValueKey(row.id),
-                  // Swiping toggles add/skip without removing the item.
-                  confirmDismiss: (_) async {
-                    setState(() => row.added = !row.added);
-                    return false;
-                  },
-                  background: Container(
-                    color: colorScheme.primaryContainer,
-                    alignment: Alignment.centerLeft,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: toggleIcon,
-                  ),
-                  secondaryBackground: Container(
-                    color: colorScheme.primaryContainer,
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: toggleIcon,
-                  ),
-                  child: Container(
-                    color: row.added
-                        ? null
-                        : colorScheme.errorContainer.withAlpha(80),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.only(left: 16, right: 4),
-                      minVerticalPadding: 8,
-                      minTileHeight: 64,
-                      leading: Avatar(ingredientId: row.id),
-                      title: Text(row.name),
-                      subtitle: row.description.isNotEmpty
-                          ? Text(row.description)
-                          : null,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (quantityText.isNotEmpty)
-                            IconButton(
-                              iconSize: 18,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(
-                                  minWidth: 40, minHeight: 40),
-                              icon: const Icon(Icons.remove),
-                              onPressed: () => setState(() {
-                                row.cur = row.cur.map(
-                                      (k, v) => MapEntry(
-                                    k,
-                                    v == null
-                                        ? null
-                                        : (v - UnitsCache.instance.increment(k))
-                                        .clamp(0.0, double.infinity),
-                                  ),
-                                );
-                              }),
-                            ),
-                          quantityText.isNotEmpty
-                              ? Text(quantityText, style: Theme.of(context).textTheme.bodyLarge)
-                              : Text('—', style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: colorScheme.outline)),
-                          IconButton(
-                            iconSize: 18,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(
-                                minWidth: 40, minHeight: 40),
-                            icon: const Icon(Icons.add),
-                            onPressed: () => setState(() {
-                              // Seed a quantity for a no-amount row from the
-                              // ingredient's default unit, so + works on items
-                              // that were added without a quantity.
-                              if (!row.cur.values.any((v) => v != null && v > 0)) {
-                                row.cur = {
-                                  row.unit: UnitsCache.instance.increment(row.unit)
-                                };
-                              } else {
-                                row.cur = row.cur.map(
-                                      (k, v) => MapEntry(
-                                    k,
-                                    v == null
-                                        ? null
-                                        : v + UnitsCache.instance.increment(k),
-                                  ),
-                                );
-                              }
-                            }),
-                          ),
-                        ],
+                  id: row.id,
+                  name: row.name,
+                  description: row.description,
+                  added: row.added,
+                  cur: row.cur,
+                  lang: lang,
+                  onToggle: () => setState(() => row.added = !row.added),
+                  onDecrease: () => setState(() {
+                    row.cur = row.cur.map(
+                      (k, v) => MapEntry(
+                        k,
+                        v == null
+                            ? null
+                            : (v - UnitsCache.instance.increment(k)).clamp(0.0, double.infinity),
                       ),
-                    ),
-                  ),
+                    );
+                  }),
+                  onIncrease: () => setState(() {
+                    // Seed a quantity for a no-amount row from the
+                    // ingredient's default unit, so + works on items
+                    // that were added without a quantity.
+                    if (!row.cur.values.any((v) => v != null && v > 0)) {
+                      row.cur = {row.unit: UnitsCache.instance.increment(row.unit)};
+                    } else {
+                      row.cur = row.cur.map(
+                        (k, v) => MapEntry(
+                          k,
+                          v == null ? null : v + UnitsCache.instance.increment(k),
+                        ),
+                      );
+                    }
+                  }),
                 );
               }).toList(),
             ),

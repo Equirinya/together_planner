@@ -101,10 +101,10 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
 
   @override
   Widget build(BuildContext context) {
-    final isRecipeViewer = _preview?['type'] == 'recipe_viewer';
+    final showHeroAppBar = _preview != null;
     return Scaffold(
-      extendBodyBehindAppBar: isRecipeViewer,
-      appBar: isRecipeViewer
+      extendBodyBehindAppBar: showHeroAppBar,
+      appBar: showHeroAppBar
           ? AppBar(backgroundColor: Colors.transparent, elevation: 0, foregroundColor: Colors.white)
           : AppBar(title: const Text('Join group')),
       body: _loading
@@ -127,64 +127,105 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
       return _buildRecipeViewerPreview(context, name, alreadyMember);
     }
 
-    final joinButton = SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: FilledButton(
-          onPressed: _joining ? null : _join,
-          child: _joining
-              ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-              : Text(alreadyMember ? 'Open group' : 'Join group'),
-        ),
-      ),
-    );
-
-    return Column(
+    final cs = Theme.of(context).colorScheme;
+    return Stack(
       children: [
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.all(24),
+        _RecipeCardsBackground(groupId: widget.groupId, rowCount: 2, topFlex: 4, bottomFlex: 1),
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              stops: [0.0, 0.45, 1.0],
+              colors: [Color(0xCC000000), Color(0x88000000), Color(0xDD000000)],
+            ),
+          ),
+        ),
+        SafeArea(
+          child: Column(
             children: [
-              const SizedBox(height: 16),
-              const Center(child: Icon(Icons.group, size: 56)),
+              const SizedBox(height: 24),
+              const Icon(Icons.group, size: 64, color: Colors.white),
               const SizedBox(height: 20),
               Text(
                 "You've been invited to join",
-                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white70),
               ),
-              const SizedBox(height: 4),
-              Text(name, style: Theme.of(context).textTheme.headlineMedium),
-              const SizedBox(height: 24),
-              if (features.isNotEmpty) ...[
-                Text('Features', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  name,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(color: Colors.white),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
                   children: [
-                    for (final key in features)
-                      Chip(
-                        avatar: Icon(_featureFor(key).icon, size: 18),
-                        label: Text(_featureFor(key).label),
+                    if (features.isNotEmpty) ...[
+                      Text('Features',
+                          style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.white70)),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final key in features)
+                            Chip(
+                              backgroundColor: Colors.white.withValues(alpha: 0.15),
+                              avatar: Icon(_featureFor(key).icon, size: 18, color: Colors.white),
+                              label: Text(_featureFor(key).label, style: const TextStyle(color: Colors.white)),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 24),
+                    ],
+                    Text('Members (${members.length})',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(color: Colors.white70)),
+                    const SizedBox(height: 8),
+                    for (final m in members)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: ListTile(
+                          leading: const CircleAvatar(child: Icon(Icons.person)),
+                          title: Text((m['username'] ?? 'Member').toString(),
+                              style: const TextStyle(color: Colors.white)),
+                          trailing: (m['role'] == 'admin')
+                              ? const Text('admin', style: TextStyle(color: Colors.white70))
+                              : null,
+                        ),
                       ),
                   ],
                 ),
-                const SizedBox(height: 24),
-              ],
-              Text('Members (${members.length})', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 8),
-              for (final m in members)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const CircleAvatar(child: Icon(Icons.person)),
-                  title: Text((m['username'] ?? 'Member').toString()),
-                  trailing: (m['role'] == 'admin') ? const Text('admin') : null,
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(32, 0, 32, 32),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _joining ? null : _join,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: cs.primary,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      textStyle: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    child: _joining
+                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                        : Text(alreadyMember ? 'Open group' : 'Join group'),
+                  ),
                 ),
+              ),
             ],
           ),
         ),
-        joinButton,
       ],
     );
   }
@@ -207,7 +248,7 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
         SafeArea(
           child: Column(
             children: [
-              const Spacer(),
+              const SizedBox(height: 24),
               const Icon(Icons.restaurant_menu, size: 64, color: Colors.white),
               const SizedBox(height: 20),
               Text(
@@ -226,13 +267,20 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
               ),
               const Spacer(),
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: FilledButton(
-                  onPressed: _joining ? null : _join,
-                  style: FilledButton.styleFrom(backgroundColor: cs.primary),
-                  child: _joining
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                      : Text(alreadyMember ? 'Open recipes' : 'View recipes'),
+                padding: const EdgeInsets.fromLTRB(32, 0, 32, 32),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton(
+                    onPressed: _joining ? null : _join,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: cs.primary,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      textStyle: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    ),
+                    child: _joining
+                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                        : Text(alreadyMember ? 'Open recipes' : 'View recipes'),
+                  ),
                 ),
               ),
             ],
@@ -253,9 +301,23 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
 // ─── Recipe cards animated background ────────────────────────────────────────
 
 class _RecipeCardsBackground extends StatefulWidget {
-  const _RecipeCardsBackground({required this.groupId});
+  const _RecipeCardsBackground({
+    required this.groupId,
+    this.rowCount = 3,
+    this.topFlex = 3,
+    this.bottomFlex = 2,
+  });
 
   final String groupId;
+
+  /// How many scrolling rows to show (1-3); fewer rows leave more room for
+  /// content shown on top, e.g. the general join page's features/members list.
+  final int rowCount;
+
+  /// Relative empty space above/below the rows; raise topFlex to push the rows
+  /// further down the screen.
+  final int topFlex;
+  final int bottomFlex;
 
   @override
   State<_RecipeCardsBackground> createState() => _RecipeCardsBackgroundState();
@@ -289,21 +351,31 @@ class _RecipeCardsBackgroundState extends State<_RecipeCardsBackground> {
         ? List.generate(6, (_) => <String, dynamic>{})
         : _recipes;
 
-    // Split into 3 rows with different subsets, speeds and vertical offsets.
-    final row0 = items;
-    final row1 = [...items.skip(items.length ~/ 3), ...items.take(items.length ~/ 3)];
-    final row2 = [...items.skip(2 * items.length ~/ 3), ...items.take(2 * items.length ~/ 3)];
+    // Split into up to 3 rows with different subsets, speeds and vertical offsets.
+    final rowRecipes = [
+      items,
+      [...items.skip(items.length ~/ 3), ...items.take(items.length ~/ 3)],
+      [...items.skip(2 * items.length ~/ 3), ...items.take(2 * items.length ~/ 3)],
+    ];
+    const rowDurations = [22, 30, 25];
+    const rowReverse = [false, true, false];
+    final rowCount = widget.rowCount.clamp(1, 3);
 
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const Spacer(),
-        _RecipeScrollRow(recipes: row0, cardWidth: 120, cardHeight: 90, durationSeconds: 22),
-        const SizedBox(height: 10),
-        _RecipeScrollRow(recipes: row1, cardWidth: 120, cardHeight: 90, durationSeconds: 30, reverse: true),
-        const SizedBox(height: 10),
-        _RecipeScrollRow(recipes: row2, cardWidth: 120, cardHeight: 90, durationSeconds: 25),
-        const Spacer(),
+        Spacer(flex: widget.topFlex),
+        for (var i = 0; i < rowCount; i++) ...[
+          if (i > 0) const SizedBox(height: 10),
+          _RecipeScrollRow(
+            recipes: rowRecipes[i],
+            cardWidth: 120,
+            cardHeight: 90,
+            durationSeconds: rowDurations[i],
+            reverse: rowReverse[i],
+          ),
+        ],
+        Spacer(flex: widget.bottomFlex),
       ],
     );
   }
