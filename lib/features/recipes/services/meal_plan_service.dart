@@ -140,38 +140,24 @@ Future<List<MealPlanSlot>> generateMealPlan({
   return slots;
 }
 
-/// Creates a bare recipe doc and fires the staged-generation callable for a
-/// brand-new idea, mirroring RecipePage's own AI-suggestion flow
-/// (`_createRecipeDoc` + `recipes-generateRecipeStaged`). Returns the new
-/// recipe id immediately — the id is generated client-side and the write is
-/// fire-and-forget, matching how RecipePage already does this for suggestion
+/// Fires the staged public-recipe-generation callable for a brand-new idea,
+/// writing directly into `public_recipes` rather than a group's own recipes —
+/// so a proposal the user never confirms leaves nothing behind in any group,
+/// just a new entry in the shared public pool (see
+/// `recipes-generatePublicRecipeStaged`). Returns the new public recipe id
+/// immediately — the id is generated client-side and the call is
+/// fire-and-forget, matching how RecipePage does this for suggestion
 /// taps/drags. Generation continues in the background; await
-/// [_awaitIngredientsReady] before the recipe's ingredients are needed.
+/// [_awaitIngredientsReady] before the recipe's ingredients are needed, and
+/// adopt it into the group (see [commitMealPlan]) once the plan is confirmed.
 String startNewIdeaGeneration({
-  required DocumentReference<Map<String, dynamic>> group,
-  required String uid,
   required String name,
   required int servings,
   required String lang,
 }) {
-  final ref = group.collection('recipes').doc();
-  ref.set({
-    'name': name,
-    'description': '',
-    'creator': uid,
-    'createdAt': FieldValue.serverTimestamp(),
-    'lastUsedAt': null,
-    'preparationTime': 0,
-    'time': 0,
-    'servings': servings,
-    'tags': <String>[],
-    'images': <String>[],
-    'steps': <String>[],
-  });
-  _functions.httpsCallable('recipes-generateRecipeStaged').call(<String, dynamic>{
-    'groupId': group.id,
+  final ref = FirebaseFirestore.instance.collection('public_recipes').doc();
+  _functions.httpsCallable('recipes-generatePublicRecipeStaged').call(<String, dynamic>{
     'recipeId': ref.id,
-    'source': 'name',
     'prompt': name,
     'lang': lang,
     'targetServings': servings,
@@ -210,10 +196,12 @@ Future<void> _awaitIngredientsReady(DocumentReference<Map<String, dynamic>> reci
 /// Writes every (non-removed) slot to Firestore: an existing own recipe just
 /// gets a new cooking_plan doc; a public recipe is adopted (reusing
 /// [adoptPublicRecipeFromPreload] verbatim) and then planned; a new idea's
-/// recipe already exists from an earlier [startNewIdeaGeneration] call (fired
-/// as soon as the overview showed the proposal) — this just waits for its
-/// ingredients if they aren't ready yet, then plans it. Every created plan's
-/// `servings` is [people], regardless of the recipe's own stored default.
+/// public recipe generation already started from an earlier
+/// [startNewIdeaGeneration] call (fired as soon as the overview showed the
+/// proposal) — this waits for its ingredients if they aren't ready yet, then
+/// adopts it into the group exactly like a public recipe (it lived only in
+/// `public_recipes` until now) and plans it. Every created plan's `servings`
+/// is [people], regardless of the recipe's own stored default.
 Future<List<MealPlanCommittedSlot>> commitMealPlan({
   required DocumentReference<Map<String, dynamic>> group,
   required String uid,
@@ -245,10 +233,22 @@ Future<List<MealPlanCommittedSlot>> commitMealPlan({
         recipeId = result.recipeId;
         break;
       case MealPlanSource.newIdea:
-        recipeId = slot.recipeId ??
-            startNewIdeaGeneration(
-                group: group, uid: uid, name: slot.name, servings: people, lang: lang);
-        await _awaitIngredientsReady(group.collection('recipes').doc(recipeId));
+        final publicRecipeId = slot.recipeId ??
+            startNewIdeaGeneration(name: slot.name, servings: people, lang: lang);
+        await _awaitIngredientsReady(
+            FirebaseFirestore.instance.collection('public_recipes').doc(publicRecipeId));
+        final ideaPreloadFuture =
+            publicPreloads?[publicRecipeId] ?? preloadPublicRecipe(publicRecipeId);
+        final ideaPreload = await ideaPreloadFuture;
+        final ideaResult = await adoptPublicRecipeFromPreload(
+          groupId: group.id,
+          publicRecipeId: publicRecipeId,
+          preload: ideaPreload,
+          uid: uid,
+          lang: lang,
+        );
+        ideaResult.imageUpload.ignore();
+        recipeId = ideaResult.recipeId;
         break;
     }
     final planRef = group.collection('cooking_plan').doc();

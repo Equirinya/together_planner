@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
-import 'package:couple_planner/features/settings/dietary_preferences.dart' show canonicalDietaryLabel;
+import 'package:couple_planner/features/settings/dietary_preferences.dart' show canonicalDietaryLabel, dietarySynonyms;
 
 /// Ranking of the group's own recipes (via the cooking-plan usage history)
 /// and generation of search-time suggestions (public recipe matches + AI name
@@ -150,6 +150,16 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     return ordered;
   }
 
+  /// Lowercased strings from [value] when it's actually a `List` (as the
+  /// `tags`/`dietary` fields are documented to be); otherwise `[]`. A recipe
+  /// with an unexpectedly-shaped field (e.g. from old/malformed data) should
+  /// just be treated as having no tags/diets, not throw and vanish from
+  /// search entirely — `.map` on a non-`List` dynamic value throws.
+  List<String> _lowerStringList(dynamic value) {
+    if (value is! List) return const [];
+    return value.map((e) => e.toString().toLowerCase()).toList();
+  }
+
   /// Splits a raw search string into `#tag` filters and the remaining free
   /// text. A `#tag` token requires an exact (case-insensitive) tag match;
   /// everything else is matched as free text, as before.
@@ -178,7 +188,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   /// regardless of which language the query or the recipe itself are in.
   bool _docMatchesTags(Map<String, dynamic> data, List<String> queryTags) {
     final docTags = <String>{
-      ...(data['tags'] ?? []).map((e) => e.toString().toLowerCase()),
+      ..._lowerStringList(data['tags']),
     };
     // A malformed `translations` field on any one recipe shouldn't throw and
     // drop that recipe (and everything after it in iteration order) out of
@@ -190,7 +200,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
             ((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()));
       }
     } catch (_) {}
-    final docDietary = (data['dietary'] ?? []).map((e) => e.toString()).toList();
+    final docDietary = _lowerStringList(data['dietary']);
     return queryTags.every((q) {
       if (docTags.contains(q)) return true;
       final canonical = canonicalDietaryLabel(q);
@@ -229,8 +239,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
         final data = doc.data();
         final name = (data['name'] ?? '').toString().toLowerCase();
         final description = (data['description'] ?? '').toString().toLowerCase();
-        final tags =
-        (data['tags'] ?? []).map<String>((e) => e.toString().toLowerCase()).toList();
+        final tags = _lowerStringList(data['tags']);
         // Every language's translated name/tags (group recipes always carry an
         // English base plus a `translations` map, see recipes.ts's
         // `generateRecipeStaged`), and the recipe's canonical dietary labels —
@@ -248,8 +257,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
                 ...((t as Map?)?['tags'] as List? ?? const []).map((e) => e.toString().toLowerCase()),
               ]).toList();
         } catch (_) {}
-        final dietary =
-        (data['dietary'] ?? []).map<String>((e) => e.toString().toLowerCase()).toList();
+        final dietary = _lowerStringList(data['dietary']);
         // The query that surfaced this recipe as a suggestion (see
         // [RecipePage._createRecipeDoc]'s `searchHint`), if any. AI-generated
         // ideas are matched semantically, so the finished recipe's own
@@ -262,6 +270,11 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           ...tags,
           ...translatedText.expand((t) => t.split(splitRe).where((s) => s.isNotEmpty)),
           ...dietary.expand((d) => d.split(splitRe).where((s) => s.isNotEmpty)),
+          // Also add every language's synonym for each dietary label (e.g.
+          // "Gluten-free" -> "glutenfree"/"glutenfrei") so a free-text search
+          // like "glutenfrei" or "glutenfree" finds it even though those
+          // compound words never appear as a raw split of the stored label.
+          ...dietary.expand((d) => dietarySynonyms(d)),
           ...searchHint.split(splitRe).where((s) => s.isNotEmpty),
         ];
 
@@ -287,7 +300,9 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
             'last': (data['lastUsedAt'] as Timestamp?)?.toDate(),
           });
         }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('recipe search: skipped ${doc.id} ($e)');
+        }
       }
 
       scored.sort((a, b) {
