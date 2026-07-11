@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -49,6 +50,38 @@ const String _kPrefNotes = 'meal_plan_last_notes';
 String _dateKey(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
+const String _kPrefPlanCache = 'meal_plan_proposal_cache';
+
+/// Serializes a [MealPlanSlot] for [_kPrefPlanCache], mirroring the shape
+/// [MealPlanSlot.fromJson] already expects from the server plus its own
+/// [MealPlanSlot.date] and [MealPlanSlot.removed] (neither of which the
+/// server response carries, since those come from the client's request/UI).
+Map<String, dynamic> _slotToJson(MealPlanSlot s) => {
+      'date': _dateKey(s.date),
+      'source': switch (s.source) {
+        MealPlanSource.own => 'own',
+        MealPlanSource.public => 'public',
+        MealPlanSource.newIdea => 'new',
+      },
+      'recipeId': s.recipeId,
+      'publicRecipeId': s.publicRecipeId,
+      'image': s.publicImage,
+      'name': s.name,
+      'description': s.description,
+      'reason': s.reason,
+      'dietary': s.dietary,
+      'removed': s.removed,
+    };
+
+MealPlanSlot? _slotFromJson(Map<String, dynamic> json) {
+  final dateStr = json['date'] as String?;
+  if (dateStr == null) return null;
+  final parts = dateStr.split('-').map(int.parse).toList();
+  final slot = MealPlanSlot.fromJson(DateTime(parts[0], parts[1], parts[2]), json);
+  slot.removed = json['removed'] == true;
+  return slot;
+}
+
 // ─── Settings step ──────────────────────────────────────────────────────────
 
 /// First step of the auto meal-plan flow: lets the user set how many days/
@@ -82,13 +115,15 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
   final Set<String> _styles = {};
   final TextEditingController _notesCtrl = TextEditingController();
 
-  /// Proposals from previous, uncommitted visits to [MealPlanOverviewPage]
-  /// this session, keyed by [_signature] (dietary + styles + notes — not
-  /// days/people, so a plan generated for 5 days/2 people can still be
-  /// reused, trimmed or grown, after the user only changes those two
-  /// numbers). Cleared entirely once a plan is actually committed, or once
-  /// the target window is no longer free (see [_windowStillFree]) — either
-  /// way the cached days are no longer a safe basis to propose again.
+  /// Proposals from previous, uncommitted visits to [MealPlanOverviewPage],
+  /// keyed by [_signature] (dietary + styles + notes — not days/people, so a
+  /// plan generated for 5 days/2 people can still be reused, trimmed or
+  /// grown, after the user only changes those two numbers). Persisted to
+  /// [_kPrefPlanCache] (see [_loadPlanCache]/[_savePlanCache]) so it survives
+  /// closing the whole flow or the app, not just an in-app back-and-forth.
+  /// Cleared entirely once a plan is actually committed, or once the target
+  /// window is no longer free (see [_windowStillFree]) — either way the
+  /// cached days are no longer a safe basis to propose again.
   final Map<String, List<MealPlanSlot>> _planCache = {};
 
   String _signature() {
@@ -110,6 +145,48 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
         .limit(1)
         .get();
     return snap.docs.isEmpty;
+  }
+
+  /// Restores [_planCache] from [_kPrefPlanCache], so a proposal survives the
+  /// whole flow being closed (or the app restarting) — not just an in-app
+  /// back-and-forth. Only entries for this exact group/window are loaded, since
+  /// a different startDate means [_windowStillFree] can't vouch for them.
+  void _loadPlanCache(SharedPreferences prefs) {
+    final raw = prefs.getString(_kPrefPlanCache);
+    if (raw == null) return;
+    try {
+      final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      if (decoded['groupId'] != widget.groupId) return;
+      if (decoded['startDate'] != _dateKey(widget.startDate)) return;
+      final entries = Map<String, dynamic>.from(decoded['entries'] ?? const {});
+      entries.forEach((sig, rawSlots) {
+        final slots = <MealPlanSlot>[
+          for (final s in List<dynamic>.from(rawSlots as List))
+            if (_slotFromJson(Map<String, dynamic>.from(s as Map)) case final slot?) slot,
+        ];
+        if (slots.isNotEmpty) _planCache[sig] = slots;
+      });
+    } catch (_) {
+      // Corrupt or old-format cache — ignore and start fresh.
+    }
+  }
+
+  Future<void> _savePlanCache() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_planCache.isEmpty) {
+      await prefs.remove(_kPrefPlanCache);
+      return;
+    }
+    await prefs.setString(
+      _kPrefPlanCache,
+      jsonEncode({
+        'groupId': widget.groupId,
+        'startDate': _dateKey(widget.startDate),
+        'entries': {
+          for (final e in _planCache.entries) e.key: [for (final s in e.value) _slotToJson(s)],
+        },
+      }),
+    );
   }
 
   @override
@@ -139,6 +216,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
 
     final prefs = await prefsFuture;
     final dietary = await dietaryFuture;
+    _loadPlanCache(prefs);
     if (!mounted) return;
     setState(() {
       _days = (prefs.getInt(_kPrefDays) ?? _days).clamp(1, widget.maxDays);
@@ -162,6 +240,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
     var cached = _planCache[sig];
     if (cached != null && !(await _windowStillFree())) {
       _planCache.clear();
+      await _savePlanCache();
       cached = null;
     }
 
@@ -185,9 +264,11 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
     );
     if (!mounted) return;
     if (result?.committed == true) {
-      setState(() => _planCache.clear());
+      _planCache.clear();
+      await _savePlanCache();
     } else if (result?.slotsForCache != null) {
-      setState(() => _planCache[sig] = result!.slotsForCache!);
+      _planCache[sig] = result!.slotsForCache!;
+      await _savePlanCache();
     }
   }
 
@@ -394,16 +475,6 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   bool _committing = false;
   final Map<String, Future<PublicRecipePreload>> _publicPreloads = {};
 
-  /// Recipe docs created early by [_startBackgroundWork] for "new idea" slots
-  /// (see that method's doc comment), tracked so any that never made it into
-  /// the final committed plan — because the flow was aborted, a day was
-  /// skipped, or a day was swapped away from — can be cleaned up in
-  /// [dispose] instead of lingering as orphaned recipes. Ones still present in
-  /// [_slots] when disposing are spared, since they're being handed back to
-  /// [MealPlanSettingsPage] for possible reuse (see [dispose]).
-  final Set<String> _ownedNewIdeaRecipeIds = {};
-  final Set<String> _committedRecipeIds = {};
-
   String get _lang => LanguageService.instance.code.value;
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
   List<MealPlanSlot> get _activeSlots => (_slots ?? []).where((s) => !s.removed).toList();
@@ -412,20 +483,6 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   void initState() {
     super.initState();
     _generateInitial();
-  }
-
-  @override
-  void dispose() {
-    final keep = <String>{
-      for (final s in _slots ?? const <MealPlanSlot>[])
-        if (s.source == MealPlanSource.newIdea && s.recipeId != null) s.recipeId!,
-    };
-    for (final id in _ownedNewIdeaRecipeIds) {
-      if (!_committedRecipeIds.contains(id) && !keep.contains(id)) {
-        widget.groupDoc.collection('recipes').doc(id).delete().ignore();
-      }
-    }
-    super.dispose();
   }
 
   /// Builds the proposal for [widget.days] starting [widget.startDate],
@@ -501,13 +558,10 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
     for (final slot in slots) {
       if (slot.source == MealPlanSource.newIdea && slot.recipeId == null) {
         slot.recipeId = startNewIdeaGeneration(
-          group: widget.groupDoc,
-          uid: _uid,
           name: slot.name,
           servings: widget.people,
           lang: _lang,
         );
-        _ownedNewIdeaRecipeIds.add(slot.recipeId!);
       } else if (slot.source == MealPlanSource.public && slot.publicRecipeId != null) {
         _publicPreloads.putIfAbsent(
             slot.publicRecipeId!, () => preloadPublicRecipe(slot.publicRecipeId!));
@@ -536,13 +590,8 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
       final fresh = result.first;
       _startBackgroundWork([fresh]);
       // The swapped-away slot's own early-started "new idea" recipe (if any)
-      // is now discarded — clean it up right away instead of waiting for
-      // dispose's final sweep.
-      if (slot.source == MealPlanSource.newIdea &&
-          slot.recipeId != null &&
-          _ownedNewIdeaRecipeIds.remove(slot.recipeId)) {
-        widget.groupDoc.collection('recipes').doc(slot.recipeId).delete().ignore();
-      }
+      // is simply discarded — it only ever lived in `public_recipes`, so
+      // nothing needs cleaning up in any group.
       setState(() {
         final idx = _slots!.indexOf(slot);
         if (idx != -1) _slots![idx] = fresh;
@@ -565,14 +614,6 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   Future<void> _confirm() async {
     final active = _activeSlots;
     if (active.isEmpty) return;
-    // Marked as committed up front (rather than after commitMealPlan
-    // resolves) so a partial failure inside its Future.wait — where this
-    // slot's own write already landed but a different slot's threw — can't
-    // make dispose's cleanup sweep delete an already-committed recipe.
-    _committedRecipeIds.addAll([
-      for (final s in active)
-        if (s.source == MealPlanSource.newIdea && s.recipeId != null) s.recipeId!,
-    ]);
     setState(() => _committing = true);
     showDialog(
       context: context,
@@ -924,7 +965,10 @@ class _MealPlanDayTile extends StatelessWidget {
       ),
       builder: (_) => _OwnIdeaRecipeSheet(
         name: slot.name,
-        recipeDoc: groupDoc.collection('recipes').doc(recipeId),
+        recipeDoc: slot.source == MealPlanSource.newIdea
+            ? FirebaseFirestore.instance.collection('public_recipes').doc(recipeId)
+            : groupDoc.collection('recipes').doc(recipeId),
+        isPublicDoc: slot.source == MealPlanSource.newIdea,
       ),
     );
   }
@@ -1057,11 +1101,20 @@ class _Thumbnail extends StatelessWidget {
   Widget _liveThumbnail(BuildContext context) {
     final recipeId = slot.recipeId;
     if (recipeId == null) return _placeholder(context);
+    final isNewIdea = slot.source == MealPlanSource.newIdea;
+    // A "new idea" still lives in `public_recipes` (single `image` field)
+    // until the plan is confirmed; only `own` slots are already a group
+    // recipe (`images` list) at this point.
+    final docRef = isNewIdea
+        ? FirebaseFirestore.instance.collection('public_recipes').doc(recipeId)
+        : groupDoc.collection('recipes').doc(recipeId);
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: groupDoc.collection('recipes').doc(recipeId).snapshots(),
+      stream: docRef.snapshots(),
       builder: (context, snap) {
         final data = snap.data?.data();
-        final images = List<String>.from(data?['images'] ?? const []);
+        final images = isNewIdea
+            ? [if ((data?['image'] as String?)?.isNotEmpty == true) data!['image'] as String]
+            : List<String>.from(data?['images'] ?? const []);
         if (images.isNotEmpty) {
           return StorageImage(
             storagePath: images.first,
@@ -1069,7 +1122,7 @@ class _Thumbnail extends StatelessWidget {
             memCacheWidth: (_kTileHeight * MediaQuery.of(context).devicePixelRatio).round(),
           );
         }
-        if (slot.source == MealPlanSource.newIdea) {
+        if (isNewIdea) {
           final pending = data?['pending'] as List?;
           final imageDone = pending != null && !pending.contains('image');
           final failed = data?['generationError'] == true;
@@ -1229,10 +1282,16 @@ class _SheetTimeRow extends StatelessWidget {
 /// small-duplicate notes) so a still-generating "new" idea's name/image/steps
 /// pop in as they land, before the plan is confirmed.
 class _OwnIdeaRecipeSheet extends StatelessWidget {
-  const _OwnIdeaRecipeSheet({required this.name, required this.recipeDoc});
+  const _OwnIdeaRecipeSheet({required this.name, required this.recipeDoc, this.isPublicDoc = false});
 
   final String name;
   final DocumentReference<Map<String, dynamic>> recipeDoc;
+
+  /// Whether [recipeDoc] is a `public_recipes` doc (single `image` field)
+  /// rather than a group recipe (`images` list) — true for a still-previewing
+  /// "new idea" slot, which lives in `public_recipes` until the plan is
+  /// confirmed.
+  final bool isPublicDoc;
 
   @override
   Widget build(BuildContext context) {
@@ -1246,7 +1305,9 @@ class _OwnIdeaRecipeSheet extends StatelessWidget {
         stream: recipeDoc.snapshots(),
         builder: (context, snap) {
           final data = snap.data?.data();
-          final images = List<String>.from(data?['images'] ?? const []);
+          final images = isPublicDoc
+              ? [if ((data?['image'] as String?)?.isNotEmpty == true) data!['image'] as String]
+              : List<String>.from(data?['images'] ?? const []);
           final steps = List<String>.from(data?['steps'] ?? const []);
           final description = (data?['description'] ?? '').toString();
           final time = (data?['time'] as num?)?.toInt() ?? 0;

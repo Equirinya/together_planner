@@ -111,6 +111,19 @@ String? canonicalDietaryLabel(String tag) {
   return null;
 }
 
+/// All recognized synonyms (across every supported content language) for a
+/// canonical dietary label such as "Gluten-free" (matched case-insensitively),
+/// e.g. "gluten-free" -> {"glutenfree", "glutenfrei"}; empty if [label] isn't
+/// a recognized standard diet. Used to make free-text recipe search find a
+/// recipe's `dietary` labels regardless of which language the query is in.
+Set<String> dietarySynonyms(String label) {
+  final lower = label.toLowerCase();
+  for (final entry in _kDietarySynonyms.entries) {
+    if (entry.key.toLowerCase() == lower) return entry.value;
+  }
+  return const {};
+}
+
 /// Lets the user pick preset dietary preferences and add their own. Controlled:
 /// reports the full list (presets + custom) via [onChanged].
 class DietaryPreferencesSelector extends StatefulWidget {

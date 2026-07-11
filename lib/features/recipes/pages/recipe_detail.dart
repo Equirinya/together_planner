@@ -1173,33 +1173,34 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text("Ingredients",
-                    style: Theme.of(context).textTheme.headlineSmall),
-              ),
-              const Spacer(),
-              if (edit && widget.aiEnabled && !_loadingIngredients)
-                IconButton(
-                  icon: const Icon(Icons.auto_awesome),
-                  tooltip: 'Generate with AI',
-                  onPressed: _generateIngredients,
-                  constraints: const BoxConstraints(),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          if (edit)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text("Ingredients",
+                      style: Theme.of(context).textTheme.headlineSmall),
                 ),
-              if (edit && ingredients.isNotEmpty)
-                IconButton(
-                  icon: const Icon(Icons.delete_sweep),
-                  tooltip: 'Clear all',
-                  onPressed: _clearIngredients,
-                  constraints: const BoxConstraints(),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-            ],
-          ),
+                const Spacer(),
+                if (edit && widget.aiEnabled && !_loadingIngredients)
+                  IconButton(
+                    icon: const Icon(Icons.auto_awesome),
+                    tooltip: 'Generate with AI',
+                    onPressed: _generateIngredients,
+                    constraints: const BoxConstraints(),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                if (edit && ingredients.isNotEmpty)
+                  IconButton(
+                    icon: const Icon(Icons.delete_sweep),
+                    tooltip: 'Clear all',
+                    onPressed: _clearIngredients,
+                    constraints: const BoxConstraints(),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+              ],
+            ),
           Card(
             margin: EdgeInsets.zero,
             elevation: 0,
@@ -1333,33 +1334,34 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 4, 4),
-          child: Row(
-            children: [
-              Text("Steps:",
-                  style: Theme.of(context).textTheme.headlineSmall),
-              const Spacer(),
-              if (edit && widget.aiEnabled && !_loadingSteps)
-                IconButton(
-                  icon: const Icon(Icons.auto_awesome),
-                  tooltip: 'Generate with AI',
-                  onPressed: _generateSteps,
-                ),
-              if (edit && steps.any((s) => s.isNotEmpty))
-                IconButton(
-                  icon: const Icon(Icons.delete_sweep),
-                  tooltip: 'Clear all',
-                  onPressed: _clearSteps,
-                ),
-            ],
+        if (edit)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 4, 4),
+            child: Row(
+              children: [
+                Text("Steps",
+                    style: Theme.of(context).textTheme.headlineSmall),
+                const Spacer(),
+                if (edit && widget.aiEnabled && !_loadingSteps)
+                  IconButton(
+                    icon: const Icon(Icons.auto_awesome),
+                    tooltip: 'Generate with AI',
+                    onPressed: _generateSteps,
+                  ),
+                if (edit && steps.any((s) => s.isNotEmpty))
+                  IconButton(
+                    icon: const Icon(Icons.delete_sweep),
+                    tooltip: 'Clear all',
+                    onPressed: _clearSteps,
+                  ),
+              ],
+            ),
           ),
-        ),
         if (_loadingSteps || _pending.contains('steps'))
           _skeleton(3)
         else ...[
           for (var (index, step) in steps.indexed)
-            if (edit || step.isNotEmpty)
+            if (edit)
               Card(
                 margin: const EdgeInsets.symmetric(
                     horizontal: 16, vertical: 4),
@@ -1373,8 +1375,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                           Theme.of(context).textTheme.titleMedium),
                     ),
                     Expanded(
-                      child: edit
-                          ? TextField(
+                      child: TextField(
                         controller: stepsControllers![index],
                         maxLines: null,
                         style:
@@ -1383,16 +1384,35 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                           border: InputBorder.none,
                           contentPadding: EdgeInsets.all(8),
                         ),
-                      )
-                          : Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 16),
-                        child: Text(step,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium),
                       ),
                     ),
+                  ],
+                ),
+              )
+            else if (step.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 7),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CircleAvatar(
+                      radius: 12,
+                      backgroundColor:
+                          Theme.of(context).colorScheme.primaryContainer,
+                      child: Text(
+                        '${index + 1}',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onPrimaryContainer),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                        child: Text(step,
+                            style: Theme.of(context).textTheme.bodyMedium)),
                   ],
                 ),
               ),
