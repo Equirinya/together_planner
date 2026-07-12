@@ -17,6 +17,7 @@ import 'package:couple_planner/features/recipes/pages/meal_plan_shopping_list_pa
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/meal_plan_service.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// Style presets a meal plan can be steered by, on top of dietary
 /// preferences. Deliberately overlaps the themes the public-recipe corpus is
@@ -94,14 +95,14 @@ class MealPlanSettingsPage extends StatefulWidget {
     required this.groupDoc,
     required this.startDate,
     required this.maxDays,
-    required this.aiEnabled,
+    required this.access,
   });
 
   final String groupId;
   final DocumentReference<Map<String, dynamic>> groupDoc;
   final DateTime startDate;
   final int maxDays;
-  final bool aiEnabled;
+  final AiAccess access;
 
   @override
   State<MealPlanSettingsPage> createState() => _MealPlanSettingsPageState();
@@ -257,7 +258,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
           dietary: _dietary,
           styles: _styles.toList(),
           notes: notes,
-          aiEnabled: widget.aiEnabled,
+          access: widget.access,
           initialSlots: cached,
         ),
       ),
@@ -446,7 +447,7 @@ class MealPlanOverviewPage extends StatefulWidget {
     required this.dietary,
     required this.styles,
     required this.notes,
-    required this.aiEnabled,
+    required this.access,
     this.initialSlots,
   });
 
@@ -458,7 +459,7 @@ class MealPlanOverviewPage extends StatefulWidget {
   final List<String> dietary;
   final List<String> styles;
   final String notes;
-  final bool aiEnabled;
+  final AiAccess access;
 
   /// Slots reused verbatim, by date, from a previous uncommitted proposal for
   /// the same dietary/styles/notes (see [_MealPlanSettingsPageState._planCache]).
@@ -674,7 +675,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
                             slot: slot,
                             groupId: widget.groupId,
                             groupDoc: widget.groupDoc,
-                            aiEnabled: widget.aiEnabled,
+                            access: widget.access,
                             onSwap: () => _swap(slot),
                             onToggleRemove: () => _toggleRemove(slot),
                             publicPreload: (id) =>
@@ -839,7 +840,7 @@ class _MealPlanDayTile extends StatelessWidget {
     required this.slot,
     required this.groupId,
     required this.groupDoc,
-    required this.aiEnabled,
+    required this.access,
     required this.onSwap,
     required this.onToggleRemove,
     required this.publicPreload,
@@ -848,7 +849,7 @@ class _MealPlanDayTile extends StatelessWidget {
   final MealPlanSlot slot;
   final String groupId;
   final DocumentReference<Map<String, dynamic>> groupDoc;
-  final bool aiEnabled;
+  final AiAccess access;
   final VoidCallback onSwap;
   final VoidCallback onToggleRemove;
   final Future<PublicRecipePreload> Function(String publicRecipeId) publicPreload;

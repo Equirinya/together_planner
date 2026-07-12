@@ -11,6 +11,7 @@ import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// The "suggested for you" row shown above the recipe grid when not
 /// searching: loading, dismissal-tracking and the row widget itself, mixed
@@ -61,6 +62,22 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   Future<void> loadSuggestedRow() async {
     try {
       final col = FirebaseFirestore.instance.collection('public_recipes');
+
+      // A group with no recipes and no cooking plans yet has no usage signal
+      // to weight suggestions by, so the usual weighted-random/dismissal/
+      // seasonal ordering below isn't meaningful for it. Instead just show
+      // recipes matching every one of the user's diets, sorted by popularity
+      // alone (falling back to popularity alone if none match).
+      final groupEmpty = recipesLoaded && plansLoaded && recipes.isEmpty && cookingPlans.isEmpty;
+      if (groupEmpty) {
+        final now = DateTime.now();
+        _suggestedRowDayKey = '${now.year}-${now.month}-${now.day}';
+        final ordered = await _loadEmptyGroupSuggestions(col);
+        if (!mounted) return;
+        setState(() => suggestedPool = ordered);
+        return;
+      }
+
       const poolSize = 40;
       final now = DateTime.now();
       _suggestedRowDayKey = '${now.year}-${now.month}-${now.day}';
@@ -172,6 +189,55 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
     } catch (_) {}
   }
 
+  /// Suggestions for a group with no recipes and no cooking plans yet: the
+  /// top public recipes by popularity that match every one of the user's
+  /// diets, or — if none of the top-popularity recipes satisfy that unusual a
+  /// combination — the top public recipes by popularity regardless of diet,
+  /// so the row is never left empty.
+  Future<List<RecipeSuggestion>> _loadEmptyGroupSuggestions(
+      CollectionReference<Map<String, dynamic>> col) async {
+    final lang = LanguageService.instance.code.value;
+    final prefs = dietary.map((e) => e.toLowerCase()).toSet();
+
+    Future<List<RecipeSuggestion>> topPopular({required bool requireAllDiets}) async {
+      final snap = await col.orderBy('popularity', descending: true).limit(100).get();
+      final out = <RecipeSuggestion>[];
+      for (final d in snap.docs) {
+        final data = d.data();
+        if (requireAllDiets && prefs.isNotEmpty) {
+          final recipeDietary = List<String>.from(data['dietary'] ?? [])
+              .map((e) => e.toLowerCase())
+              .toSet();
+          if (!prefs.every(recipeDietary.contains)) continue;
+        }
+        var title = (data['name'] ?? '').toString();
+        if (lang != 'en') {
+          final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
+          if (languages.contains(lang)) {
+            final localized = (data['translations'] as Map?)?[lang] as Map?;
+            final localizedName = (localized?['name'] ?? '').toString();
+            if (localizedName.isNotEmpty) title = localizedName;
+          }
+        }
+        out.add(RecipeSuggestion(
+          kind: SuggestionKind.public,
+          title: title,
+          publicId: d.id,
+          publicImage: data['image'] as String?,
+        ));
+      }
+      return out;
+    }
+
+    try {
+      final matched = await topPopular(requireAllDiets: true);
+      if (matched.isNotEmpty) return matched;
+      return await topPopular(requireAllDiets: false);
+    } catch (_) {
+      return const [];
+    }
+  }
+
   /// Reloads the suggested row if the calendar day has advanced since it was
   /// last loaded. The row's pool is seeded by group + day, so a session left
   /// open across midnight would otherwise keep showing yesterday's picks
@@ -199,7 +265,7 @@ class SuggestedRowWidget extends StatefulWidget {
   final void Function(RecipeSuggestion) onDismiss;
   final bool visible;
   final String groupId;
-  final bool aiEnabled;
+  final AiAccess access;
   final bool canEditPublicRecipes;
   final int crossAxisCount;
   final VoidCallback? onDragStarted;
@@ -213,7 +279,7 @@ class SuggestedRowWidget extends StatefulWidget {
     required this.onDismiss,
     required this.visible,
     required this.groupId,
-    required this.aiEnabled,
+    required this.access,
     required this.crossAxisCount,
     this.canEditPublicRecipes = false,
     this.onDragStarted,
@@ -305,7 +371,7 @@ class _SuggestedRowWidgetState extends State<SuggestedRowWidget> {
                       openBuilder: (_, __) => RecipeDetailPage(
                         groupId: widget.groupId,
                         recipeId: '',
-                        aiEnabled: widget.aiEnabled,
+                        access: widget.access,
                         publicRecipeId: s.publicId,
                         canEditPublicRecipes: widget.canEditPublicRecipes,
                         onTagTap: widget.onTagTap,

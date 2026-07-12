@@ -14,6 +14,8 @@ import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dar
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
 import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
+import 'package:couple_planner/features/ai/ai_access.dart';
+import 'package:couple_planner/features/ai/ai_errors.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -34,7 +36,7 @@ class RecipeDetailPage extends StatefulWidget {
     required this.groupId,
     required this.recipeId,
     this.editMode = false,
-    this.aiEnabled = false,
+    this.access = AiAccess.locked,
     this.generating = false,
     this.initialData,
     this.publicRecipeId,
@@ -46,7 +48,7 @@ class RecipeDetailPage extends StatefulWidget {
   final String groupId;
   final String recipeId;
   final bool editMode;
-  final bool aiEnabled;
+  final AiAccess access;
 
   /// Called instead of the default behaviour when a tag chip is tapped (view
   /// mode only). The caller is responsible for closing this page and acting on
@@ -194,7 +196,27 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       _pending = {'title', 'steps', 'ingredients', 'image'};
       _docSub = docRef.snapshots().listen(_onDocSnap);
     } else {
-      _loadRecipe();
+      _loadRecipeMaybeGenerating();
+    }
+  }
+
+  /// Initial load for a recipe not explicitly opened in generating mode: if the
+  /// document turns out to still be generating (a non-empty `pending` field —
+  /// e.g. a just-adopted recipe opened before generation finished), stream it
+  /// and shimmer the pending parts, otherwise load it once as normal.
+  Future<void> _loadRecipeMaybeGenerating() async {
+    final doc = await docRef.get();
+    if (!doc.exists || !mounted) return;
+    final data = doc.data()!;
+    final pending = (data['pending'] as List?)?.map((e) => e.toString()).toSet();
+    if (pending != null && pending.isNotEmpty) {
+      setState(() {
+        _applyStreamData(data);
+        _pending = pending;
+      });
+      _docSub = docRef.snapshots().listen(_onDocSnap);
+    } else {
+      setState(() => _applyData(data));
     }
   }
 
@@ -522,6 +544,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             ingredientsRef.doc(item['id'] as String),
             (item['displayName'] ?? '').toString(),
             lang,
+            quantity: item['quantity'],
           );
         }
       }
@@ -690,7 +713,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       });
       await _loadRecipe();
     } catch (e) {
-      _snack('Could not enhance image: $e');
+      _snack(aiLimitMessage(e) ?? 'Could not enhance image: $e');
     } finally {
       if (mounted) setState(() => _enhancing.remove(path));
     }
@@ -706,7 +729,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       });
       await _loadRecipe();
     } catch (e) {
-      _snack('Could not generate image: $e');
+      _snack(aiLimitMessage(e) ?? 'Could not generate image: $e');
     } finally {
       if (mounted) setState(() => _generatingImage = false);
     }
@@ -723,7 +746,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         'recipeId': recipeId,
       });
     } catch (e) {
-      _snack('Could not generate ingredients: $e');
+      _snack(aiLimitMessage(e) ?? 'Could not generate ingredients: $e');
     } finally {
       if (mounted) setState(() => _loadingIngredients = false);
     }
@@ -739,7 +762,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       });
       await _reloadStepsOnly();
     } catch (e) {
-      _snack('Could not generate steps: $e');
+      _snack(aiLimitMessage(e) ?? 'Could not generate steps: $e');
     } finally {
       if (mounted) setState(() => _loadingSteps = false);
     }
@@ -1112,7 +1135,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   /// Footer for the edit carousel: "add photo" always, "generate with AI"
-  /// below it when aiEnabled. Buttons are stacked vertically and share the
+  /// below it when image generation is available. Buttons are stacked vertically and share the
   /// same width as an image tile so the list feels uniform.
   Widget _editImageFooter() {
     final cs = Theme.of(context).colorScheme;
@@ -1139,7 +1162,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               child: const Icon(Icons.add_a_photo),
             ),
           ),
-          if (widget.aiEnabled) ...[
+          if (widget.access.canGenerateImage) ...[
             const SizedBox(height: 4),
             Expanded(
               child: ElevatedButton(
@@ -1183,7 +1206,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       style: Theme.of(context).textTheme.headlineSmall),
                 ),
                 const Spacer(),
-                if (edit && widget.aiEnabled && !_loadingIngredients)
+                if (edit && widget.access.canEnhanceText && !_loadingIngredients)
                   IconButton(
                     icon: const Icon(Icons.auto_awesome),
                     tooltip: 'Generate with AI',
@@ -1342,7 +1365,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 Text("Steps",
                     style: Theme.of(context).textTheme.headlineSmall),
                 const Spacer(),
-                if (edit && widget.aiEnabled && !_loadingSteps)
+                if (edit && widget.access.canEnhanceText && !_loadingSteps)
                   IconButton(
                     icon: const Icon(Icons.auto_awesome),
                     tooltip: 'Generate with AI',
@@ -1571,7 +1594,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (widget.aiEnabled && !isAi && !enhancing)
+                    if (widget.access.canEnhanceImage && !isAi && !enhancing)
                       IconButton(
                         icon: Icon(Icons.auto_awesome,
                             color: cs.primary),
@@ -1722,7 +1745,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 // Fullscreen image viewer
 // =============================================================================
 
-class _FullscreenImagePage extends StatelessWidget {
+class _FullscreenImagePage extends StatefulWidget {
   const _FullscreenImagePage({
     required this.paths,
     required this.initialIndex,
@@ -1730,6 +1753,21 @@ class _FullscreenImagePage extends StatelessWidget {
 
   final List<String> paths;
   final int initialIndex;
+
+  @override
+  State<_FullscreenImagePage> createState() => _FullscreenImagePageState();
+}
+
+class _FullscreenImagePageState extends State<_FullscreenImagePage> {
+  late final PageController _pageController =
+      PageController(initialPage: widget.initialIndex);
+  bool _zoomed = false;
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1743,16 +1781,93 @@ class _FullscreenImagePage extends StatelessWidget {
         shadowColor: Colors.transparent,
       ),
       body: PageView.builder(
-        controller: PageController(initialPage: initialIndex),
-        itemCount: paths.length,
-        itemBuilder: (_, index) => InteractiveViewer(
-          minScale: 0.8,
-          maxScale: 5,
-          child: Center(
-            child: StorageImage(
-              storagePath: paths[index],
-              fit: BoxFit.contain,
-            ),
+        controller: _pageController,
+        physics:
+            _zoomed ? const NeverScrollableScrollPhysics() : null,
+        itemCount: widget.paths.length,
+        itemBuilder: (_, index) => _ZoomableImage(
+          storagePath: widget.paths[index],
+          onZoomChanged: (zoomed) {
+            if (zoomed != _zoomed) setState(() => _zoomed = zoomed);
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _ZoomableImage extends StatefulWidget {
+  const _ZoomableImage({
+    required this.storagePath,
+    required this.onZoomChanged,
+  });
+
+  final String storagePath;
+  final ValueChanged<bool> onZoomChanged;
+
+  @override
+  State<_ZoomableImage> createState() => _ZoomableImageState();
+}
+
+class _ZoomableImageState extends State<_ZoomableImage>
+    with SingleTickerProviderStateMixin {
+  final TransformationController _controller = TransformationController();
+  late final AnimationController _animController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 250),
+  );
+  Animation<Matrix4>? _animation;
+  TapDownDetails? _doubleTapDetails;
+
+  @override
+  void dispose() {
+    _animController.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleDoubleTapDown(TapDownDetails details) {
+    _doubleTapDetails = details;
+  }
+
+  void _animateTo(Matrix4 end) {
+    _animation = Matrix4Tween(begin: _controller.value, end: end).animate(
+      CurveTween(curve: Curves.easeOut).animate(_animController),
+    )
+      ..addListener(() => _controller.value = _animation!.value);
+    _animController.forward(from: 0);
+  }
+
+  void _handleDoubleTap() {
+    final position = _doubleTapDetails?.localPosition;
+    if (_controller.value != Matrix4.identity()) {
+      _animateTo(Matrix4.identity());
+      widget.onZoomChanged(false);
+    } else if (position != null) {
+      final zoomed = Matrix4.identity()
+        ..translate(-position.dx * 2, -position.dy * 2)
+        ..scale(3.0);
+      _animateTo(zoomed);
+      widget.onZoomChanged(true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTapDown: _handleDoubleTapDown,
+      onDoubleTap: _handleDoubleTap,
+      child: InteractiveViewer(
+        transformationController: _controller,
+        minScale: 1,
+        maxScale: 5,
+        onInteractionEnd: (_) {
+          widget.onZoomChanged(_controller.value.getMaxScaleOnAxis() > 1.01);
+        },
+        child: Center(
+          child: StorageImage(
+            storagePath: widget.storagePath,
+            fit: BoxFit.contain,
           ),
         ),
       ),

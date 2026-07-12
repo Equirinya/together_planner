@@ -25,7 +25,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
   final functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
 
-  // ── AI recipe suggestions (shown as tiles, only when aiEnabled) ────────────
+  // ── AI recipe suggestions (shown as tiles, only when search ideas allowed) ──
   List<RecipeSuggestion> suggestions = [];      // AI name/url ideas
   List<RecipeSuggestion> publicSuggestions = []; // public recipe search matches
   Timer? aiTimer;
@@ -44,6 +44,13 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   Set<String> get futurePlanned;
   Map<String, DateTime> get lastUsedDates;
   bool get usageLoaded;
+
+  // Whether the group has any recipes/cooking plans at all, and whether those
+  // streams have delivered their first snapshot yet. Used by
+  // [SuggestedRowMixin.loadSuggestedRow] to detect a genuinely empty group.
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> get cookingPlans;
+  bool get recipesLoaded;
+  bool get plansLoaded;
 
   // Freezes each recipe's "cook again" score the first time it's computed, so
   // adding it to the plan (or otherwise changing its usage data) doesn't
@@ -327,7 +334,8 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
   /// Called on every keystroke (in addition to [generateSearchedRecipes]).
   /// Public matches use a short debounce (300 ms) and are shown regardless of
-  /// [aiEnabled]; AI name ideas use a 1 s debounce and only when [aiEnabled].
+  /// the AI tier; AI name ideas use a 1 s debounce and only when the user's
+  /// plan includes search ideas (see AiAccess.canUseSearchIdeas).
   /// Cached results for the current query are shown immediately so suggestions
   /// persist while the user edits. Lists are only cleared when query is empty.
   /// `#tag` tokens are pulled out as exact tag filters (applied to public
@@ -351,7 +359,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     }
 
     // URL tile: immediate, AI only. Not applicable while filtering by tag.
-    if (widget.aiEnabled && tags.isEmpty) {
+    if (widget.access.canUseSearchIdeas && tags.isEmpty) {
       final url = extractUrl(q);
       if (url != null) {
         setState(() {
@@ -384,7 +392,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       _publicCache[qKey] = results;
       setState(() => publicSuggestions = results);
 
-      if (widget.aiEnabled) {
+      if (widget.access.canUseSearchIdeas) {
         final cached = await _fetchCachedIdeas(q, tags);
         if (!mounted || seq != _aiSeq) return;
         if (cached.isNotEmpty) {
@@ -396,7 +404,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
     // AI generation: 1 s debounce, only when the idea corpus didn't already
     // cover the query. Loading clears when this settles.
-    if (widget.aiEnabled) {
+    if (widget.access.canUseSearchIdeas) {
       aiTimer = Timer(const Duration(seconds: 1), () async {
         if (!mounted || seq != _aiSeq) return;
         final shownTiles = searchedRecipes.length + publicSuggestions.length + suggestions.length;

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:couple_planner/core/date_utils.dart';
 import 'package:flutter/material.dart';
@@ -7,29 +6,24 @@ import 'package:flutter/cupertino.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:mesh_gradient/mesh_gradient.dart';
 
-import 'package:couple_planner/features/ingredients/models/ingredients.dart' show kPendingIngredient;
-import 'package:couple_planner/core/language.dart';
-import 'package:couple_planner/core/widgets/load_builders.dart';
-import 'package:couple_planner/features/ingredients/services/ingredient_index.dart' show resolvePendingItem;
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
-import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
-import 'package:couple_planner/features/recipes/widgets/create_recipe_sheet.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_card.dart';
 import 'package:couple_planner/features/recipes/widgets/suggested_row.dart';
 import 'package:couple_planner/features/recipes/widgets/add_to_shopping_list_dialog.dart';
+import 'package:couple_planner/features/recipes/widgets/empty_recipes_state.dart';
+import 'package:couple_planner/features/recipes/widgets/plan_next_days_button.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
+import 'package:couple_planner/features/recipes/services/recipe_actions.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/recipes/pages/meal_plan_flow.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// Lets a parent widget (the bottom-nav host) query whether the recipe page's
 /// search is currently active and clear it, so a system back press can close
@@ -50,7 +44,7 @@ class RecipePageController {
 class RecipePage extends StatefulWidget {
   final String groupId;
   final bool shoppingListEnabled;
-  final bool aiEnabled;
+  final AiAccess access;
   final bool canEditPublicRecipes;
   final RecipePageController? controller;
 
@@ -58,7 +52,7 @@ class RecipePage extends StatefulWidget {
     super.key,
     required this.groupId,
     required this.shoppingListEnabled,
-    required this.aiEnabled,
+    required this.access,
     this.canEditPublicRecipes = false,
     this.controller,
   });
@@ -68,7 +62,7 @@ class RecipePage extends StatefulWidget {
 }
 
 class _RecipePageState extends State<RecipePage>
-    with RecipeSuggestionsMixin, SuggestedRowMixin, WidgetsBindingObserver {
+    with RecipeSuggestionsMixin, SuggestedRowMixin, RecipeActionsMixin, WidgetsBindingObserver {
   late DocumentReference<Map<String, dynamic>> groupDoc;
   final int daysToShowPrior = 15;
   final int daysToShowFuture = 30;
@@ -86,6 +80,7 @@ class _RecipePageState extends State<RecipePage>
   bool _suggestionsEnabled = true;
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? planListener;
+  @override
   List<QueryDocumentSnapshot<Map<String, dynamic>>> cookingPlans = [];
   // Whether the cooking-plan stream has delivered its first snapshot yet.
   // The "Plan next days" trigger day depends on the latest planned day, so it
@@ -93,9 +88,11 @@ class _RecipePageState extends State<RecipePage>
   // tile (computed from the still-empty `cookingPlans`) and then jump once
   // the real data arrives.
   bool _plansLoaded = false;
+  @override
+  bool get plansLoaded => _plansLoaded;
   // Tracks the auto meal-plan trigger day across cooking-plan updates so a
   // move to a new day can fade out on the old one instead of just vanishing;
-  // see the cooking-plan listener in initState and _PlanNextDaysButton.
+  // see the cooking-plan listener in initState and PlanNextDaysButton.
   String? _lastTriggerDayKey;
   String? _fadingTriggerDayKey;
   Timer? _fadingTriggerTimer;
@@ -118,6 +115,12 @@ class _RecipePageState extends State<RecipePage>
   // "no recipes yet" empty state doesn't flash on briefly before real data
   // arrives.
   bool _recipesLoaded = false;
+  @override
+  bool get recipesLoaded => _recipesLoaded;
+
+  // GlobalKey on the + button, handed to [EmptyRecipesState] so its guidance
+  // arrow can point at the button's real measured position.
+  final GlobalKey _plusButtonKey = GlobalKey();
 
   // How often each recipe has been cooked (past cooking-plan entries within
   // [_usageWindowDays]) and which recipes are already planned in the future.
@@ -154,13 +157,6 @@ class _RecipePageState extends State<RecipePage>
   // so the add-to-shopping-list dialog can open instantly.
   final Map<String, Future<List<IngPreload>>> _ingredientPreload = {};
 
-  // Public recipe data preloaded when a suggestion drag starts, keyed by public
-  // recipe id. Awaited on drop so the recipe doc can be written immediately.
-  final Map<String, Future<PublicRecipePreload>> _publicPreload = {};
-
-  // Recipe ids whose image upload is still in progress after an instant adopt.
-  // Plan tiles for these recipes show a loading overlay until the upload finishes.
-  final Set<String> _uploadingRecipeIds = {};
   Future<List<IngPreload>> _preloadIngredients(String recipeId) =>
       _ingredientPreload.putIfAbsent(
         recipeId,
@@ -224,7 +220,7 @@ class _RecipePageState extends State<RecipePage>
           groupDoc: groupDoc,
           startDate: day,
           maxDays: maxDays,
-          aiEnabled: widget.aiEnabled,
+          access: widget.access,
         ),
       ),
     );
@@ -263,6 +259,7 @@ class _RecipePageState extends State<RecipePage>
         }
         _lastTriggerDayKey = newTriggerDayKey;
       });
+      _maybeRefreshEmptyGroupSuggestedRow();
     });
 
     _subscribeRecipes();
@@ -333,6 +330,21 @@ class _RecipePageState extends State<RecipePage>
     if (rowFuture != null) await rowFuture;
   }
 
+  // The initial loadSuggestedRow() call (in _initSuggestions) races the
+  // recipes/cooking-plan listeners above, so it can't reliably tell a
+  // genuinely empty group apart from one whose data just hasn't arrived yet.
+  // Once both streams have delivered their first snapshot, reload the row
+  // once so a truly empty group picks up loadSuggestedRow's empty-group
+  // sorting (see suggested_row.dart).
+  bool _emptyGroupRowChecked = false;
+  void _maybeRefreshEmptyGroupSuggestedRow() {
+    if (_emptyGroupRowChecked || !_recipesLoaded || !_plansLoaded) return;
+    _emptyGroupRowChecked = true;
+    if (_suggestionsEnabled && recipes.isEmpty && cookingPlans.isEmpty) {
+      loadSuggestedRow();
+    }
+  }
+
   Future<void> _loadDietaryPreferences(String uid) async {
     try {
       final d =
@@ -360,6 +372,9 @@ class _RecipePageState extends State<RecipePage>
     recipesListener?.cancel();
     usageListener?.cancel();
     keyboardSubscription.cancel();
+    for (final sub in imageTrackSubs) {
+      sub.cancel();
+    }
     disposeSuggestions();
     _scrollController.removeListener(_maybeLoadMoreRecipes);
     _scrollController.dispose();
@@ -403,6 +418,7 @@ class _RecipePageState extends State<RecipePage>
         _recipesMaybeMore = !_searchActive && snapshot.docs.length >= _recipeLimit;
         generateSearchedRecipes();
       });
+      _maybeRefreshEmptyGroupSuggestedRow();
     });
   }
 
@@ -430,160 +446,9 @@ class _RecipePageState extends State<RecipePage>
     return null;
   }
 
-  void addNewRecipe({String? name}) async {
-    final newRecipeRef = await _createRecipeDoc(name: name ?? searchQuery);
-    if (mounted) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => RecipeDetailPage(
-            groupId: widget.groupId,
-            recipeId: newRecipeRef.id,
-            editMode: true,
-            aiEnabled: widget.aiEnabled,
-          ),
-        ),
-      );
-    }
-  }
-
-  /// Creates a bare recipe document (the shape addNewRecipe used inline) and
-  /// returns its reference. Shared by the blank/generated/link/photo flows.
-  Future<DocumentReference<Map<String, dynamic>>> _createRecipeDoc({
-    required String name,
-    String? attribution,
-    String? searchHint,
-  }) {
-    return groupDoc.collection('recipes').add({
-      'name': name,
-      'description': '',
-      'creator': FirebaseAuth.instance.currentUser!.uid,
-      'createdAt': FieldValue.serverTimestamp(),
-      'lastUsedAt': null,
-      'preparationTime': 0,
-      'time': 0,
-      'servings': 2,
-      'tags': <String>[],
-      'images': <String>[],
-      'steps': <String>[],
-      if (attribution != null) 'attribution': attribution,
-      if (searchHint != null && searchHint.isNotEmpty) 'searchHint': searchHint,
-    });
-  }
-
-  /// Returns the id of an already-existing recipe whose [attribution] matches
-  /// [url], or null if no such recipe is loaded yet.
-  String? _findRecipeIdByUrl(String url) {
-    for (final r in recipes) {
-      if ((r.data()['attribution'] ?? '') == url) return r.id;
-    }
-    return null;
-  }
-
-  // The remaining AI-suggestion generation (typeahead debouncing, public
-  // recipe matches, AI name ideas) lives in [RecipeSuggestionsMixin].
-
-  // ── acting on a suggestion (tap / drag) ────────────────────────────────────
-
-  Map<String, dynamic> _seedData(String name, {String? attribution}) => {
-        'name': name,
-        'description': '',
-        'images': <String>[],
-        'steps': <String>[],
-        'tags': <String>[],
-        'servings': 2,
-        'time': 0,
-        'preparationTime': 0,
-        if (attribution != null) 'attribution': attribution,
-      };
-
-  Future<void> _callStaged(String recipeId, RecipeSuggestion s) {
-    final data = <String, dynamic>{'groupId': widget.groupId, 'recipeId': recipeId, 'lang': LanguageService.instance.code.value};
-    if (s.kind == SuggestionKind.url) {
-      data['source'] = 'url';
-      data['url'] = s.url;
-    } else {
-      data['source'] = 'name';
-      data['prompt'] = s.title;
-    }
-    return functions.httpsCallable('recipes-generateRecipeStaged').call(data);
-  }
-
-  /// Tapping a suggestion: public recipes open a read-only preview that saves
-  /// itself into the group in place; name/link ideas open the detail page
-  /// immediately and generate in the background (shimmering the parts that
-  /// haven't arrived yet).
-  Future<void> _openSuggestion(RecipeSuggestion s) async {
-    if (s.kind == SuggestionKind.public) {
-      _pushDetail(
-        '',
-        publicRecipeId: s.publicId,
-        initialData: _seedData(s.title)
-          ..['images'] = (s.publicImage?.isNotEmpty ?? false)
-              ? [s.publicImage!]
-              : <String>[],
-      );
-      return;
-    }
-
-    if (s.kind == SuggestionKind.url && s.url != null) {
-      final existing = _findRecipeIdByUrl(s.url!);
-      if (existing != null) {
-        _pushDetail(existing);
-        return;
-      }
-    }
-
-    final name = s.kind == SuggestionKind.name ? s.title : '';
-    final attribution = s.kind == SuggestionKind.url ? s.url : null;
-    final ref = groupDoc.collection('recipes').doc();
-    ref.set({
-      'name': name,
-      'description': '',
-      'creator': FirebaseAuth.instance.currentUser!.uid,
-      'createdAt': FieldValue.serverTimestamp(),
-      'lastUsedAt': null,
-      'preparationTime': 0,
-      'time': 0,
-      'servings': 2,
-      'tags': <String>[],
-      'images': <String>[],
-      'steps': <String>[],
-      if (attribution != null) 'attribution': attribution,
-    });
-    _pushDetail(
-      ref.id,
-      generating: true,
-      initialData: _seedData(name, attribution: attribution),
-    );
-    // Fire and forget; the detail page streams progress from the document.
-    _callStaged(ref.id, s).ignore();
-  }
-
-  void _pushDetail(String recipeId,
-      {bool generating = false,
-      Map<String, dynamic>? initialData,
-      String? publicRecipeId}) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RecipeDetailPage(
-          groupId: widget.groupId,
-          recipeId: recipeId,
-          aiEnabled: widget.aiEnabled,
-          generating: generating,
-          initialData: initialData,
-          publicRecipeId: publicRecipeId,
-          canEditPublicRecipes: widget.canEditPublicRecipes,
-          onTagTap: _onDetailTagTap,
-        ),
-      ),
-    );
-  }
-
   /// Tapping a tag chip in the recipe detail page: close it and run a tag
   /// search for that tag in the grid below.
-  void _onDetailTagTap(String tag) {
+  void onDetailTagTap(String tag) {
     Navigator.of(context).pop();
     final value = '#$tag ';
     _searchController.text = value;
@@ -601,6 +466,7 @@ class _RecipePageState extends State<RecipePage>
   void _clearSearch() {
     _searchController.clear();
     searchQuery = '';
+    adoptingSuggestions.clear();
     widget.controller?.hasSearch.value = false;
     if (_searchActive) {
       _searchActive = false;
@@ -608,432 +474,6 @@ class _RecipePageState extends State<RecipePage>
     }
     generateSearchedRecipes();
     onSearchChangedAi('');
-  }
-
-  /// Resolves any still-pending (unmatched) ingredients of a freshly generated
-  /// or adopted recipe in place, so the shopping-list dialog shows clean names.
-  Future<void> _resolvePendingIngredients(String recipeId) async {
-    final lang = LanguageService.instance.code.value;
-    final ingRef =
-        groupDoc.collection('recipes').doc(recipeId).collection('ingredients');
-    final snap = await ingRef.get();
-    await Future.wait(snap.docs
-        .where((d) => (d.data()['ingredientId'] ?? '').toString() == kPendingIngredient)
-        .map((d) => resolvePendingItem(
-              ingRef.doc(d.id),
-              (d.data()['displayName'] ?? '').toString(),
-              lang,
-            )));
-  }
-
-  /// Waits only until the recipe's `ingredients` stage has cleared from the
-  /// doc's `pending` array (steps 1–3 of generateRecipeStaged), rather than the
-  /// whole call — the image (stage 4) keeps generating in the background via
-  /// [generation]. Also surfaces a failure if [generation] itself rejects
-  /// before ever writing `pending`, or if the function flags generationError.
-  Future<void> _awaitIngredientsStage(
-      String recipeId, Future<void> generation) async {
-    final ref = groupDoc.collection('recipes').doc(recipeId);
-    final ready = Completer<void>();
-    late final StreamSubscription<DocumentSnapshot<Map<String, dynamic>>> sub;
-    sub = ref.snapshots().listen((snap) {
-      final data = snap.data();
-      if (data == null || ready.isCompleted) return;
-      if (data['generationError'] == true) {
-        ready.completeError(Exception('Recipe generation failed'));
-        return;
-      }
-      if (!data.containsKey('pending')) return;
-      final pending = List<String>.from(data['pending'] ?? const []);
-      if (!pending.contains('ingredients')) ready.complete();
-    });
-    generation.catchError((Object e) {
-      if (!ready.isCompleted) ready.completeError(e);
-    });
-    try {
-      await ready.future;
-    } finally {
-      sub.cancel();
-    }
-  }
-
-  /// Dragging a suggestion onto the save zone: generate/adopt the recipe and
-  /// set lastUsedAt to now, without planning it. Public recipes are adopted
-  /// instantly from preloaded data; AI-generated recipes show a loading dialog.
-  Future<void> _handleSuggestionSave(RecipeSuggestion s) async {
-    if (s.kind == SuggestionKind.public) {
-      try {
-        final preloadFuture =
-            _publicPreload.remove(s.publicId!) ?? preloadPublicRecipe(s.publicId!);
-        final preload = await preloadFuture;
-        final result = await adoptPublicRecipeFromPreload(
-          groupId: widget.groupId,
-          publicRecipeId: s.publicId!,
-          preload: preload,
-          uid: FirebaseAuth.instance.currentUser!.uid,
-          lang: LanguageService.instance.code.value,
-        );
-        result.imageUpload.ignore();
-      } catch (_) {
-        _snack('Could not save this recipe.');
-      }
-      return;
-    }
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const _GeneratingDialog(),
-    );
-    // The current search text, if any, is stamped onto the new recipe as
-    // `searchHint` so it stays findable under the term that surfaced this
-    // suggestion, even once AI generation replaces its name/description/tags
-    // with something that doesn't literally contain those words.
-    final searchHint = searchQuery.trim();
-    String? recipeId;
-    try {
-      if (s.kind == SuggestionKind.url && s.url != null) {
-        final existing = _findRecipeIdByUrl(s.url!);
-        if (existing != null) {
-          recipeId = existing;
-        } else {
-          final ref = await _createRecipeDoc(
-              name: '', attribution: s.url, searchHint: searchHint);
-          recipeId = ref.id;
-          // Fire and forget; the doc is edited in place as generation streams in.
-          _callStaged(recipeId, s).ignore();
-        }
-      } else {
-        final ref = await _createRecipeDoc(
-            name: s.kind == SuggestionKind.name ? s.title : '',
-            searchHint: searchHint);
-        recipeId = ref.id;
-        _callStaged(recipeId, s).ignore();
-      }
-      if (recipeId != null) {
-        groupDoc
-            .collection('recipes')
-            .doc(recipeId)
-            .update({'lastUsedAt': FieldValue.serverTimestamp()});
-      }
-    } catch (_) {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
-      _snack('Could not save this recipe.');
-      return;
-    }
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop();
-  }
-
-  /// Dragging a suggestion onto a day: generate/adopt the recipe, then plan it
-  /// and open the add-to-shopping-list dialog. Public recipes are adopted
-  /// instantly from preloaded data; AI-generated recipes show a loading dialog.
-  Future<void> _handleSuggestionDrop(
-    DateTime day,
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
-    int index,
-    RecipeSuggestion s,
-  ) async {
-    if (s.kind == SuggestionKind.public) {
-      await _handlePublicRecipeDrop(day, plans, index, s);
-      return;
-    }
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const _GeneratingDialog(),
-    );
-    String? recipeId;
-    try {
-      if (s.kind == SuggestionKind.url && s.url != null) {
-        final existing = _findRecipeIdByUrl(s.url!);
-        if (existing != null) {
-          recipeId = existing;
-        } else {
-          final ref = await _createRecipeDoc(
-              name: '',
-              attribution: s.url);
-          recipeId = ref.id;
-          await _awaitIngredientsStage(recipeId, _callStaged(recipeId, s));
-        }
-      } else {
-        final ref = await _createRecipeDoc(
-            name: s.kind == SuggestionKind.name ? s.title : '',
-            attribution: null);
-        recipeId = ref.id;
-        await _awaitIngredientsStage(recipeId, _callStaged(recipeId, s));
-      }
-      if (recipeId != null) await _resolvePendingIngredients(recipeId);
-    } catch (_) {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
-      _snack('Could not generate this recipe.');
-      return;
-    }
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop(); // close loading dialog
-    if (recipeId == null) return;
-    final snap = await groupDoc.collection('recipes').doc(recipeId).get();
-    if (mounted) _handleDrop(day, plans, index, snap);
-  }
-
-  /// Adopts [s] using preloaded data: writes recipe + cooking plan instantly,
-  /// then uploads the image in the background with a loading overlay on the tile.
-  Future<void> _handlePublicRecipeDrop(
-    DateTime day,
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
-    int index,
-    RecipeSuggestion s,
-  ) async {
-    String? recipeId;
-    try {
-      final preloadFuture =
-          _publicPreload.remove(s.publicId!) ?? preloadPublicRecipe(s.publicId!);
-      final preload = await preloadFuture;
-      final result = await adoptPublicRecipeFromPreload(
-        groupId: widget.groupId,
-        publicRecipeId: s.publicId!,
-        preload: preload,
-        uid: FirebaseAuth.instance.currentUser!.uid,
-        lang: LanguageService.instance.code.value,
-      );
-      recipeId = result.recipeId;
-      if (mounted) setState(() => _uploadingRecipeIds.add(recipeId!));
-      result.imageUpload.whenComplete(() {
-        if (mounted) setState(() => _uploadingRecipeIds.remove(recipeId));
-      });
-    } catch (_) {
-      _snack('Could not adopt this recipe.');
-      return;
-    }
-    if (!mounted || recipeId == null) return;
-    final snap = await groupDoc.collection('recipes').doc(recipeId).get();
-    if (mounted) _handleDrop(day, plans, index, snap);
-  }
-
-  // ── create menu (plus button) ──────────────────────────────────────────────
-
-  Future<void> _openCreateMenu() async {
-    final result = await showModalBottomSheet<CreateRecipeResult>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => CreateRecipeSheet(aiEnabled: widget.aiEnabled),
-    );
-    if (result == null || !mounted) return;
-    switch (result.type) {
-      case CreateRecipeType.blank:
-        addNewRecipe(name: result.text ?? '');
-        break;
-      case CreateRecipeType.photo:
-        _createFromPhoto();
-        break;
-      case CreateRecipeType.text:
-        _createFromText(result.text ?? '');
-        break;
-    }
-  }
-
-  Future<void> _createFromText(String text) async {
-    final t = text.trim();
-    if (t.isEmpty) return;
-    final url = extractUrl(t);
-    if (url != null) {
-      final existing = _findRecipeIdByUrl(url);
-      if (existing != null) {
-        if (mounted) _pushDetail(existing);
-        return;
-      }
-    }
-    final name = url != null ? '' : t;
-    final ref = groupDoc.collection('recipes').doc();
-    ref.set({
-      'name': name,
-      'description': '',
-      'creator': FirebaseAuth.instance.currentUser!.uid,
-      'createdAt': FieldValue.serverTimestamp(),
-      'lastUsedAt': null,
-      'preparationTime': 0,
-      'time': 0,
-      'servings': 2,
-      'tags': <String>[],
-      'images': <String>[],
-      'steps': <String>[],
-      if (url != null) 'attribution': url,
-    });
-    _pushDetail(ref.id,
-        generating: true, initialData: _seedData(name, attribution: url));
-    _callStaged(
-      ref.id,
-      url != null
-          ? RecipeSuggestion(kind: SuggestionKind.url, title: t, url: url)
-          : RecipeSuggestion(kind: SuggestionKind.name, title: t),
-    ).ignore();
-  }
-
-  Future<void> _createFromPhoto() async {
-    final image = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      maxWidth: 1280,
-      imageQuality: 70,
-    );
-    if (image == null || !mounted) return;
-    final bytes = await image.readAsBytes();
-    final ref = await _createRecipeDoc(name: '');
-    if (!mounted) return;
-    _pushDetail(ref.id, generating: true, initialData: _seedData(''));
-    functions.httpsCallable('recipes-generateRecipeStaged').call(<String, dynamic>{
-      'groupId': widget.groupId,
-      'recipeId': ref.id,
-      'source': 'photo',
-      'imageBase64': base64Encode(bytes),
-      'imageMimeType': image.mimeType ?? 'image/jpeg',
-      'lang': LanguageService.instance.code.value,
-    }).ignore();
-  }
-
-  // ── empty state (group has no recipes yet) ─────────────────────────────────
-
-  /// Shown centered in the grid area once the recipes stream has confirmed the
-  /// group has no recipes and the user isn't searching. Points at the two
-  /// entry points that already live on this page (the Smart Meal Planner tile
-  /// above and the + button below) rather than duplicating them, and only adds
-  /// a real button for copying from another group since that has no other
-  /// entry point here.
-  Widget _buildEmptyRecipesState(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    final hintColor = colorScheme.outline.withOpacity(0.75);
-    final hintStyle = textTheme.bodySmall?.copyWith(
-      color: hintColor,
-      fontStyle: FontStyle.italic,
-    );
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    return Stack(
-      children: [
-        Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.menu_book_outlined, size: 48, color: colorScheme.outline),
-                const SizedBox(height: 12),
-                Text('Looks so empty here!', style: textTheme.titleLarge),
-                const SizedBox(height: 4),
-                Text(
-                  'This group has no recipes yet.',
-                  style: hintStyle,
-                  textAlign: TextAlign.center,
-                ),
-                if (widget.aiEnabled) ...[
-                  const SizedBox(height: 28),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Transform.rotate(
-                        angle: -0.15,
-                        child: Icon(Icons.arrow_upward_rounded, size: 16, color: hintColor),
-                      ),
-                      const SizedBox(width: 6),
-                      Text('try the Smart Meal Planner above', style: hintStyle),
-                    ],
-                  ),
-                ],
-                if (uid != null)
-                  FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    future: FirebaseFirestore.instance
-                        .collection('users')
-                        .doc(uid)
-                        .collection('groups')
-                        .get(),
-                    builder: (context, snapshot) {
-                      final otherGroupIds = (snapshot.data?.docs ?? const [])
-                          .map((d) => d.id)
-                          .where((id) => id != widget.groupId)
-                          .toList();
-                      if (otherGroupIds.isEmpty) return const SizedBox.shrink();
-                      return Column(
-                        children: [
-                          const SizedBox(height: 16),
-                          TextButton.icon(
-                            onPressed: () => _openCopyFromGroupPicker(otherGroupIds),
-                            icon: const Icon(Icons.copy_outlined),
-                            label: const Text('Copy recipes from another group'),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-              ],
-            ),
-          ),
-        ),
-        // Points down toward the + button, which sits in the bottom-right
-        // corner of the screen (see the AnimatedContainer/IconButton near the
-        // end of build()) rather than centered, so this hint is anchored to
-        // that same corner and angled diagonally instead of straight down.
-        Positioned(
-          right: 20,
-          bottom: 72,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('or tap + for your own', style: hintStyle),
-              const SizedBox(width: 6),
-              Transform.rotate(
-                angle: 0.7,
-                child: Icon(Icons.arrow_forward_rounded, size: 16, color: hintColor),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// Opens [SharedRecipesPage] for one of [otherGroupIds], letting the user
-  /// pick which group to browse when they belong to more than one.
-  Future<void> _openCopyFromGroupPicker(List<String> otherGroupIds) async {
-    if (otherGroupIds.length == 1) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => SharedRecipesPage(sourceGroupId: otherGroupIds.first),
-        ),
-      );
-      return;
-    }
-    final chosen = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      builder: (_) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final id in otherGroupIds)
-              ListTile(
-                leading: const Icon(Icons.group_outlined),
-                title: LoadDocumentBuilder(
-                  docRef: FirebaseFirestore.instance.collection('groups').doc(id),
-                  builder: (data) => Text((data['name'] ?? 'Group').toString()),
-                ),
-                onTap: () => Navigator.pop(context, id),
-              ),
-          ],
-        ),
-      ),
-    );
-    if (chosen != null && mounted) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(builder: (_) => SharedRecipesPage(sourceGroupId: chosen)),
-      );
-    }
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   /// Computes a [Timestamp] at the midpoint of the gap between the plan at
@@ -1044,7 +484,7 @@ class _RecipePageState extends State<RecipePage>
   /// and only provides the colour highlight. All actual drops are routed here
   /// through the inner per-plan targets and the append-zone target, which
   /// avoids double-firing from nested DragTargets.
-  Future<void> _handleDrop(
+  Future<void> handleDrop(
       DateTime day,
       List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
       int index,
@@ -1156,6 +596,89 @@ class _RecipePageState extends State<RecipePage>
     if (mounted) setState(() => _deletingPlanIds.remove(planRef.id));
   }
 
+  /// A group recipe as a draggable grid tile (open on tap, drag onto a day).
+  /// Shared by the searched-recipes grid and by a suggestion tile that has
+  /// just transformed into its adopted recipe.
+  /// [streamCard] makes the resting card render from the live recipe document
+  /// (see [RecipeCard], which streams when its `data` is null) instead of a
+  /// fixed snapshot, so a just-adopted tile picks up its image once it lands.
+  Widget _privateRecipeTile(
+      DocumentSnapshot<Map<String, dynamic>> e, int crossAxisCount,
+      {bool streamCard = false}) {
+    final data = e.data() ?? const <String, dynamic>{};
+    return LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
+      key: ValueKey(e.id),
+      data: e,
+      onDragStarted: () => _preloadIngredients(e.id),
+      feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: data, crossAxisCount: crossAxisCount),
+      childWhenDragging:
+          RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: data, crossAxisCount: crossAxisCount),
+      child: RecipeOpenContainer(
+        recipeId: e.id,
+        groupId: widget.groupId,
+        groupDoc: groupDoc,
+        access: widget.access,
+        initialData: data,
+        onTagTap: onDetailTagTap,
+        child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: streamCard ? null : data, crossAxisCount: crossAxisCount),
+      ),
+    );
+  }
+
+  /// A search-grid suggestion tile. Normally a draggable idea; once it has been
+  /// dragged onto the save zone or a day it shows in-place loading (not
+  /// draggable), then transforms into its adopted recipe as soon as that
+  /// recipe's doc has loaded — see [adoptingSuggestions].
+  Widget _suggestionGridTile(RecipeSuggestion s, int crossAxisCount) {
+    final key = suggestionKey(s);
+    if (adoptingSuggestions.containsKey(key)) {
+      final doc = adoptingSuggestions[key];
+      if (doc != null) return _privateRecipeTile(doc, crossAxisCount, streamCard: true);
+      // Loading: the drop was accepted but the recipe isn't ready to drag yet.
+      // A dimmed card with a large centred spinner, matching the card's rounded
+      // shape, so it reads clearly as "saving" in place.
+      return AbsorbPointer(
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            RecipeSuggestionCard(suggestion: s, crossAxisCount: crossAxisCount),
+            Positioned.fill(
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: const ColoredBox(
+                    color: Colors.black45,
+                    child: Center(
+                      child: CupertinoActivityIndicator(radius: 16, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return LongPressDraggable<RecipeSuggestion>(
+      data: s,
+      onDragStarted: () {
+        setState(() => _isDraggingSuggestion = true);
+        if (s.kind == SuggestionKind.public && s.publicId != null) {
+          publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
+        }
+      },
+      onDragEnd: (_) => setState(() => _isDraggingSuggestion = false),
+      onDraggableCanceled: (_, __) => setState(() => _isDraggingSuggestion = false),
+      feedback: RecipeSuggestionCard(suggestion: s, crossAxisCount: crossAxisCount),
+      childWhenDragging: RecipeSuggestionCard(suggestion: s, crossAxisCount: crossAxisCount),
+      child: GestureDetector(
+        onTap: () => openSuggestion(s),
+        child: RecipeSuggestionCard(suggestion: s, crossAxisCount: crossAxisCount),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final displaySize = MediaQuery.of(context).size;
@@ -1200,21 +723,40 @@ class _RecipePageState extends State<RecipePage>
     final seenSuggestionTitles = <String>{};
     final suggestionTiles = <RecipeSuggestion>[];
     for (final s in [...publicSuggestions, ...suggestions]) {
-      if (s.publicId != null && adoptedPublicIds.contains(s.publicId)) continue;
+      // A suggestion mid-adoption keeps its slot (transforming in place), even
+      // once the adopted recipe would otherwise dedupe it away by name/source.
+      final adopting = adoptingSuggestions.containsKey(suggestionKey(s));
+      if (!adopting && s.publicId != null && adoptedPublicIds.contains(s.publicId)) continue;
       final t = s.title.trim().toLowerCase();
       if (t.isNotEmpty) {
-        if (ownRecipeNames.contains(t)) continue;
+        if (!adopting && ownRecipeNames.contains(t)) continue;
         if (!seenSuggestionTitles.add(t)) continue;
       }
       suggestionTiles.add(s);
     }
+    // The private recipe ids that a currently-shown suggestion tile has
+    // transformed into, so they aren't also rendered in the searched-recipes
+    // section above (which would double them up).
+    final adoptingRecipeIds = <String>{
+      for (final s in suggestionTiles)
+        if (adoptingSuggestions[suggestionKey(s)] != null)
+          adoptingSuggestions[suggestionKey(s)]!.id,
+    };
     final suggestedTopOffset =
-        (showSuggestedRow || (widget.aiEnabled && suggestionTiles.isNotEmpty))
+        (showSuggestedRow || (widget.access.canUseSearchIdeas && suggestionTiles.isNotEmpty))
             ? smallerdim / crossAxisCount * 3 / 4 + 1
             : 0.0;
 
     final triggerDate = _triggerDate;
     final triggerDayKey = '${triggerDate.year}-${triggerDate.month}-${triggerDate.day}';
+
+    final showEmptyRecipesState =
+        recipes.isEmpty && searchQuery.trim().isEmpty && _recipesLoaded;
+    final showShareTip = recipes.isNotEmpty && searchQuery.trim().isEmpty;
+    // Space reserved at the end of the scrollable content so the last row
+    // (grid row, or the share tip when it's showing) clears the floating
+    // search bar/+ button instead of sitting underneath it.
+    final bottomBarClearance = MediaQuery.of(context).viewInsets.bottom + 72 + 32;
 
     return Column(
       mainAxisSize: MainAxisSize.max,
@@ -1286,9 +828,9 @@ class _RecipePageState extends State<RecipePage>
                     }
                     final data = d.data;
                     if (data is RecipeSuggestion) {
-                      _handleSuggestionDrop(day, dayPlans, insertIdx, data);
+                      handleSuggestionDrop(day, dayPlans, insertIdx, data);
                     } else if (data is DocumentSnapshot<Map<String, dynamic>>) {
-                      _handleDrop(day, dayPlans, insertIdx, data);
+                      handleDrop(day, dayPlans, insertIdx, data);
                     }
                   },
                   builder: (context, candidateData, _) {
@@ -1355,10 +897,10 @@ class _RecipePageState extends State<RecipePage>
                                                 recipeId: dayPlans[i]['recipe'],
                                                 groupId: groupDoc.id,
                                                 groupDoc: groupDoc,
-                                                aiEnabled: widget.aiEnabled,
+                                                access: widget.access,
                                                 initialData:
                                                 _recipeDataFor(dayPlans[i]['recipe']),
-                                                onTagTap: _onDetailTagTap,
+                                                onTagTap: onDetailTagTap,
                                                 child: RecipeCard(
                                                   recipeId: dayPlans[i]['recipe'],
                                                   groupCollection: groupDoc,
@@ -1367,7 +909,7 @@ class _RecipePageState extends State<RecipePage>
                                                   crossAxisCount: planCrossAxisCount,
                                                 ),
                                               ),
-                                              if (_uploadingRecipeIds.contains(dayPlans[i]['recipe']))
+                                              if (uploadingRecipeIds.contains(dayPlans[i]['recipe']))
                                                 Positioned.fill(
                                                   child: IgnorePointer(
                                                     child: ClipRRect(
@@ -1404,8 +946,8 @@ class _RecipePageState extends State<RecipePage>
                           ),
                           // The auto meal-plan trigger: shown only on the
                           // single soonest day at/after today that has no
-                          // plan yet (see _triggerDate), and only when AI
-                          // features are enabled. Pinned below the scrollable
+                          // plan yet (see _triggerDate), and only when the
+                          // meal planner is available. Pinned below the scrollable
                           // plan list (not part of it) and sized like a
                           // cropped recipe card so it holds a fixed size
                           // instead of reflowing as the carousel's weighted
@@ -1413,10 +955,10 @@ class _RecipePageState extends State<RecipePage>
                           // invisible) on the previous trigger day for a
                           // moment after the trigger moves, so it fades out
                           // there instead of just vanishing.
-                          if (widget.aiEnabled &&
+                          if (widget.access.canUseMealPlanner &&
                               _plansLoaded &&
                               (dayKey == triggerDayKey || dayKey == _fadingTriggerDayKey))
-                            _PlanNextDaysButton(
+                            PlanNextDaysButton(
                               crossAxisCount: planCrossAxisCount,
                               visible: dayKey == triggerDayKey,
                               onTap: () => _openMealPlanFlow(day),
@@ -1446,22 +988,22 @@ class _RecipePageState extends State<RecipePage>
                         onDismiss: dismissSuggested,
                         visible: true,
                         groupId: widget.groupId,
-                        aiEnabled: widget.aiEnabled,
+                        access: widget.access,
                         canEditPublicRecipes: widget.canEditPublicRecipes,
                         crossAxisCount: crossAxisCount,
-                        onTagTap: _onDetailTagTap,
+                        onTagTap: onDetailTagTap,
                         onDragStarted: () => setState(() => _isDraggingSuggestion = true),
                         onDragEnd: () => setState(() => _isDraggingSuggestion = false),
                         onDragStartedWithSuggestion: (s) {
                           if (s.publicId != null) {
-                            _publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
+                            publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
                           }
                         },
                       ),
                     ),
                   SliverPadding(
                     padding: EdgeInsets.only(
-                        bottom: MediaQuery.of(context).viewInsets.bottom + 72 + 32),
+                        bottom: showShareTip ? 8 : bottomBarClearance),
                     sliver: SliverGrid(
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount),
@@ -1470,55 +1012,36 @@ class _RecipePageState extends State<RecipePage>
                         // matches, then AI names when enabled) — prefer what
                         // the group already has over ideas for something new.
                         for (final e in searchedRecipes)
-                          LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
-                            key: ValueKey(e.id),
-                            data: e,
-                            onDragStarted: () => _preloadIngredients(e.id),
-                            feedback: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            childWhenDragging:
-                            RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            child: RecipeOpenContainer(
-                              recipeId: e.id,
-                              groupId: widget.groupId,
-                              groupDoc: groupDoc,
-                              aiEnabled: widget.aiEnabled,
-                              initialData: e.data(),
-                              onTagTap: _onDetailTagTap,
-                              child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: e.data(), crossAxisCount: crossAxisCount),
-                            ),
-                          ),
+                          if (!adoptingRecipeIds.contains(e.id))
+                            _privateRecipeTile(e, crossAxisCount),
                         if (searchQuery.trim().isNotEmpty)
                           for (final s in suggestionTiles)
-                            LongPressDraggable<RecipeSuggestion>(
-                              data: s,
-                              onDragStarted: () {
-                                setState(() => _isDraggingSuggestion = true);
-                                if (s.kind == SuggestionKind.public && s.publicId != null) {
-                                  _publicPreload.putIfAbsent(s.publicId!, () => preloadPublicRecipe(s.publicId!));
-                                }
-                              },
-                              onDragEnd: (_) => setState(() => _isDraggingSuggestion = false),
-                              onDraggableCanceled: (_, __) => setState(() => _isDraggingSuggestion = false),
-                              feedback: RecipeSuggestionCard(
-                                  suggestion: s, crossAxisCount: crossAxisCount),
-                              childWhenDragging: RecipeSuggestionCard(
-                                  suggestion: s, crossAxisCount: crossAxisCount),
-                              child: GestureDetector(
-                                onTap: () => _openSuggestion(s),
-                                child: RecipeSuggestionCard(
-                                    suggestion: s, crossAxisCount: crossAxisCount),
-                              ),
-                            ),
+                            _suggestionGridTile(s, crossAxisCount),
                       ]),
                     ),
                   ),
-                  if (recipes.isEmpty && searchQuery.trim().isEmpty && _recipesLoaded)
-                    SliverFillRemaining(
-                      hasScrollBody: false,
-                      child: _buildEmptyRecipesState(context),
+                  if (showShareTip)
+                    SliverPadding(
+                      padding: EdgeInsets.only(bottom: bottomBarClearance),
+                      sliver: const SliverToBoxAdapter(child: ShareTip()),
                     ),
                 ],
               ),
+              // ── Empty state (group has no recipes yet) ──────────────────
+              // A full-bleed overlay rather than a sliver: it needs the exact
+              // same coordinate space as the search bar/+ button below (see
+              // EmptyRecipesState) so its arrows can reliably point at
+              // them regardless of how much the suggested row above pushes
+              // the (empty) grid sliver around.
+              if (showEmptyRecipesState)
+                Positioned.fill(
+                  child: EmptyRecipesState(
+                    access: widget.access,
+                    groupId: widget.groupId,
+                    plusButtonKey: _plusButtonKey,
+                    topInset: showSuggestedRow ? suggestedTopOffset + 16 : 24,
+                  ),
+                ),
               // ── Search bar ─────────────────────────────────────────────
               Align(
                 alignment: Alignment.bottomCenter,
@@ -1610,6 +1133,7 @@ class _RecipePageState extends State<RecipePage>
                         ),
                       ),
                       AnimatedContainer(
+                        key: _plusButtonKey,
                         duration: const Duration(milliseconds: 300),
                         curve: Curves.easeOut,
                         clipBehavior: Clip.antiAlias,
@@ -1623,7 +1147,7 @@ class _RecipePageState extends State<RecipePage>
                               : BorderRadius.circular(28),
                         ),
                         child: IconButton(
-                          onPressed: _openCreateMenu,
+                          onPressed: openCreateMenu,
                           icon: const Icon(Icons.add),
                         ),
                       ),
@@ -1693,183 +1217,13 @@ class _RecipePageState extends State<RecipePage>
                       );
                     },
                     onWillAcceptWithDetails: (_) => true,
-                    onAcceptWithDetails: (d) => _handleSuggestionSave(d.data),
+                    onAcceptWithDetails: (d) => handleSuggestionSave(d.data),
                   ),
                 ),
             ],
           ),
         ),
       ],
-    );
-  }
-}
-
-// ─── Plan-next-days trigger button ──────────────────────────────────────────
-
-/// The "Plan next days" call-to-action shown on the carousel's trigger day.
-/// Spans the full width of the day cell, flush with its edges, so it reads
-/// as part of the carousel box rather than a floating card.
-///
-/// Stays mounted (as [visible]: false) for a moment after the trigger day
-/// moves elsewhere, so it can fade out instead of just disappearing; see
-/// _RecipePageState's fade-out timer around the cooking-plan listener.
-class _PlanNextDaysButton extends StatefulWidget {
-  const _PlanNextDaysButton({
-    required this.crossAxisCount,
-    required this.visible,
-    required this.onTap,
-  });
-
-  final int crossAxisCount;
-  final bool visible;
-  final VoidCallback onTap;
-
-  // Fixed height for the button, given directly via a SizedBox so it holds
-  // a stable size instead of reflowing as the carousel's weighted widths
-  // change while scrolling.
-  static const double _height = 140;
-
-  @override
-  State<_PlanNextDaysButton> createState() => _PlanNextDaysButtonState();
-}
-
-class _PlanNextDaysButtonState extends State<_PlanNextDaysButton> {
-  // False until the first frame after this instance mounts, so it fades in
-  // rather than popping in at full opacity.
-  bool _shown = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() => _shown = true);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final size = MediaQuery.of(context).size;
-    final smallerdim = size.width < size.height ? size.width : size.height;
-    // Full content size at this crossAxisCount, used below to keep the whole
-    // card (background and label alike) from shrinking as the carousel's
-    // weighted widths change while scrolling — it just gets cropped instead,
-    // like the recipe cards.
-    final fullContentWidth = smallerdim / widget.crossAxisCount - 8;
-    // Gentle, on-brand hues for the mesh: the theme's key colours pulled just
-    // partway off the surface, so the card shifts subtly instead of clashing
-    // with the rest of the recipe grid.
-    final meshColors = [
-      Color.lerp(colorScheme.surface, colorScheme.primary, 0.35)!,
-      Color.lerp(colorScheme.surface, colorScheme.tertiary, 0.4)!,
-      Color.lerp(colorScheme.surface, colorScheme.secondary, 0.35)!,
-      Color.lerp(colorScheme.surface, colorScheme.primaryContainer, 0.75)!,
-    ];
-
-    return SizedBox(
-      width: double.infinity,
-      height: _PlanNextDaysButton._height,
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-        opacity: _shown && widget.visible ? 1 : 0,
-        child: IgnorePointer(
-          ignoring: !widget.visible,
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: widget.onTap,
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  // Fill the day cell's actual current width, but never
-                  // shrink below fullContentWidth: when the cell goes
-                  // narrower than that during scrolling, hold this size and
-                  // let OverflowBox crop it (centered) instead.
-                  final availWidth =
-                      constraints.maxWidth.isFinite ? constraints.maxWidth : fullContentWidth;
-                  final contentWidth =
-                      fullContentWidth > availWidth ? fullContentWidth : availWidth;
-                  return OverflowBox(
-                    minWidth: contentWidth,
-                    maxWidth: contentWidth,
-                    minHeight: _PlanNextDaysButton._height,
-                    maxHeight: _PlanNextDaysButton._height,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                    // Fades in from the scrollable plan list above so the card
-                    // reads as an extension of it instead of a hard-edged strip.
-                    ShaderMask(
-                      shaderCallback: (rect) => const LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.center,
-                        colors: [Colors.transparent, Colors.white],
-                      ).createShader(rect),
-                      blendMode: BlendMode.dstIn,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          AnimatedMeshGradient(
-                            colors: meshColors,
-                            options: AnimatedMeshGradientOptions(speed: 0.15),
-                          ),
-                          Container(color: Colors.black.withOpacity(0.1)),
-                        ],
-                      ),
-                    ),
-                    Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.auto_awesome, color: Colors.white),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Smart Meal\nPlanner',
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context)
-                                .textTheme
-                                .labelLarge
-                                ?.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
-                            maxLines: 2,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              );
-                },
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Generating dialog ─────────────────────────────────────────────────────────
-
-/// Blocking loading dialog shown while a dragged suggestion is being generated
-/// or adopted, before the add-to-shopping-list dialog opens.
-class _GeneratingDialog extends StatelessWidget {
-  const _GeneratingDialog();
-
-  @override
-  Widget build(BuildContext context) {
-    return const Dialog(
-      child: Padding(
-        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CupertinoActivityIndicator(),
-            SizedBox(width: 16),
-            Flexible(child: Text('Generating recipe…')),
-          ],
-        ),
-      ),
     );
   }
 }

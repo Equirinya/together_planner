@@ -321,7 +321,7 @@ class _WelcomePageState extends State<WelcomePage> {
       groupRef.set({
         'name': groupName,
         'enabledFeatures': ordered,
-        'defaultPage': ordered.first,
+        'defaultPage': ordered.contains('recipes') ? 'recipes' : ordered.first,
       });
       groupRef.collection('members').doc(uid).set({
         'role': 'admin',
