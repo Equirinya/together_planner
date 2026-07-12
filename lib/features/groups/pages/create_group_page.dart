@@ -44,7 +44,7 @@ class _CreateGroupPageState extends State<CreateGroupPage> {
     ref.set({
       'name': _nameCtrl.text.trim(),
       'enabledFeatures': ordered,
-      'defaultPage': ordered.first,
+      'defaultPage': ordered.contains('recipes') ? 'recipes' : ordered.first,
     });
     ref.collection('members').doc(uid).set({
       'role': 'admin',

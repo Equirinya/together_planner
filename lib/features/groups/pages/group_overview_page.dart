@@ -13,6 +13,7 @@ import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.
 import 'package:couple_planner/features/recipes/pages/public_recipes_admin_page.dart';
 import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
+import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
 
 /// Lists the groups the user belongs to: tap to make one active, open its
 /// settings, or create a new group.
@@ -96,7 +97,7 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
               child: ListTile(
                 contentPadding: EdgeInsetsDirectional.only(start: 16.0, end: 8.0),
                 leading: Icon(
-                  id == widget.selectedGroup ? Icons.check_circle : Icons.group_outlined,
+                  id == widget.selectedGroup ? Icons.check_circle : Icons.group,
                   color: id == widget.selectedGroup ? Theme.of(context).colorScheme.primary : null,
                 ),
                 title: LoadDocumentBuilder(
@@ -118,7 +119,7 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
                         ),
                       ),
                     IconButton(
-                      icon: const Icon(Icons.share_outlined),
+                      icon: const Icon(Icons.person_add_alt),
                       tooltip: 'Share invite',
                       constraints: const BoxConstraints(),
                       onPressed: () => showGroupInvitePicker(context, id),
@@ -161,6 +162,14 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
                 ),
               ),
             ),
+          ListTile(
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('AI plan'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AiPlanPage()),
+            ),
+          ),
           ListTile(
             leading: const Icon(Icons.tune),
             title: const Text('App Settings'),

@@ -8,6 +8,7 @@ import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 // ─── RecipeOpenContainer ──────────────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ class RecipeOpenContainer extends StatelessWidget {
     required this.recipeId,
     required this.groupId,
     required this.groupDoc,
-    required this.aiEnabled,
+    required this.access,
     required this.initialData,
     required this.child,
     this.onTagTap,
@@ -28,7 +29,7 @@ class RecipeOpenContainer extends StatelessWidget {
   final String recipeId;
   final String groupId;
   final DocumentReference<Map<String, dynamic>> groupDoc;
-  final bool aiEnabled;
+  final AiAccess access;
   final Map<String, dynamic>? initialData;
   final Widget child;
   final void Function(String tag)? onTagTap;
@@ -49,7 +50,7 @@ class RecipeOpenContainer extends StatelessWidget {
       openBuilder: (_, __) => RecipeDetailPage(
         groupId: groupId,
         recipeId: recipeId,
-        aiEnabled: aiEnabled,
+        access: access,
         initialData: initialData,
         onTagTap: onTagTap,
       ),

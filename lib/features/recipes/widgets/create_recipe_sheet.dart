@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// What the user chose in the create-recipe menu.
 enum CreateRecipeType { blank, photo, text }
@@ -12,11 +13,11 @@ class CreateRecipeResult {
 
 /// Create-recipe menu: a blank recipe is the default action. AI-driven
 /// creation (from a photo or from text/a link) is offered underneath as a
-/// secondary option, only when [aiEnabled].
+/// secondary option, only when the user's plan allows recipe generation.
 class CreateRecipeSheet extends StatefulWidget {
-  const CreateRecipeSheet({super.key, required this.aiEnabled});
+  const CreateRecipeSheet({super.key, required this.access});
 
-  final bool aiEnabled;
+  final AiAccess access;
 
   @override
   State<CreateRecipeSheet> createState() => _CreateRecipeSheetState();
@@ -87,7 +88,7 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
             icon: const Icon(Icons.add),
             label: const Text('Create recipe'),
           ),
-          if (widget.aiEnabled) ...[
+          if (widget.access.canGenerateRecipes) ...[
             const SizedBox(height: 24),
             Row(
               children: [

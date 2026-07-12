@@ -32,6 +32,7 @@ import 'package:couple_planner/features/settings/pages/settings_page.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/restart_widget.dart';
 import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
+import 'package:couple_planner/features/ai/ai_access.dart';
 
 // ---------------------------------------------------------------------------
 // Feature registry
@@ -198,8 +199,19 @@ class _HomePageState extends State<HomePage> {
   /// Feature key the group wants shown on launch (may be null → first feature).
   String? _groupDefaultPage;
 
-  /// Whether AI features are enabled for the current group.
-  bool _aiEnabled = false;
+  /// Per-user AI tier and monthly usage, read from the user document.
+  Map<String, dynamic>? _userDocData;
+
+  /// Whether the current group has the smart meal planner unlocked by a
+  /// Smart-or-higher member (denormalized `mealPlannerUnlocked` on the group).
+  bool _mealPlannerUnlocked = false;
+
+  /// Combined AI entitlement for the current user + selected group. Drives which
+  /// AI affordances the UI offers; every call is re-verified server-side.
+  AiAccess get _aiAccess => AiAccess.fromUserData(
+        _userDocData,
+        mealPlannerGroupUnlocked: _mealPlannerUnlocked,
+      );
 
   /// Server-set profile flag granting ingredient editing (admin tab).
   bool _canEditIngredients = false;
@@ -216,6 +228,10 @@ class _HomePageState extends State<HomePage> {
 
   /// Feature to jump to once a shortcut's target group finishes loading.
   String? _pendingShortcutFeature;
+
+  /// Signature of the shortcut list last pushed to the OS, so unchanged
+  /// lists aren't re-registered and don't disturb the launcher's ordering.
+  List<String>? _lastShortcutSignature;
 
   // ---------------------------------------------------------------------------
   // Init / dispose
@@ -314,7 +330,7 @@ class _HomePageState extends State<HomePage> {
 
   /// Creates a recipe in the active group from a shared link and opens it in
   /// generating mode while the backend fills it in. Requires a signed-in user,
-  /// a selected group, and AI enabled for that group.
+  /// a selected group, and a plan that allows recipe generation.
   Future<void> _openRecipeFromUrl(String url) async {
     if (!mounted) return;
     // Show the shimmering placeholder immediately so something appears on
@@ -326,7 +342,7 @@ class _HomePageState extends State<HomePage> {
       ));
     }
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (_selectedGroup == null || !_aiEnabled || uid == null) {
+    if (_selectedGroup == null || !_aiAccess.canGenerateRecipes || uid == null) {
       // Not ready yet (cold start): remember it and replay once the group loads.
       _pendingSharedUrl = url;
       return;
@@ -352,7 +368,7 @@ class _HomePageState extends State<HomePage> {
       builder: (_) => RecipeDetailPage(
         groupId: _selectedGroup!,
         recipeId: ref.id,
-        aiEnabled: true,
+        access: _aiAccess,
         generating: true,
         initialData: {
           'name': '',
@@ -393,8 +409,8 @@ class _HomePageState extends State<HomePage> {
   /// Creates a recipe in the active group from a shared image and opens it in
   /// generating mode while the backend fills it in, via the same
   /// `generateRecipeStaged` photo flow used when picking a photo from the
-  /// create menu. Requires a signed-in user, a selected group, and AI enabled
-  /// for that group.
+  /// create menu. Requires a signed-in user, a selected group, and a plan that
+  /// allows recipe generation.
   Future<void> _openRecipeFromImageBytes(List<int> bytes, String mimeType) async {
     if (!mounted) return;
     // Show the shimmering placeholder immediately so something appears on
@@ -406,7 +422,7 @@ class _HomePageState extends State<HomePage> {
       ));
     }
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (_selectedGroup == null || !_aiEnabled || uid == null) {
+    if (_selectedGroup == null || !_aiAccess.canGenerateRecipes || uid == null) {
       // Not ready yet (cold start): remember it and replay once the group loads.
       _pendingSharedImage = (bytes: bytes, mimeType: mimeType);
       return;
@@ -431,7 +447,7 @@ class _HomePageState extends State<HomePage> {
       builder: (_) => RecipeDetailPage(
         groupId: _selectedGroup!,
         recipeId: ref.id,
-        aiEnabled: true,
+        access: _aiAccess,
         generating: true,
         initialData: {
           'name': '',
@@ -590,6 +606,10 @@ class _HomePageState extends State<HomePage> {
       }
     }
 
+    final signature = items.map((item) => '${item.type}|${item.localizedTitle}').toList();
+    if (listEquals(signature, _lastShortcutSignature)) return;
+    _lastShortcutSignature = signature;
+
     await _quickActions.setShortcutItems(items);
   }
 
@@ -671,6 +691,7 @@ class _HomePageState extends State<HomePage> {
     } else {
       _canEditIngredients = (userDoc.data())?['editIngredients'] == true;
       _canEditPublicRecipes = (userDoc.data())?['editPublicRecipes'] == true;
+      _userDocData = userDoc.data();
 
       // If the user just signed up/in after tapping an invite link, open the
       // join screen now that they have an account.
@@ -748,6 +769,11 @@ class _HomePageState extends State<HomePage> {
       if (canEditPublic != _canEditPublicRecipes) {
         setState(() => _canEditPublicRecipes = canEditPublic);
       }
+      // Pick up a server-side tier change or updated usage counter this session.
+      final freshAccess = AiAccess.fromUserData(fresh.data(), mealPlannerGroupUnlocked: _mealPlannerUnlocked);
+      if (freshAccess != _aiAccess) {
+        setState(() => _userDocData = fresh.data());
+      }
     } catch (_) {}
   }
 
@@ -803,7 +829,7 @@ class _HomePageState extends State<HomePage> {
       // --- default startup page -----------------------------------------------
       final String? defaultPage = data['defaultPage'] as String?;
 
-      final bool aiEnabled = data['ai'] as bool? ?? false;
+      final bool mealPlannerUnlocked = data['mealPlannerUnlocked'] as bool? ?? false;
 
       // A shortcut tap targeting this group takes priority over the group's
       // own default page, but only for the tap that requested it.
@@ -814,7 +840,7 @@ class _HomePageState extends State<HomePage> {
         _groupDocReady = true;
         _enabledFeatures = enabled;
         _groupDefaultPage = defaultPage;
-        _aiEnabled = aiEnabled;
+        _mealPlannerUnlocked = mealPlannerUnlocked;
 
         // Resolve selected index: honour a pending shortcut, then the group
         // preference, else keep current feature if it's still available, else
@@ -826,13 +852,13 @@ class _HomePageState extends State<HomePage> {
       _refreshShortcuts();
 
       // Replay a recipe link that was shared before the group was ready.
-      if (_aiEnabled && _pendingSharedUrl != null) {
+      if (_aiAccess.canGenerateRecipes && _pendingSharedUrl != null) {
         final url = _pendingSharedUrl!;
         _pendingSharedUrl = null;
         _openRecipeFromUrl(url);
       }
       // Replay a recipe image that was shared before the group was ready.
-      if (_aiEnabled && _pendingSharedImage != null) {
+      if (_aiAccess.canGenerateRecipes && _pendingSharedImage != null) {
         final pending = _pendingSharedImage!;
         _pendingSharedImage = null;
         _openRecipeFromImageBytes(pending.bytes, pending.mimeType);
@@ -881,12 +907,12 @@ class _HomePageState extends State<HomePage> {
     return dests;
   }
 
-  Widget _buildPage(String featureKey, {required bool shoppingListEnabled, required bool aiEnabled}) {
+  Widget _buildPage(String featureKey, {required bool shoppingListEnabled}) {
     switch (featureKey) {
       case 'shopping_list':
         return ShoppingListPage(groupId: _selectedGroup!);
       case 'recipes':
-        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled, canEditPublicRecipes: _canEditPublicRecipes, controller: _recipePageController);
+        return RecipePage(groupId: _selectedGroup!, shoppingListEnabled: shoppingListEnabled, access: _aiAccess, canEditPublicRecipes: _canEditPublicRecipes, controller: _recipePageController);
       case 'todos':
         // Replace with your real TodosPage when ready
         return const _PlaceholderPage(label: 'To-Do\'s');
@@ -957,7 +983,7 @@ class _HomePageState extends State<HomePage> {
               children: List.generate(_enabledFeatures.length, (i) {
                 if (i == _selectedIndex) _visitedIndices.add(i);
                 return _visitedIndices.contains(i)
-                    ? _buildPage(_enabledFeatures[i], shoppingListEnabled: shoppingListEnabled, aiEnabled: _aiEnabled)
+                    ? _buildPage(_enabledFeatures[i], shoppingListEnabled: shoppingListEnabled)
                     : const SizedBox.shrink();
               }),
             )

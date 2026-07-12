@@ -108,6 +108,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
             _listRef.doc(item['id'] as String),
             (item['displayName'] ?? '').toString(),
             _lang,
+            quantity: item['quantity'],
           );
         }
       }
@@ -543,16 +544,16 @@ class _RecipeSourcesDialog extends StatelessWidget {
           future: _load(),
           builder: (context, snap) {
             if (!snap.hasData) {
-              return const Padding(
-                padding: EdgeInsets.all(24),
+              return const SizedBox(
+                height: 80,
                 child: Center(child: CircularProgressIndicator()),
               );
             }
             final sources = snap.data!;
             if (sources.isEmpty) {
-              return const Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('This item is not from any recipe.'),
+              return const SizedBox(
+                height: 80,
+                child: Center(child: Text('This item is not from any recipe.')),
               );
             }
             return ListView(
