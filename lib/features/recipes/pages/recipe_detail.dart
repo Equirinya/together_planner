@@ -41,13 +41,14 @@ import 'package:url_launcher/url_launcher.dart';
 class _RotateJob {
   final Uint8List bytes;
   final bool isPng;
-  _RotateJob(this.bytes, this.isPng);
+  final int turns;
+  _RotateJob(this.bytes, this.isPng, this.turns);
 }
 
 Uint8List _rotateImageBytes(_RotateJob job) {
   final decoded = img_lib.decodeImage(job.bytes);
   if (decoded == null) throw Exception('Could not decode image');
-  final rotated = img_lib.copyRotate(decoded, angle: 90);
+  final rotated = img_lib.copyRotate(decoded, angle: 90 * job.turns);
   return Uint8List.fromList(
       job.isPng ? img_lib.encodePng(rotated) : img_lib.encodeJpg(rotated, quality: 90));
 }
@@ -183,7 +184,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   // ── AI state ──────────────────────────────────────────────────────────────
   final Set<String> _enhancing = {};
-  final Set<String> _rotating = {};
+  // Maps a source image path to its accumulated preview rotation (quarter
+  // turns) while a rotation is in flight. Re-tapping bumps the turn count,
+  // cancels the previous upload and restarts, so the user can rotate again
+  // without waiting. [_rotateGen] tokens invalidate superseded async work and
+  // [_rotateUpload] holds the running upload so it can be cancelled.
+  final Map<String, int> _rotating = {};
+  final Map<String, int> _rotateGen = {};
+  final Map<String, UploadTask> _rotateUpload = {};
   bool _loadingIngredients = false;
   bool _loadingSteps = false;
 
@@ -745,26 +753,45 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
-  /// Rotates the image at [path] 90°. The rotation itself runs off the main
-  /// thread and, since the file is already sitting in [StorageImageCache] from
-  /// being displayed, needs no network round-trip to produce the new bytes.
-  /// Those bytes are seeded into the cache under a new storage path *before*
-  /// [images] is updated, so the tile that swaps in paints the rotated image
-  /// immediately; the upload/Firestore update/old-file delete then happen
-  /// invisibly in the background.
+  /// Rotates the image at [path] 90° clockwise. The rotation runs off the main
+  /// thread from the already-cached file (no download) and a rotated preview
+  /// shows immediately via a [RotatedBox] in the tile. Tapping again before the
+  /// upload finishes accumulates another quarter turn, cancels the pending
+  /// upload and restarts from the new angle. Once an upload completes the new
+  /// bytes (seeded into the cache) swap in and the old file/doc entry are
+  /// replaced in place.
   Future<void> _rotateImage(String path) async {
-    setState(() => _rotating.add(path));
+    final turns = ((_rotating[path] ?? 0) + 1) % 4;
+    final gen = (_rotateGen[path] ?? 0) + 1;
+    _rotateGen[path] = gen;
+    _rotateUpload.remove(path)?.cancel();
+    setState(() => _rotating[path] = turns);
+
     try {
+      // A full turn is back to the original orientation — nothing to persist.
+      if (turns == 0) return;
+
       final file = StorageImageCache.instance.resolvedFile(path, null) ??
           await StorageImageCache.instance.getFile(path);
       final bytes = await compute(
         _rotateImageBytes,
-        _RotateJob(await file.readAsBytes(), path.toLowerCase().endsWith('.png')),
+        _RotateJob(await file.readAsBytes(),
+            path.toLowerCase().endsWith('.png'), turns),
       );
+      if (_rotateGen[path] != gen) return; // superseded by a newer tap
 
       final newRef = FirebaseStorage.instance.ref().child(
           'groups/${widget.groupId}/recipes/$recipeId/${DateTime.now().millisecondsSinceEpoch}');
       await StorageImageCache.instance.seed(newRef.fullPath, bytes);
+
+      final task = newRef.putData(bytes);
+      _rotateUpload[path] = task;
+      await task;
+      if (_rotateGen[path] != gen) {
+        // A newer rotation won the race; drop the file we just uploaded.
+        newRef.delete().catchError((_) {});
+        return;
+      }
 
       final idx = images.indexOf(path);
       if (mounted) {
@@ -777,14 +804,32 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         });
       }
 
-      await newRef.putData(bytes);
-      final updated = List<String>.from(images);
-      await docRef.update({'images': updated});
+      // Replace the old path with the new one *in place* inside a transaction:
+      // arrayUnion/arrayRemove would move the rotated image to the end of the
+      // list, and a plain overwrite would race with any concurrent image edit.
+      // The transaction keeps the image at its current position and stays safe
+      // against concurrent writes.
+      await FirebaseFirestore.instance.runTransaction((tx) async {
+        final snap = await tx.get(docRef);
+        final current = List<String>.from(snap.data()?['images'] ?? const []);
+        final i = current.indexOf(path);
+        if (i == -1) {
+          current.add(newRef.fullPath);
+        } else {
+          current[i] = newRef.fullPath;
+        }
+        tx.update(docRef, {'images': current});
+      });
       await FirebaseStorage.instance.ref().child(path).delete();
     } catch (e) {
-      _snack('Could not rotate image: $e');
+      // A cancelled upload (from a re-tap) throws here — stay quiet for those.
+      if (_rotateGen[path] == gen) _snack('Could not rotate image: $e');
     } finally {
-      if (mounted) setState(() => _rotating.remove(path));
+      if (_rotateGen[path] == gen) {
+        _rotateGen.remove(path);
+        _rotateUpload.remove(path);
+        if (mounted) setState(() => _rotating.remove(path));
+      }
     }
   }
 
@@ -1715,7 +1760,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Widget _editImageTile(String imgPath) {
     final isAi = _isAiImage(imgPath);
     final enhancing = _enhancing.contains(imgPath);
-    final rotating = _rotating.contains(imgPath);
+    final rotateTurns = _rotating[imgPath];
+    final rotating = rotateTurns != null;
     final cs = Theme.of(context).colorScheme;
 
     return SizedBox(
@@ -1728,7 +1774,18 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              StorageImage(storagePath: imgPath, fit: BoxFit.cover),
+              // While the real rotation is computed and uploaded, show a
+              // rotated preview of the current image. Rotating the widget
+              // inside the tile's (already tight) box and letting the inner
+              // BoxFit.cover fill the swapped constraints yields exactly the
+              // same crop the actually-rotated file will have once it swaps in.
+              rotating
+                  ? RotatedBox(
+                      quarterTurns: rotateTurns,
+                      child: StorageImage(
+                          storagePath: imgPath, fit: BoxFit.cover),
+                    )
+                  : StorageImage(storagePath: imgPath, fit: BoxFit.cover),
 
               // Top-right: [enhance?]  [delete]
               // Both are plain IconButton — same style as the original delete
@@ -1738,7 +1795,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (widget.access.canEnhanceImage && !isAi && !enhancing)
+                    if (widget.access.canEnhanceImage && !isAi && !enhancing && !rotating)
                       IconButton(
                         icon: Icon(Icons.auto_awesome,
                             color: cs.primary),
@@ -1746,16 +1803,8 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         tooltip: 'Enhance with AI',
                       ),
                     IconButton(
-                      icon: rotating
-                          ? SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: cs.primary),
-                            )
-                          : Icon(Icons.rotate_right, color: cs.primary),
-                      onPressed:
-                          rotating ? null : () => _rotateImage(imgPath),
+                      icon: Icon(Icons.rotate_right, color: cs.primary),
+                      onPressed: () => _rotateImage(imgPath),
                       tooltip: 'Rotate',
                     ),
                     IconButton(
