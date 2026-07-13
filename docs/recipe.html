@@ -148,14 +148,19 @@
       var params = new URLSearchParams(window.location.search);
       var g = params.get('g');
       var r = params.get('r');
+      var p = params.get('p');
 
-      if (!g || !r) {
+      var appUrl;
+      if (p) {
+        appUrl = 'coupleplanner://recipe?p=' + encodeURIComponent(p);
+      } else if (g && r) {
+        appUrl = 'coupleplanner://recipe?g=' + encodeURIComponent(g) + '&r=' + encodeURIComponent(r);
+      } else {
         document.getElementById('status').textContent = 'This recipe link is incomplete.';
         document.getElementById('openApp').style.display = 'none';
         return;
       }
 
-      var appUrl = 'coupleplanner://recipe?g=' + encodeURIComponent(g) + '&r=' + encodeURIComponent(r);
       document.getElementById('openApp').setAttribute('href', appUrl);
 
       // Try to open the app automatically.

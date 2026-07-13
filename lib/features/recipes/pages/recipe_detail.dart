@@ -964,6 +964,25 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
+  /// Opens the OS share sheet with a link to this public recipe, letting anyone
+  /// with the app preview and save it into their own recipes. Public recipes are
+  /// already readable, so no document flag is written.
+  Future<void> _sharePublicRecipe() async {
+    final id = _publicId;
+    if (id == null || id.isEmpty) return;
+    final link = buildPublicRecipeShareLink(id);
+    final name = (recipeData?['name'] ?? '').toString().trim();
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(ShareParams(
+      text: name.isEmpty
+          ? 'Check out this recipe on Together Planner: $link'
+          : 'Check out "$name" on Together Planner: $link',
+      subject: 'Together Planner recipe',
+      sharePositionOrigin:
+          box != null ? box.localToGlobal(Offset.zero) & box.size : null,
+    ));
+  }
+
   /// Explains that a recipe viewer can be invited to the whole group instead of
   /// sharing recipes one at a time, and offers to send a viewer invite. Stays
   /// hidden for a long cooldown once dismissed.
@@ -1052,6 +1071,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               )
             : null,
         actions: [
+          if (_isPublicPreview)
+            IconButton(
+              icon: const Icon(Icons.ios_share),
+              tooltip: 'Share recipe',
+              onPressed: _sharePublicRecipe,
+            ),
           if (_isPublicPreview && widget.canEditPublicRecipes)
             IconButton(
               icon: const Icon(Icons.delete),

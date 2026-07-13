@@ -889,7 +889,9 @@ class _RecipePageState extends State<RecipePage>
                   builder: (context, candidateData, _) {
                     final Color color = candidateData.isNotEmpty
                         ? colorScheme.primaryContainer
-                        : colorScheme.surfaceContainerLow;
+                        : colorScheme.brightness == Brightness.dark
+                            ? colorScheme.surfaceContainerLow
+                            : colorScheme.surfaceContainer;
                     return Container(
                       decoration: BoxDecoration(
                         color: color,

@@ -95,14 +95,20 @@ class RecipeCard extends StatelessWidget {
     final primaryColor = HSVColor.fromColor(Theme.of(context).colorScheme.primary);
     final primaryContainerColor =
     HSVColor.fromColor(Theme.of(context).colorScheme.primaryContainer);
+    final bool isDark = Theme.of(context).colorScheme.brightness == Brightness.dark;
     final color = HSVColor.fromAHSV(
       1.0,
       (recipeId.hashCode % 360).toDouble(),
       primaryColor.saturation,
       primaryColor.value,
     );
-    final containerColor =
-    color.withValue((primaryContainerColor.value + primaryColor.value) / 2);
+    final double midValue = (primaryContainerColor.value + primaryColor.value) / 2;
+    // Dark mode keeps the mid-value tonal fill with white content. Light mode
+    // uses a soft, bright pastel of the same hue instead of the loud fill, with
+    // dark hue-matched content (see _content) so it stays clean and readable.
+    final containerColor = isDark
+        ? color.withValue(midValue)
+        : color.withSaturation(color.saturation * 0.35).withValue(0.95);
 
     return ConstrainedBox(
       constraints: BoxConstraints(
@@ -154,6 +160,11 @@ class RecipeCard extends StatelessWidget {
         final recipeData =
             localizeRecipeData(rawData, LanguageService.instance.code.value);
         final images = List<String>.from(recipeData['images'] ?? []);
+        // Dark mode keeps white text over a dark scrim; light mode uses one
+        // consistent dark title over a light scrim (see below) instead.
+        final bool isDark = Theme.of(context).colorScheme.brightness == Brightness.dark;
+        final Color titleColor =
+            isDark ? Colors.white : Theme.of(context).colorScheme.onSurface;
         return LayoutBuilder(
           builder: (context, constraints) {
             final double sd =
@@ -161,6 +172,41 @@ class RecipeCard extends StatelessWidget {
                 ? constraints.maxWidth
                 : constraints.maxHeight;
             final dpr = MediaQuery.of(context).devicePixelRatio;
+            final String title = (recipeData['name'] ?? 'Unnamed Recipe').toString();
+            final TextStyle? titleStyle = Theme.of(context)
+                .textTheme
+                .titleMedium
+                ?.copyWith(color: titleColor, height: 1.2);
+            // A light scrim sized to the title itself (not the tile): the text
+            // block sits on solid white with a soft fade above it, and the fade
+            // is taller for a two-line title so its top line stays legible.
+            Widget lightImageScrim() {
+              final tp = TextPainter(
+                text: TextSpan(text: title, style: titleStyle),
+                maxLines: 2,
+                textDirection: TextDirection.ltr,
+              )..layout(maxWidth: constraints.maxWidth - 12);
+              final bool twoLines = tp.computeLineMetrics().length >= 2;
+              final double fade = twoLines ? 32 : 22;
+              // 60% plateau behind the text, a few pixels shorter than it, then
+              // a smooth fade-out above.
+              final double plateau = (tp.height - 6).clamp(0.0, double.infinity);
+              final double scrimHeight = plateau + fade;
+              return Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  height: scrimHeight,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: const [Color(0x00FFFFFF), Color(0x99FFFFFF)],
+                      stops: [0.0, (fade / scrimHeight).clamp(0.0, 1.0)],
+                    ),
+                  ),
+                ),
+              );
+            }
             return Stack(
               children: [
                 if (images.isNotEmpty) ...[
@@ -172,7 +218,10 @@ class RecipeCard extends StatelessWidget {
                       (constraints.maxHeight * dpr).toInt(),
                     ),
                   ),
-                  Container(color: Colors.black26),
+                  if (isDark)
+                    Container(color: Colors.black26)
+                  else
+                    lightImageScrim(),
                 ] else
                   Align(
                     alignment: const Alignment(0, -0.3),
@@ -187,12 +236,8 @@ class RecipeCard extends StatelessWidget {
                   child: Padding(
                     padding: const EdgeInsets.symmetric(vertical:4, horizontal: 6),
                     child: Text(
-                      recipeData['name'] ?? 'Unnamed Recipe',
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleMedium
-                          ?.copyWith(
-                          color: Colors.white, height: 1.2),
+                      title,
+                      style: titleStyle,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),

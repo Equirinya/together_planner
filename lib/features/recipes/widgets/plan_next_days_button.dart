@@ -55,10 +55,15 @@ class _PlanNextDaysButtonState extends State<PlanNextDaysButton> {
     // Gentle, on-brand hues for the mesh: the theme's key colours pulled just
     // partway off the surface, so the card shifts subtly instead of clashing
     // with the rest of the recipe grid.
+    final bool isDark = colorScheme.brightness == Brightness.dark;
+    // The pale light-mode mesh can't carry white text, so foreground follows
+    // the brightness: white on the deep dark-mode mesh, a dark on-brand tone
+    // on the pale light-mode one.
+    final Color meshForeground = isDark ? Colors.white : colorScheme.onPrimaryContainer;
     final meshColors = [
       Color.lerp(colorScheme.surface, colorScheme.primary, 0.35)!,
       Color.lerp(colorScheme.surface, colorScheme.tertiary, 0.4)!,
-      Color.lerp(colorScheme.surface, colorScheme.secondary, 0.35)!,
+      Color.lerp(colorScheme.surface, colorScheme.tertiaryContainer, 0.6)!,
       Color.lerp(colorScheme.surface, colorScheme.primaryContainer, 0.75)!,
     ];
 
@@ -109,7 +114,7 @@ class _PlanNextDaysButtonState extends State<PlanNextDaysButton> {
                             colors: meshColors,
                             options: AnimatedMeshGradientOptions(speed: 0.15),
                           ),
-                          Container(color: Colors.black.withOpacity(0.1)),
+                          if (isDark) Container(color: Colors.black.withOpacity(0.1)),
                         ],
                       ),
                     ),
@@ -118,7 +123,7 @@ class _PlanNextDaysButtonState extends State<PlanNextDaysButton> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.auto_awesome, color: Colors.white),
+                          Icon(Icons.auto_awesome, color: meshForeground),
                           const SizedBox(height: 4),
                           Text(
                             'Smart Meal\nPlanner',
@@ -126,7 +131,7 @@ class _PlanNextDaysButtonState extends State<PlanNextDaysButton> {
                             style: Theme.of(context)
                                 .textTheme
                                 .labelLarge
-                                ?.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
+                                ?.copyWith(color: meshForeground, fontWeight: FontWeight.w600),
                             maxLines: 2,
                           ),
                         ],
