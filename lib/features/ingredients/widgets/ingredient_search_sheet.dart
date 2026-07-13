@@ -362,7 +362,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   Future<void> _afterUse(
       DocumentReference<Map<String, dynamic>> ref, Suggestion s) async {
     if (s.ingredientId == kPendingIngredient) {
-      await resolvePendingItem(ref, s.displayName, _lang, quantity: s.quantityMap);
+      await resolvePendingItem(ref, s.displayName, _lang);
       return;
     }
     final id = await IngredientIndex.instance

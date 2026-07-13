@@ -33,6 +33,13 @@
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="coupleplanner" android:host="join"/>
             </intent-filter>
+            <!-- Shared recipe deep links: coupleplanner://recipe?g=..&r=.. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="coupleplanner" android:host="recipe"/>
+            </intent-filter>
             <!-- Receive a shared recipe link (text) from another app's share sheet -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>

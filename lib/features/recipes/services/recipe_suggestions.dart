@@ -332,10 +332,20 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
   String? extractUrl(String s) => _urlRe.firstMatch(s)?.group(0);
 
+  /// Whether AI name/url idea tiles may be generated or shown at all: the
+  /// user's plan must include search ideas, and they must still have
+  /// generation quota left. Dragging/tapping such a tile triggers a real
+  /// generation (see [RecipeActionsMixin]), which creates the recipe doc
+  /// before the server can even check quota — so an idea offered with no
+  /// quota left would reliably fail and leave that empty doc orphaned. Public
+  /// recipe matches don't call this: adopting them doesn't spend quota.
+  bool get _canOfferAiIdeas =>
+      widget.access.canUseSearchIdeas && widget.access.hasGenerationQuota;
+
   /// Called on every keystroke (in addition to [generateSearchedRecipes]).
   /// Public matches use a short debounce (300 ms) and are shown regardless of
-  /// the AI tier; AI name ideas use a 1 s debounce and only when the user's
-  /// plan includes search ideas (see AiAccess.canUseSearchIdeas).
+  /// the AI tier; AI name ideas use a 1 s debounce and only when
+  /// [_canOfferAiIdeas].
   /// Cached results for the current query are shown immediately so suggestions
   /// persist while the user edits. Lists are only cleared when query is empty.
   /// `#tag` tokens are pulled out as exact tag filters (applied to public
@@ -359,7 +369,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     }
 
     // URL tile: immediate, AI only. Not applicable while filtering by tag.
-    if (widget.access.canUseSearchIdeas && tags.isEmpty) {
+    if (_canOfferAiIdeas && tags.isEmpty) {
       final url = extractUrl(q);
       if (url != null) {
         setState(() {
@@ -392,7 +402,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       _publicCache[qKey] = results;
       setState(() => publicSuggestions = results);
 
-      if (widget.access.canUseSearchIdeas) {
+      if (_canOfferAiIdeas) {
         final cached = await _fetchCachedIdeas(q, tags);
         if (!mounted || seq != _aiSeq) return;
         if (cached.isNotEmpty) {
@@ -404,7 +414,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
 
     // AI generation: 1 s debounce, only when the idea corpus didn't already
     // cover the query. Loading clears when this settles.
-    if (widget.access.canUseSearchIdeas) {
+    if (_canOfferAiIdeas) {
       aiTimer = Timer(const Duration(seconds: 1), () async {
         if (!mounted || seq != _aiSeq) return;
         final shownTiles = searchedRecipes.length + publicSuggestions.length + suggestions.length;

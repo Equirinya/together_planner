@@ -604,7 +604,7 @@ class _RecipePageState extends State<RecipePage>
   /// fixed snapshot, so a just-adopted tile picks up its image once it lands.
   Widget _privateRecipeTile(
       DocumentSnapshot<Map<String, dynamic>> e, int crossAxisCount,
-      {bool streamCard = false}) {
+      {bool streamCard = false, VoidCallback? onMissing}) {
     final data = e.data() ?? const <String, dynamic>{};
     return LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
       key: ValueKey(e.id),
@@ -620,7 +620,7 @@ class _RecipePageState extends State<RecipePage>
         access: widget.access,
         initialData: data,
         onTagTap: onDetailTagTap,
-        child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: streamCard ? null : data, crossAxisCount: crossAxisCount),
+        child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: streamCard ? null : data, crossAxisCount: crossAxisCount, onMissing: streamCard ? onMissing : null),
       ),
     );
   }
@@ -633,7 +633,14 @@ class _RecipePageState extends State<RecipePage>
     final key = suggestionKey(s);
     if (adoptingSuggestions.containsKey(key)) {
       final doc = adoptingSuggestions[key];
-      if (doc != null) return _privateRecipeTile(doc, crossAxisCount, streamCard: true);
+      if (doc != null) {
+        return _privateRecipeTile(doc, crossAxisCount, streamCard: true,
+            onMissing: () {
+          if (mounted && adoptingSuggestions.containsKey(key)) {
+            setState(() => adoptingSuggestions.remove(key));
+          }
+        });
+      }
       // Loading: the drop was accepted but the recipe isn't ready to drag yet.
       // A dimmed card with a large centred spinner, matching the card's rounded
       // shape, so it reads clearly as "saving" in place.
@@ -752,7 +759,9 @@ class _RecipePageState extends State<RecipePage>
 
     final showEmptyRecipesState =
         recipes.isEmpty && searchQuery.trim().isEmpty && _recipesLoaded;
-    final showShareTip = recipes.isNotEmpty && searchQuery.trim().isEmpty;
+    final showShareTip = recipes.isNotEmpty &&
+        searchQuery.trim().isEmpty &&
+        widget.access.canGenerateRecipes;
     // Space reserved at the end of the scrollable content so the last row
     // (grid row, or the share tip when it's showing) clears the floating
     // search bar/+ button instead of sitting underneath it.

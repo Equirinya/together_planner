@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:image/image.dart' as img_lib;
 
 import 'package:couple_planner/features/ingredients/models/ingredients.dart';
 import 'package:couple_planner/features/ingredients/models/categories.dart' show categoryRank;
@@ -13,10 +16,14 @@ import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
 import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
+import 'package:couple_planner/features/recipes/services/recipe_share_education.dart';
+import 'package:couple_planner/features/groups/invite_links.dart';
+import 'package:couple_planner/features/groups/pages/group_settings_page.dart' show shareRecipeViewerInvite;
 import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
 import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/ai/ai_errors.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -24,7 +31,26 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+// =============================================================================
+// Image rotation (runs in a background isolate via compute)
+// =============================================================================
+
+class _RotateJob {
+  final Uint8List bytes;
+  final bool isPng;
+  _RotateJob(this.bytes, this.isPng);
+}
+
+Uint8List _rotateImageBytes(_RotateJob job) {
+  final decoded = img_lib.decodeImage(job.bytes);
+  if (decoded == null) throw Exception('Could not decode image');
+  final rotated = img_lib.copyRotate(decoded, angle: 90);
+  return Uint8List.fromList(
+      job.isPng ? img_lib.encodePng(rotated) : img_lib.encodeJpg(rotated, quality: 90));
+}
 
 // =============================================================================
 // Page
@@ -157,6 +183,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   // ── AI state ──────────────────────────────────────────────────────────────
   final Set<String> _enhancing = {};
+  final Set<String> _rotating = {};
   bool _loadingIngredients = false;
   bool _loadingSteps = false;
 
@@ -544,7 +571,6 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             ingredientsRef.doc(item['id'] as String),
             (item['displayName'] ?? '').toString(),
             lang,
-            quantity: item['quantity'],
           );
         }
       }
@@ -719,6 +745,49 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     }
   }
 
+  /// Rotates the image at [path] 90°. The rotation itself runs off the main
+  /// thread and, since the file is already sitting in [StorageImageCache] from
+  /// being displayed, needs no network round-trip to produce the new bytes.
+  /// Those bytes are seeded into the cache under a new storage path *before*
+  /// [images] is updated, so the tile that swaps in paints the rotated image
+  /// immediately; the upload/Firestore update/old-file delete then happen
+  /// invisibly in the background.
+  Future<void> _rotateImage(String path) async {
+    setState(() => _rotating.add(path));
+    try {
+      final file = StorageImageCache.instance.resolvedFile(path, null) ??
+          await StorageImageCache.instance.getFile(path);
+      final bytes = await compute(
+        _rotateImageBytes,
+        _RotateJob(await file.readAsBytes(), path.toLowerCase().endsWith('.png')),
+      );
+
+      final newRef = FirebaseStorage.instance.ref().child(
+          'groups/${widget.groupId}/recipes/$recipeId/${DateTime.now().millisecondsSinceEpoch}');
+      await StorageImageCache.instance.seed(newRef.fullPath, bytes);
+
+      final idx = images.indexOf(path);
+      if (mounted) {
+        setState(() {
+          if (idx == -1) {
+            images.add(newRef.fullPath);
+          } else {
+            images[idx] = newRef.fullPath;
+          }
+        });
+      }
+
+      await newRef.putData(bytes);
+      final updated = List<String>.from(images);
+      await docRef.update({'images': updated});
+      await FirebaseStorage.instance.ref().child(path).delete();
+    } catch (e) {
+      _snack('Could not rotate image: $e');
+    } finally {
+      if (mounted) setState(() => _rotating.remove(path));
+    }
+  }
+
   Future<void> _generateImageWithAI() async {
     setState(() => _generatingImage = true);
     try {
@@ -815,6 +884,74 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ── sharing ────────────────────────────────────────────────────────────────
+
+  /// Flags the recipe as shared (so a non-member can read it via the link),
+  /// then opens the OS share sheet with a link that lets someone from another
+  /// group preview and save this single recipe. Sharing several recipes in
+  /// quick succession surfaces a hint about inviting a recipe viewer instead.
+  Future<void> _shareRecipe() async {
+    final id = recipeId;
+    if (id.isEmpty) return;
+    try {
+      if (recipeData?['shared'] != true) {
+        await docRef.update({'shared': true});
+      }
+      final link = buildRecipeShareLink(widget.groupId, id);
+      final name = (recipeData?['name'] ?? '').toString().trim();
+      final box = context.findRenderObject() as RenderBox?;
+      await SharePlus.instance.share(ShareParams(
+        text: name.isEmpty
+            ? 'Check out this recipe on Together Planner: $link'
+            : 'Check out "$name" on Together Planner: $link',
+        subject: 'Together Planner recipe',
+        sharePositionOrigin:
+            box != null ? box.localToGlobal(Offset.zero) & box.size : null,
+      ));
+    } catch (_) {
+      _snack('Could not share this recipe.');
+      return;
+    }
+    if (await RecipeShareEducation.recordShareAndShouldEducate() && mounted) {
+      _showRecipeViewerEducation();
+    }
+  }
+
+  /// Explains that a recipe viewer can be invited to the whole group instead of
+  /// sharing recipes one at a time, and offers to send a viewer invite. Stays
+  /// hidden for a long cooldown once dismissed.
+  void _showRecipeViewerEducation() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.menu_book_outlined),
+        title: const Text('Share all your recipes at once'),
+        content: const Text(
+          'Sharing lots of recipes one by one? You can invite someone as a '
+          'recipe viewer instead — they get to browse every recipe in this '
+          'group and save any of them into their own recipes.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              RecipeShareEducation.markDismissed();
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () {
+              RecipeShareEducation.markDismissed();
+              Navigator.of(ctx).pop();
+              shareRecipeViewerInvite(context, widget.groupId);
+            },
+            child: const Text('Invite a viewer'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ── build ─────────────────────────────────────────────────────────────────
@@ -947,6 +1084,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               ),
             ),
           ),
+          if (!edit && !_isGenerating && !_isPreview)
+            IconButton(
+              icon: const Icon(Icons.ios_share),
+              tooltip: 'Share recipe',
+              onPressed: _shareRecipe,
+            ),
           if (!edit && !_isGenerating && !_isPreview)
             IconButton(
               icon: const Icon(Icons.edit),
@@ -1572,6 +1715,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   Widget _editImageTile(String imgPath) {
     final isAi = _isAiImage(imgPath);
     final enhancing = _enhancing.contains(imgPath);
+    final rotating = _rotating.contains(imgPath);
     final cs = Theme.of(context).colorScheme;
 
     return SizedBox(
@@ -1602,8 +1746,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                         tooltip: 'Enhance with AI',
                       ),
                     IconButton(
+                      icon: rotating
+                          ? SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2, color: cs.primary),
+                            )
+                          : Icon(Icons.rotate_right, color: cs.primary),
+                      onPressed:
+                          rotating ? null : () => _rotateImage(imgPath),
+                      tooltip: 'Rotate',
+                    ),
+                    IconButton(
                       icon: Icon(Icons.cancel, color: cs.error),
-                      onPressed: enhancing
+                      onPressed: enhancing || rotating
                           ? null
                           : () {
                         docRef.update({

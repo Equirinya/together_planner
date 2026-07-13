@@ -108,7 +108,6 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
             _listRef.doc(item['id'] as String),
             (item['displayName'] ?? '').toString(),
             _lang,
-            quantity: item['quantity'],
           );
         }
       }

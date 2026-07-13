@@ -167,6 +167,10 @@ class _HomePageState extends State<HomePage> {
   /// held in memory and replayed once the group document loads.
   ({List<int> bytes, String mimeType})? _pendingSharedImage;
 
+  /// A single-recipe share link tapped before a group was ready (e.g. cold
+  /// start), held in memory and replayed once the group document loads.
+  ({String groupId, String recipeId})? _pendingSharedRecipe;
+
   /// Whether the instant shimmering placeholder for a pending shared link is
   /// currently on screen, awaiting the real [RecipeDetailPage] to replace it.
   bool _shareSkeletonShown = false;
@@ -218,6 +222,9 @@ class _HomePageState extends State<HomePage> {
 
   /// Server-set profile flag granting public recipe deletion.
   bool _canEditPublicRecipes = false;
+
+  /// Server-set profile flag granting access to the AI usage overview page.
+  bool _viewAIUsage = false;
 
   // ── home screen shortcuts (Android App Shortcuts / iOS Quick Actions) ──────
   final QuickActions _quickActions = const QuickActions();
@@ -333,6 +340,12 @@ class _HomePageState extends State<HomePage> {
   /// a selected group, and a plan that allows recipe generation.
   Future<void> _openRecipeFromUrl(String url) async {
     if (!mounted) return;
+    // A shared single-recipe link opens the preview flow, not the URL importer.
+    final sharedRecipe = parseRecipeShareUri(Uri.parse(url));
+    if (sharedRecipe != null) {
+      _openSharedRecipe(sharedRecipe.groupId, sharedRecipe.recipeId);
+      return;
+    }
     // Show the shimmering placeholder immediately so something appears on
     // screen the moment the link arrives, even before we know the doc id.
     if (!_shareSkeletonShown) {
@@ -474,6 +487,13 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _handleUri(Uri uri) {
+    // A single-recipe share link opens a read-only preview with a "save in own
+    // recipes" button, before the invite/import fallbacks below.
+    final sharedRecipe = parseRecipeShareUri(uri);
+    if (sharedRecipe != null) {
+      _openSharedRecipe(sharedRecipe.groupId, sharedRecipe.recipeId);
+      return;
+    }
     final invite = parseInviteUri(uri);
     if (invite == null) {
       // Not an invite — a shared/opened http(s) link becomes a recipe.
@@ -492,6 +512,35 @@ class _HomePageState extends State<HomePage> {
     } else {
       _openJoinPage(invite);
     }
+  }
+
+  /// Opens a single shared recipe. If the recipe belongs to the active group it
+  /// opens normally; otherwise it opens as a read-only preview offering to save
+  /// it into the active group's own recipes. Held until a group is ready if
+  /// tapped during a cold start.
+  void _openSharedRecipe(String sourceGroupId, String recipeId) {
+    if (!mounted) return;
+    if (_selectedGroup == null || !_groupDocReady) {
+      _pendingSharedRecipe = (groupId: sourceGroupId, recipeId: recipeId);
+      return;
+    }
+    if (sourceGroupId == _selectedGroup) {
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => RecipeDetailPage(
+          groupId: sourceGroupId,
+          recipeId: recipeId,
+          access: _aiAccess,
+        ),
+      ));
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => RecipeDetailPage(
+        groupId: _selectedGroup!,
+        recipeId: recipeId,
+        sharedSourceGroupId: sourceGroupId,
+      ),
+    ));
   }
 
   void _openJoinPage(({String groupId, String inviteId}) invite) {
@@ -636,6 +685,7 @@ class _HomePageState extends State<HomePage> {
         onSelect: _selectGroup,
         canEditIngredients: _canEditIngredients,
         canEditPublicRecipes: _canEditPublicRecipes,
+        viewAIUsage: _viewAIUsage,
       ),
     ));
   }
@@ -691,6 +741,7 @@ class _HomePageState extends State<HomePage> {
     } else {
       _canEditIngredients = (userDoc.data())?['editIngredients'] == true;
       _canEditPublicRecipes = (userDoc.data())?['editPublicRecipes'] == true;
+      _viewAIUsage = (userDoc.data())?['viewAIUsage'] == true;
       _userDocData = userDoc.data();
 
       // If the user just signed up/in after tapping an invite link, open the
@@ -768,6 +819,10 @@ class _HomePageState extends State<HomePage> {
       final canEditPublic = fresh.data()?['editPublicRecipes'] == true;
       if (canEditPublic != _canEditPublicRecipes) {
         setState(() => _canEditPublicRecipes = canEditPublic);
+      }
+      final viewAIUsage = fresh.data()?['viewAIUsage'] == true;
+      if (viewAIUsage != _viewAIUsage) {
+        setState(() => _viewAIUsage = viewAIUsage);
       }
       // Pick up a server-side tier change or updated usage counter this session.
       final freshAccess = AiAccess.fromUserData(fresh.data(), mealPlannerGroupUnlocked: _mealPlannerUnlocked);
@@ -862,6 +917,12 @@ class _HomePageState extends State<HomePage> {
         final pending = _pendingSharedImage!;
         _pendingSharedImage = null;
         _openRecipeFromImageBytes(pending.bytes, pending.mimeType);
+      }
+      // Replay a shared recipe link tapped before a group was ready.
+      if (_pendingSharedRecipe != null) {
+        final pending = _pendingSharedRecipe!;
+        _pendingSharedRecipe = null;
+        _openSharedRecipe(pending.groupId, pending.recipeId);
       }
     });
   }
