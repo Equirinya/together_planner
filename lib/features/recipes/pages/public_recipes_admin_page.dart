@@ -183,7 +183,7 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                   if (tags.isNotEmpty) tags.join(', '),
                 ];
                 final isRegenerating = _regenerating.contains(d.id);
-                final isRegeneratingTags = _regeneratingTags.contains(d.id);
+                // final isRegeneratingTags = _regeneratingTags.contains(d.id);
 
                 return ListTile(
                   leading: ClipRRect(
@@ -214,17 +214,17 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       _ResolveIngredientsButton(recipeId: d.id, functions: _functions),
-                      IconButton(
-                        icon: isRegeneratingTags
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.local_dining),
-                        tooltip: 'Regenerate dietary tags',
-                        onPressed: isRegeneratingTags ? null : () => _regenerateTags(d.id),
-                      ),
+                      // IconButton(
+                      //   icon: isRegeneratingTags
+                      //       ? const SizedBox(
+                      //           width: 20,
+                      //           height: 20,
+                      //           child: CircularProgressIndicator(strokeWidth: 2),
+                      //         )
+                      //       : const Icon(Icons.local_dining),
+                      //   tooltip: 'Regenerate dietary tags',
+                      //   onPressed: isRegeneratingTags ? null : () => _regenerateTags(d.id),
+                      // ),
                       if (!(image?.isNotEmpty ?? false))
                         IconButton(
                           icon: isRegenerating

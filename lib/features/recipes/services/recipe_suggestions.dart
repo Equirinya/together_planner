@@ -86,6 +86,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       List<QueryDocumentSnapshot<Map<String, dynamic>>> list) {
     final now = DateTime.now();
     final newCutoff = now.subtract(_newRecipeWindow);
+    final todayStart = DateTime(now.year, now.month, now.day);
     final scores = <String, double>{};
     for (final d in list) {
       final cached = scoreCache[d.id];
@@ -125,6 +126,14 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     }
     DateTime? createdOf(QueryDocumentSnapshot<Map<String, dynamic>> d) =>
         (d.data()['createdAt'] as Timestamp?)?.toDate();
+    // A recipe only counts as "cooked" (dropping it from the pinned new-recipe
+    // group) once a cooking-plan day for it is fully in the past — planning it
+    // for today or a future day keeps it pinned at the start.
+    bool cooked(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+      final lastUsed =
+          lastUsedDates[d.id] ?? (d.data()['lastUsedAt'] as Timestamp?)?.toDate();
+      return lastUsed != null && lastUsed.isBefore(todayStart);
+    }
 
     final ordered = [...list];
     ordered.sort((a, b) {
@@ -134,8 +143,8 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       // pinned at the top for the rest of the new-recipe window.
       final ca = createdOf(a);
       final cb = createdOf(b);
-      final aCooked = (lastUsedDates[a.id] ?? (a.data()['lastUsedAt'] as Timestamp?)?.toDate()) != null;
-      final bCooked = (lastUsedDates[b.id] ?? (b.data()['lastUsedAt'] as Timestamp?)?.toDate()) != null;
+      final aCooked = cooked(a);
+      final bCooked = cooked(b);
       final na = ca != null && ca.isAfter(newCutoff) && !aCooked;
       final nb = cb != null && cb.isAfter(newCutoff) && !bCooked;
       if (na != nb) return na ? -1 : 1;
