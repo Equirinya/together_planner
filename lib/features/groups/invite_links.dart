@@ -22,6 +22,26 @@ String buildInviteLink(String groupId, String inviteId) => '$kInviteLinkBase?g=$
   return null;
 }
 
+/// HTTPS landing page (GitHub Pages, see docs/recipe.html) that bounces into the
+/// app via the coupleplanner://recipe scheme, letting someone from another group
+/// preview a single shared recipe and save it into their own recipes.
+const String kRecipeLinkBase = 'https://equirinya.github.io/together_planner/recipe.html';
+
+String buildRecipeShareLink(String groupId, String recipeId) => '$kRecipeLinkBase?g=$groupId&r=$recipeId';
+
+/// Extracts the group/recipe ids from a single-recipe share link, accepting both
+/// the https landing URL and the coupleplanner://recipe scheme. Returns null if
+/// the URI is not a (well-formed) recipe share link.
+({String groupId, String recipeId})? parseRecipeShareUri(Uri uri) {
+  final g = uri.queryParameters['g'];
+  final r = uri.queryParameters['r'];
+  final looksLikeRecipe = uri.host == 'recipe' || uri.pathSegments.contains('recipe') || uri.path.contains('recipe');
+  if (looksLikeRecipe && g != null && g.isNotEmpty && r != null && r.isNotEmpty) {
+    return (groupId: g, recipeId: r);
+  }
+  return null;
+}
+
 FirebaseFunctions get _functions => FirebaseFunctions.instanceFor(region: kFunctionsRegion);
 
 /// Returns {name, enabledFeatures, members:[{username, role}], alreadyMember}.

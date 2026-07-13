@@ -48,6 +48,38 @@ Future<void> showGroupInvitePicker(BuildContext context, String groupId) async {
   }
 }
 
+/// Creates and shares a recipe-viewer invite link directly, skipping the
+/// invite-type picker. Used by the recipe-viewer education hint so the user can
+/// invite a viewer in one tap instead of sharing single recipes repeatedly.
+Future<void> shareRecipeViewerInvite(BuildContext context, String groupId) async {
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  if (uid == null) return;
+  try {
+    final db = FirebaseFirestore.instance;
+    final ref = db.collection('groups').doc(groupId).collection('invites').doc();
+    await ref.set({
+      'createdAt': FieldValue.serverTimestamp(),
+      'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 14))),
+      'createdBy': uid,
+      'type': 'recipe_viewer',
+    });
+    final link = invites.buildInviteLink(groupId, ref.id);
+    if (!context.mounted) return;
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(ShareParams(
+      text: 'View my recipes on Together Planner: $link',
+      subject: 'Together Planner invite',
+      sharePositionOrigin: box != null ? box.localToGlobal(Offset.zero) & box.size : null,
+    ));
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not create the invite link.')),
+      );
+    }
+  }
+}
+
 class _InviteTypeDialog extends StatelessWidget {
   const _InviteTypeDialog();
 

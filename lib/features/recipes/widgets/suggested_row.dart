@@ -20,7 +20,12 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   // ── "Suggested for you" row (shown when not searching) ─────────────────────
   List<RecipeSuggestion> suggestedPool = [];
   Map<String, int> _dismissed = {};
+  // Calendar day each recipe was last dismissed on, so a recipe dismissed
+  // today can be hidden from the row until the next daily reshuffle while the
+  // cumulative count in [_dismissed] still deprioritizes it on later days.
+  Map<String, String> _dismissedDay = {};
   static const String _kDismissedKey = 'dismissed_public_recipes';
+  static const String _kDismissedDayKey = 'dismissed_public_recipes_day';
   // Calendar day the suggested row was last loaded for (see loadSuggestedRow's
   // date-seeded pool). Lets refreshSuggestedRowIfStale detect a session left
   // open across midnight, when the row would otherwise keep showing
@@ -35,6 +40,11 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
         final map = jsonDecode(raw) as Map<String, dynamic>;
         _dismissed = map.map((k, v) => MapEntry(k, (v as num).toInt()));
       }
+      final rawDay = prefs.getString(_kDismissedDayKey);
+      if (rawDay != null) {
+        final map = jsonDecode(rawDay) as Map<String, dynamic>;
+        _dismissedDay = map.map((k, v) => MapEntry(k, v.toString()));
+      }
     } catch (_) {}
   }
 
@@ -42,6 +52,7 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kDismissedKey, jsonEncode(_dismissed));
+      await prefs.setString(_kDismissedDayKey, jsonEncode(_dismissedDay));
     } catch (_) {}
   }
 
@@ -124,9 +135,11 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
       final lang = LanguageService.instance.code.value;
       final prefs = dietary.map((e) => e.toLowerCase()).toSet();
       final seen = <String>{};
-      final scored = <({double key, bool seasonal, RecipeSuggestion s})>[];
+      final scored = <({double key, bool seasonal, int dismissed, RecipeSuggestion s})>[];
       for (final d in docs) {
         if (!seen.add(d.id)) continue;
+        // Recipes dismissed today stay hidden until the next daily reshuffle.
+        if (_dismissedDay[d.id] == _suggestedRowDayKey) continue;
         final data = d.data();
         final recipeDietary = List<String>.from(data['dietary'] ?? [])
             .map((e) => e.toLowerCase())
@@ -153,7 +166,7 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
         final dismissed = _dismissed[d.id] ?? 0;
         final weight = (1 + 2 * matches) *
             (1 + math.log(1 + popularity)) /
-            (1 + dismissed);
+            math.pow(4, dismissed);
         // Deterministic per-recipe uniform in (0,1], identical for every group
         // member and reshuffled each day via the group+date seed.
         final r = (_stableHash('$seed-${d.id}') % 100000 + 1) / 100001.0;
@@ -163,6 +176,7 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
         scored.add((
           key: key,
           seasonal: suitableMonths is List && suitableMonths.contains(now.month),
+          dismissed: dismissed,
           s: RecipeSuggestion(
             kind: SuggestionKind.public,
             title: title,
@@ -175,13 +189,25 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
       // Interleave in-season and any-time recipes so roughly half of the shown
       // suggestions fit the current season, while each stream keeps the ranking
       // above. When one stream runs out the rest are simply appended.
-      final seasonal = [for (final e in scored) if (e.seasonal) e.s];
-      final anytime = [for (final e in scored) if (!e.seasonal) e.s];
-      final ordered = <RecipeSuggestion>[];
-      for (var i = 0; i < seasonal.length || i < anytime.length; i++) {
-        if (i < seasonal.length) ordered.add(seasonal[i]);
-        if (i < anytime.length) ordered.add(anytime[i]);
+      List<RecipeSuggestion> interleaveSeasonal(
+          Iterable<({double key, bool seasonal, int dismissed, RecipeSuggestion s})> entries) {
+        final seasonal = [for (final e in entries) if (e.seasonal) e.s];
+        final anytime = [for (final e in entries) if (!e.seasonal) e.s];
+        final out = <RecipeSuggestion>[];
+        for (var i = 0; i < seasonal.length || i < anytime.length; i++) {
+          if (i < seasonal.length) out.add(seasonal[i]);
+          if (i < anytime.length) out.add(anytime[i]);
+        }
+        return out;
       }
+
+      // Never-dismissed recipes always come before any previously dismissed
+      // one, so a dismissal keeps a recipe out of the row unless the fresh
+      // pool runs dry.
+      final ordered = <RecipeSuggestion>[
+        ...interleaveSeasonal(scored.where((e) => e.dismissed == 0)),
+        ...interleaveSeasonal(scored.where((e) => e.dismissed > 0)),
+      ];
       if (!mounted) return;
       setState(() {
         suggestedPool = ordered.toList();
@@ -254,6 +280,8 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
     final id = s.publicId;
     if (id == null) return;
     _dismissed[id] = (_dismissed[id] ?? 0) + 1;
+    final now = DateTime.now();
+    _dismissedDay[id] = '${now.year}-${now.month}-${now.day}';
     _saveDismissed();
   }
 }

@@ -148,6 +148,13 @@ class _RecipePageState extends State<RecipePage>
   @override
   bool usageLoaded = false;
 
+  // Optimistic override for a plan's day while a move is in flight: set
+  // synchronously the moment a drop is accepted, so the card jumps to its new
+  // day immediately instead of briefly reappearing on the old one while the
+  // Firestore write round-trips back through the cooking-plan listener.
+  // Cleared once that listener's snapshot confirms the new value.
+  final Map<String, Timestamp> _pendingPlannedFor = {};
+
   // One stable GlobalKey per cooking-plan id, used to compute drop position.
   final Map<String, GlobalKey> _planCardKeys = {};
   GlobalKey _planKey(String planId) =>
@@ -167,6 +174,14 @@ class _RecipePageState extends State<RecipePage>
   // which a dropped card would be inserted, used to open a gap in that day.
   String? _hoverDayKey;
   int _hoverIndex = -1;
+
+  // Days whose hover gap just closed because of a drop (rather than the
+  // pointer simply leaving), so the closing padding snaps to 0 instead of
+  // animating there. Without this, a card mid-way through opening its gap
+  // would visibly shrink back to 0 underneath the just-dropped card instead
+  // of the gap simply being gone. Cleared after the next frame so later
+  // hovers still animate normally.
+  final Set<String> _justDroppedDayKeys = {};
 
   int _computeInsertIndex(
       List<QueryDocumentSnapshot<Map<String, dynamic>>> dayPlans,
@@ -247,6 +262,13 @@ class _RecipePageState extends State<RecipePage>
       setState(() {
         cookingPlans = snapshot.docs;
         _plansLoaded = true;
+        // Drop any optimistic override once the real snapshot confirms the
+        // same value (or the plan is simply gone, e.g. deleted mid-move).
+        _pendingPlannedFor.removeWhere((id, ts) {
+          final match = cookingPlans.where((p) => p.id == id);
+          if (match.isEmpty) return true;
+          return match.first['plannedFor'] == ts;
+        });
         final newTriggerDate = _triggerDate;
         final newTriggerDayKey =
             '${newTriggerDate.year}-${newTriggerDate.month}-${newTriggerDate.day}';
@@ -552,6 +574,7 @@ class _RecipePageState extends State<RecipePage>
         }
       }
     } else if (data.reference.parent.id == 'cooking_plan') {
+      setState(() => _pendingPlannedFor[data.id] = ts);
       data.reference.update({'plannedFor': ts});
     }
   }
@@ -604,7 +627,7 @@ class _RecipePageState extends State<RecipePage>
   /// fixed snapshot, so a just-adopted tile picks up its image once it lands.
   Widget _privateRecipeTile(
       DocumentSnapshot<Map<String, dynamic>> e, int crossAxisCount,
-      {bool streamCard = false}) {
+      {bool streamCard = false, VoidCallback? onMissing}) {
     final data = e.data() ?? const <String, dynamic>{};
     return LongPressDraggable<DocumentSnapshot<Map<String, dynamic>>>(
       key: ValueKey(e.id),
@@ -620,7 +643,7 @@ class _RecipePageState extends State<RecipePage>
         access: widget.access,
         initialData: data,
         onTagTap: onDetailTagTap,
-        child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: streamCard ? null : data, crossAxisCount: crossAxisCount),
+        child: RecipeCard(recipeId: e.id, groupCollection: groupDoc, data: streamCard ? null : data, crossAxisCount: crossAxisCount, onMissing: streamCard ? onMissing : null),
       ),
     );
   }
@@ -633,7 +656,14 @@ class _RecipePageState extends State<RecipePage>
     final key = suggestionKey(s);
     if (adoptingSuggestions.containsKey(key)) {
       final doc = adoptingSuggestions[key];
-      if (doc != null) return _privateRecipeTile(doc, crossAxisCount, streamCard: true);
+      if (doc != null) {
+        return _privateRecipeTile(doc, crossAxisCount, streamCard: true,
+            onMissing: () {
+          if (mounted && adoptingSuggestions.containsKey(key)) {
+            setState(() => adoptingSuggestions.remove(key));
+          }
+        });
+      }
       // Loading: the drop was accepted but the recipe isn't ready to drag yet.
       // A dimmed card with a large centred spinner, matching the card's rounded
       // shape, so it reads clearly as "saving" in place.
@@ -698,6 +728,10 @@ class _RecipePageState extends State<RecipePage>
     final smallerdim = displaySize.width < displaySize.height
         ? displaySize.width
         : displaySize.height;
+    // Actual rendered height of a plan's RecipeCard (see its own
+    // smallerdim/crossAxisCount * 3/4 sizing), used so the drop-preview gap
+    // matches the real card instead of a rough guess.
+    final planCardHeight = smallerdim / planCrossAxisCount * 3 / 4;
 
     // Drop suggestions for public recipes already adopted into this group so
     // they are not offered again. Adopted recipes carry the source id.
@@ -752,7 +786,9 @@ class _RecipePageState extends State<RecipePage>
 
     final showEmptyRecipesState =
         recipes.isEmpty && searchQuery.trim().isEmpty && _recipesLoaded;
-    final showShareTip = recipes.isNotEmpty && searchQuery.trim().isEmpty;
+    final showShareTip = recipes.isNotEmpty &&
+        searchQuery.trim().isEmpty &&
+        widget.access.canGenerateRecipes;
     // Space reserved at the end of the scrollable content so the last row
     // (grid row, or the share tip when it's showing) clears the floating
     // search bar/+ button instead of sitting underneath it.
@@ -782,9 +818,19 @@ class _RecipePageState extends State<RecipePage>
               ).map((day) {
                 final dayPlans = cookingPlans.where((plan) {
                   if (_deletingPlanIds.contains(plan.id)) return false;
-                  final d = (plan['plannedFor'] as Timestamp).toDate();
+                  final ts = _pendingPlannedFor[plan.id] ?? plan['plannedFor'] as Timestamp;
+                  final d = ts.toDate();
                   return d.year == day.year && d.month == day.month && d.day == day.day;
-                }).toList();
+                }).toList()
+                  // cookingPlans is Firestore-ordered by plannedFor, but a
+                  // pending override isn't reflected there yet, so re-sort by
+                  // the effective timestamp to keep the moved card in the
+                  // right spot within its new day immediately.
+                  ..sort((a, b) {
+                    final tsA = _pendingPlannedFor[a.id] ?? a['plannedFor'] as Timestamp;
+                    final tsB = _pendingPlannedFor[b.id] ?? b['plannedFor'] as Timestamp;
+                    return tsA.compareTo(tsB);
+                  });
                 final bool isToday = DateTime.now().difference(day).inHours < 1 &&
                     DateTime.now().difference(day).inHours > -1;
                 final String dateString = getRelativeDateString(day);
@@ -821,9 +867,16 @@ class _RecipePageState extends State<RecipePage>
                   onAcceptWithDetails: (d) {
                     final insertIdx = _computeInsertIndex(dayPlans, d.offset.dy);
                     if (_hoverDayKey != null) {
+                      final droppedDayKey = _hoverDayKey;
                       setState(() {
                         _hoverDayKey = null;
                         _hoverIndex = -1;
+                        _justDroppedDayKeys.add(droppedDayKey!);
+                      });
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          setState(() => _justDroppedDayKeys.remove(droppedDayKey));
+                        }
                       });
                     }
                     final data = d.data;
@@ -865,7 +918,10 @@ class _RecipePageState extends State<RecipePage>
                                 children: [
                                   for (int i = 0; i < dayPlans.length; i++)
                                     AnimatedPadding(
-                                      duration: const Duration(milliseconds: 150),
+                                      key: ValueKey(dayPlans[i].id),
+                                      duration: _justDroppedDayKeys.contains(dayKey)
+                                          ? Duration.zero
+                                          : const Duration(milliseconds: 150),
                                       curve: Curves.easeOut,
                                       // Open a gap above this card while a drag
                                       // hovers at its index, so the incoming
@@ -873,7 +929,7 @@ class _RecipePageState extends State<RecipePage>
                                       padding: EdgeInsets.only(
                                         top: (_hoverDayKey == dayKey &&
                                             _hoverIndex == i)
-                                            ? 72
+                                            ? planCardHeight
                                             : 0,
                                       ),
                                       child: Container(
@@ -936,7 +992,7 @@ class _RecipePageState extends State<RecipePage>
                                     child: SizedBox(
                                       height: (_hoverDayKey == dayKey &&
                                           _hoverIndex >= dayPlans.length)
-                                          ? 72
+                                          ? planCardHeight
                                           : 0,
                                     ),
                                   ),

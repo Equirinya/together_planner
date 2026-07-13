@@ -12,8 +12,9 @@ import 'package:couple_planner/features/groups/pages/group_settings_page.dart';
 import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.dart';
 import 'package:couple_planner/features/recipes/pages/public_recipes_admin_page.dart';
 import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
+import 'package:couple_planner/features/settings/pages/ai_usage_overview_page.dart';
+import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
-import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
 
 /// Lists the groups the user belongs to: tap to make one active, open its
 /// settings, or create a new group.
@@ -25,6 +26,7 @@ class GroupOverviewPage extends StatefulWidget {
     required this.onSelect,
     this.canEditIngredients = false,
     this.canEditPublicRecipes = false,
+    this.viewAIUsage = false,
   });
 
   final List<String> groupIds;
@@ -32,6 +34,7 @@ class GroupOverviewPage extends StatefulWidget {
   final void Function(String groupId) onSelect;
   final bool canEditIngredients;
   final bool canEditPublicRecipes;
+  final bool viewAIUsage;
 
   @override
   State<GroupOverviewPage> createState() => _GroupOverviewPageState();
@@ -162,12 +165,22 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
                 ),
               ),
             ),
+          if (widget.viewAIUsage)
+            ListTile(
+              leading: const Icon(Icons.query_stats),
+              title: const Text('AI usage'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AiUsageOverviewPage()),
+              ),
+            ),
+          if (widget.canEditIngredients || widget.canEditPublicRecipes || widget.viewAIUsage) const Divider(),
           ListTile(
-            leading: const Icon(Icons.auto_awesome),
-            title: const Text('AI plan'),
+            leading: const Icon(Icons.restaurant_outlined),
+            title: const Text('Dietary preferences'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AiPlanPage()),
+              MaterialPageRoute(builder: (_) => const DietaryPreferencesPage()),
             ),
           ),
           ListTile(

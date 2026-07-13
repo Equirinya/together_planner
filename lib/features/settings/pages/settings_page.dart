@@ -6,8 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as account;
-import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 
@@ -126,12 +126,11 @@ class SettingsPage extends StatelessWidget {
             },
           ),
           ListTile(
-            leading: const Icon(Icons.restaurant_outlined),
-            title: const Text('Dietary preferences'),
-            subtitle: const Text('Used when generating recipes'),
+            leading: const Icon(Icons.auto_awesome),
+            title: const Text('AI plan'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const DietaryPreferencesPage()),
+              MaterialPageRoute(builder: (_) => const AiPlanPage()),
             ),
           ),
           const _RecipeSuggestionToggle(),

@@ -4,7 +4,6 @@ import 'package:animations/animations.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'package:couple_planner/core/language.dart';
-import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
@@ -68,11 +67,16 @@ class RecipeCard extends StatelessWidget {
     this.data,
     this.cropContent = false,
     this.crossAxisCount = 3,
+    this.onMissing,
   });
 
   final String? recipeId;
   final DocumentReference<Map<String, dynamic>>? groupCollection;
   final Map<String, dynamic>? data;
+
+  /// Called when the streamed recipe document no longer exists (e.g. it was
+  /// deleted while this tile was showing), so the parent can drop the tile.
+  final VoidCallback? onMissing;
 
   /// When true, the inner content is laid out at the card's full size and
   /// cropped by the rounded frame instead of shrinking with the available
@@ -200,9 +204,20 @@ class RecipeCard extends StatelessWidget {
         );
     }
     if (data != null) return buildContent(data!);
-    return LoadDocumentBuilder(
-      docRef: groupCollection!.collection('recipes').doc(recipeId),
-      builder: buildContent,
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: groupCollection!.collection('recipes').doc(recipeId).snapshots(),
+      builder: (context, snapshot) {
+        final snap = snapshot.data;
+        if (snap == null) return const SizedBox.shrink();
+        final docData = snap.data();
+        if (docData == null) {
+          if (onMissing != null) {
+            WidgetsBinding.instance.addPostFrameCallback((_) => onMissing!());
+          }
+          return const SizedBox.shrink();
+        }
+        return buildContent(docData);
+      },
     );
   }
 }

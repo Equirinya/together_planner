@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shared recipe · Together Planner</title>
+  <meta name="description" content="Open this shared recipe in the Together Planner app." />
+  <style>
+    :root {
+      --green: #4CD85A;
+      --orange: #FFA144;
+      --ink: #1f2330;
+      --muted: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: linear-gradient(135deg, var(--green), var(--orange));
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: #fff;
+      border-radius: 24px;
+      padding: 40px 28px;
+      text-align: center;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+    }
+    .badge {
+      width: 72px;
+      height: 72px;
+      margin: 0 auto 20px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      background: linear-gradient(135deg, var(--green), var(--orange));
+    }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    #status { margin: 0 0 28px; color: var(--muted); font-size: 15px; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px 18px;
+      margin: 10px 0;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform .05s ease, box-shadow .2s ease;
+    }
+    .btn:active { transform: scale(.98); }
+    .btn-primary {
+      color: #fff;
+      background: linear-gradient(135deg, var(--green), var(--orange));
+      box-shadow: 0 8px 20px rgba(76, 216, 90, 0.35);
+    }
+    .btn-store {
+      color: var(--ink);
+      border: 1px solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+    }
+    .btn-store svg { width: 20px; height: 20px; flex-shrink: 0; }
+    .divider {
+      margin: 28px 0 18px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .stores-label { font-weight: 600; color: var(--ink); }
+    footer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      text-align: center;
+      padding: 10px 16px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+    }
+    footer a { color: inherit; text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+    footer span { margin: 0 5px; opacity: .5; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">🍽️</div>
+    <h1>Shared recipe</h1>
+    <p id="status">Already have the app? Tap below to open the recipe.</p>
+
+    <a id="openApp" class="btn btn-primary" href="#">Open recipe in the app</a>
+
+    <p class="divider">
+      <span class="stores-label">Don’t have the app yet?</span><br/>
+      Install it and create your account first, then come back to this link to open the recipe.
+    </p>
+
+    <a id="play" class="btn btn-store" href="https://play.google.com/store/apps/details?id=de.equirinya.couple_planner">
+      <svg viewBox="0 0 512 512" aria-hidden="true"><path fill="#4CD85A" d="M48 59.5C42 65.3 38.5 74.3 38.5 86v340c0 11.7 3.5 20.7 9.5 26.5l1.9 1.8 190.5-190.5v-4.5L49.9 57.7 48 59.5z"/><path fill="#FFA144" d="M303.8 327.9l-63.4-63.6v-4.5l63.5-63.6 1.4.8 75.2 42.7c21.5 12.2 21.5 32.2 0 44.5l-75.2 42.7-1.5.8z"/><path fill="#34A853" d="M305.2 327.1L240.4 262 48 454.3c7.1 7.5 18.8 8.4 32 1L305.2 327.1"/><path fill="#4285F4" d="M305.2 196.9L80 69.6c-13.2-7.5-24.9-6.5-32 1l192.4 192.3 64.8-65.9z"/></svg>
+      Google Play
+    </a>
+    <a id="appstore" class="btn btn-store" href="#">
+      <svg viewBox="0 0 384 512" fill="currentColor" aria-hidden="true"><path d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zM256.6 93.5c30-35.6 27.3-68 26.4-79.5-26.5 1.5-57.2 18-74.7 38.3-19.3 21.8-30.6 48.7-28.2 78.9 28.6 2.2 54.7-12.5 76.5-37.7z"/></svg>
+      App Store
+    </a>
+  </main>
+
+  <footer>
+    <a href="./">Home</a><span>·</span>
+    <a href="./privacy.md">Privacy</a><span>·</span>
+    <a href="./terms.md">Terms</a><span>·</span>
+    <a href="mailto:equirinya@gmail.com?subject=Together%20Planner%20Support%20Question">Support</a><span>·</span>
+    <a href="./impressum.md">Impressum</a>
+  </footer>
+
+  <script>
+    (function () {
+      var APPSTORE_ID = '6758244336';
+
+      var ua = navigator.userAgent || navigator.vendor || '';
+      var isAndroid = /android/i.test(ua);
+      var isIOS = /iphone|ipad|ipod/i.test(ua) || (/Macintosh/.test(ua) && 'ontouchend' in document);
+
+      var play = document.getElementById('play');
+      var appstore = document.getElementById('appstore');
+
+      if (isAndroid) {
+        appstore.style.display = 'none';
+      } else if (isIOS) {
+        play.style.display = 'none';
+        appstore.setAttribute('href', 'https://apps.apple.com/de/app/id' + APPSTORE_ID);
+      } else {
+        appstore.setAttribute('href', 'https://apps.apple.com/de/app/id' + APPSTORE_ID);
+      }
+
+      var params = new URLSearchParams(window.location.search);
+      var g = params.get('g');
+      var r = params.get('r');
+
+      if (!g || !r) {
+        document.getElementById('status').textContent = 'This recipe link is incomplete.';
+        document.getElementById('openApp').style.display = 'none';
+        return;
+      }
+
+      var appUrl = 'coupleplanner://recipe?g=' + encodeURIComponent(g) + '&r=' + encodeURIComponent(r);
+      document.getElementById('openApp').setAttribute('href', appUrl);
+
+      // Try to open the app automatically.
+      window.location.href = appUrl;
+
+      // If we're still here a moment later, the app probably isn't installed.
+      setTimeout(function () {
+        document.getElementById('status').textContent = 'Already have the app? Tap below to open the recipe. Otherwise install it first, then come back.';
+      }, 1500);
+    })();
+  </script>
+</body>
+</html>

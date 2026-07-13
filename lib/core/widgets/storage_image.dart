@@ -70,6 +70,18 @@ class StorageImageCache {
     return future;
   }
 
+  /// Pre-populates the cache for [path] with already-known [bytes] (e.g. a
+  /// locally edited image about to be uploaded), so a widget that mounts for
+  /// this path right after paints instantly instead of hitting the network.
+  Future<File> seed(String path, Uint8List bytes, {String? cacheKey}) async {
+    final dir = await _getDir();
+    final id = cacheId(path, cacheKey);
+    final file = File('${dir.path}/${_fileName(path, cacheKey)}');
+    await file.writeAsBytes(bytes, flush: true);
+    _resolved[id] = file;
+    return file;
+  }
+
   /// Drops [path] from the cache (memory + disk) so the next request re-downloads
   /// it. Used when a cached file fails to decode.
   Future<void> invalidate(String path, String? cacheKey) async {

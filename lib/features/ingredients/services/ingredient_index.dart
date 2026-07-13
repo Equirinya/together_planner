@@ -208,27 +208,18 @@ final Set<String> _resolvingPending = {};
 Future<void> resolvePendingItem(
     DocumentReference<Map<String, dynamic>> ref,
     String displayName,
-    String lang,
-    {Object? quantity}) async {
+    String lang) async {
   if (!_resolvingPending.add(ref.id)) return;
   try {
-    // Items that already carry a quantity (e.g. adopted from a recipe) keep
-    // their name and quantity as-is: their displayName may legitimately contain
-    // a number that is part of the ingredient ("Dinkelmehl 630"), not an amount.
-    // Only free-text items with no quantity get one parsed out of the name.
-    final parsed = readQuantity(quantity) != null ? null : parseInput(displayName);
-    final cleanName = (parsed != null && parsed.remaining.isNotEmpty)
-        ? parsed.remaining.join(' ')
-        : displayName;
-    final id = await IngredientIndex.instance.resolveByName(cleanName, lang);
+    // The item's stored displayName and quantity are authoritative — a name may
+    // legitimately contain a number that is part of the ingredient ("Dinkelmehl
+    // 630"), not an amount — so resolution only fills in the ingredientId (and
+    // category), leaving name and quantity untouched. resolveByName already
+    // tries progressively shorter substrings, so the full name still matches.
+    final id = await IngredientIndex.instance.resolveByName(displayName, lang);
     final updates = <String, dynamic>{
       'ingredientId': id,
-      'displayName': cleanName,
     };
-    if (parsed?.quantity != null) {
-      final unitId = parsed!.unitId ?? kDefaultUnitId;
-      updates['quantity'] = {unitId: parsed.quantity!.toDouble()};
-    }
     // Populate category from the resolved ingredient. The match results are
     // already cached from resolveByName so this is effectively free.
     if (id != kPendingIngredient && id != kUnknownIngredient) {

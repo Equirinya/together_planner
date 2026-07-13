@@ -174,6 +174,15 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
       }
     }
 
+    // Idea tiles are only offered while there's quota (see
+    // recipe_suggestions.dart's `_canOfferAiIdeas`), but a tile tapped right
+    // as the last unit was spent elsewhere would otherwise still create an
+    // empty recipe doc that the server then refuses to fill in.
+    if (!widget.access.hasGenerationQuota) {
+      _snack("You've used all your AI generations for this month.");
+      return;
+    }
+
     final name = s.kind == SuggestionKind.name ? s.title : '';
     final attribution = s.kind == SuggestionKind.url ? s.url : null;
     final ref = groupDoc.collection('recipes').doc();
@@ -234,7 +243,6 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
               ingRef.doc(d.id),
               (d.data()['displayName'] ?? '').toString(),
               lang,
-              quantity: d.data()['quantity'],
             )));
   }
 
@@ -274,6 +282,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
   /// instantly from preloaded data. The dragged tile shows in-place loading and
   /// transforms into the adopted recipe (see [adoptingSuggestions]).
   Future<void> handleSuggestionSave(RecipeSuggestion s) async {
+    if (s.kind != SuggestionKind.public && !widget.access.hasGenerationQuota) {
+      _snack("You've used all your AI generations for this month.");
+      return;
+    }
     final key = suggestionKey(s);
     setState(() => adoptingSuggestions[key] = null);
     if (s.kind == SuggestionKind.public) {
@@ -347,6 +359,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
   ) async {
     if (s.kind == SuggestionKind.public) {
       await _handlePublicRecipeDrop(day, plans, index, s);
+      return;
+    }
+    if (!widget.access.hasGenerationQuota) {
+      _snack("You've used all your AI generations for this month.");
       return;
     }
     final key = suggestionKey(s);
@@ -517,6 +533,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
         return;
       }
     }
+    if (!widget.access.hasGenerationQuota) {
+      _snack("You've used all your AI generations for this month.");
+      return;
+    }
     final name = url != null ? '' : t;
     final ref = groupDoc.collection('recipes').doc();
     ref.set(_recipeSeedDoc(name: name, attribution: url));
@@ -537,6 +557,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
       imageQuality: 70,
     );
     if (image == null || !mounted) return;
+    if (!widget.access.hasGenerationQuota) {
+      _snack("You've used all your AI generations for this month.");
+      return;
+    }
     final bytes = await image.readAsBytes();
     final ref = await _createRecipeDoc(name: '');
     if (!mounted) return;

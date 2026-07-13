@@ -105,11 +105,22 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
               ],
             ),
             const SizedBox(height: 16),
+            if (!widget.access.hasGenerationQuota)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  "You've used all your AI generations for this month.",
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: cs.onSurfaceVariant),
+                ),
+              ),
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _createWithAi(CreateRecipeType.photo),
+                    onPressed: widget.access.hasGenerationQuota
+                        ? () => _createWithAi(CreateRecipeType.photo)
+                        : null,
                     icon: const Icon(Icons.photo_camera_outlined),
                     label: const Text('From photo'),
                   ),
@@ -117,7 +128,9 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _createWithAi(CreateRecipeType.text),
+                    onPressed: widget.access.hasGenerationQuota
+                        ? () => _createWithAi(CreateRecipeType.text)
+                        : null,
                     icon: const Icon(Icons.auto_awesome_outlined),
                     label: const Text('From text'),
                   ),

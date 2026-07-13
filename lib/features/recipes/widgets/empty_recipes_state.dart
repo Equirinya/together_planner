@@ -111,9 +111,13 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
     // First appearing hint reads as a full sentence opener; the ones after
     // it read as continuations, so only it is capitalized, only the very
     // last one ends with a period, and "or" introduces only that last one.
+    // The share-link/image/video line only shows when the plan can actually
+    // resolve a recipe from it, so the + hint carries its own period when
+    // that line is hidden and it becomes the last one instead.
+    final isLastHint = !widget.access.canGenerateRecipes;
     final plusHintText = widget.access.canUseMealPlanner
-        ? 'tap + for your own'
-        : 'Tap + to add your own recipe';
+        ? 'tap + for your own${isLastHint ? '.' : ''}'
+        : 'Tap + to add your own recipe${isLastHint ? '.' : ''}';
 
     return Stack(
       key: _rootKey,
@@ -210,12 +214,14 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
                     style: hintStyle,
                     textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: sectionGap),
-                  Text(
-                    'or share a link, image, or video from social media\nto the app.',
-                    style: hintStyle,
-                    textAlign: TextAlign.center,
-                  ),
+                  if (widget.access.canGenerateRecipes) ...[
+                    const SizedBox(height: sectionGap),
+                    Text(
+                      'or share a link, image, or video from social media\nto the app.',
+                      style: hintStyle,
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ],
               ),
             ),

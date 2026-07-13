@@ -15,12 +15,10 @@ class AiPlanPage extends StatelessWidget {
   /// in ascending order (Basic, Smart, Plus, Unlimited).
   static const List<(String, List<Object>)> _features = [
     ('Copy public recipes', [true, true, true, true]),
-    ('AI ingredient resolution', [false, true, true, true]),
+    ('Search suggestions', [false, true, true, true]),
     ('Recipe generation', [false, '5/mo', '30/mo', '∞']),
     ('Smart meal planner *', [false, true, true, true]),
     ('New recipes in meal plans', [false, false, true, true]),
-    ('Search ideas', [false, true, true, true]),
-    ('Step & ingredient assist', [false, true, true, true]),
     ('Image generation', [false, true, true, true]),
     ('Image enhancement', [false, false, true, true]),
   ];
@@ -104,28 +102,66 @@ class AiPlanPage extends StatelessWidget {
 
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: DataTable(
-        columnSpacing: 18,
-        horizontalMargin: 12,
-        columns: [
-          const DataColumn(label: Text('Feature')),
-          for (final t in tiers)
-            DataColumn(
-              label: Text(
-                t == access.tier ? '${AiAccess.tierNames[t]} • You' : AiAccess.tierNames[t],
-                style: t == access.tier
-                    ? const TextStyle(fontWeight: FontWeight.bold)
-                    : null,
+      child: Table(
+        defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+        columnWidths: {
+          for (var i = 0; i <= tiers.length; i++) i: const IntrinsicColumnWidth(),
+        },
+        children: [
+          TableRow(children: [
+            _labelCell(const Text('Feature')),
+            for (final t in tiers)
+              _bandCell(
+                context,
+                t == access.tier,
+                Text(AiAccess.tierNames[t],
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                top: true,
               ),
-            ),
-        ],
-        rows: [
-          for (final (label, values) in _features)
-            DataRow(cells: [
-              DataCell(Text(label)),
-              for (final t in tiers) DataCell(Center(child: _cell(context, values[t]))),
+          ]),
+          for (var r = 0; r < _features.length; r++)
+            TableRow(children: [
+              _labelCell(Text(_features[r].$1)),
+              for (final t in tiers)
+                _bandCell(
+                  context,
+                  t == access.tier,
+                  _cell(context, _features[r].$2[t]),
+                  bottom: r == _features.length - 1,
+                ),
             ]),
         ],
+      ),
+    );
+  }
+
+  /// Left-aligned feature-name cell in the first column.
+  Widget _labelCell(Widget child) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+        child: child,
+      );
+
+  /// A centered tier cell that fills the full row height and, on the user's own
+  /// tier, carries a tint so the whole column reads as one rounded band. [top]
+  /// and [bottom] round the band's ends into a pill.
+  Widget _bandCell(BuildContext context, bool highlighted, Widget child,
+      {bool top = false, bool bottom = false}) {
+    const radius = Radius.circular(14);
+    return TableCell(
+      verticalAlignment: TableCellVerticalAlignment.fill,
+      child: Container(
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: highlighted
+            ? BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.vertical(
+                  top: top ? radius : Radius.zero,
+                  bottom: bottom ? radius : Radius.zero,
+                ),
+              )
+            : null,
+        child: child,
       ),
     );
   }
