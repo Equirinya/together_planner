@@ -427,7 +427,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       aiTimer = Timer(const Duration(seconds: 1), () async {
         if (!mounted || seq != _aiSeq) return;
         final shownTiles = searchedRecipes.length + publicSuggestions.length + suggestions.length;
-        if (shownTiles > _minCachedIdeas) {
+        if (shownTiles >= _minCachedIdeas) {
           setState(() => suggestionsLoading = false);
           return;
         }
@@ -469,9 +469,11 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   /// Minimum number of good cached ideas needed to skip AI generation entirely.
   static const int _minCachedIdeas = 3;
 
-  /// Reuses ideas earlier searches already generated: up to [_minCachedIdeas]
-  /// names whose search terms cover the whole query and fit the user's diet, or
-  /// an empty list when the corpus doesn't cover it well enough. A single indexed
+  /// Reuses ideas earlier searches already generated: every cached name whose
+  /// search terms cover the whole query and fit the user's diet (returned only
+  /// once at least [_minCachedIdeas] match, so a thin corpus still triggers a
+  /// fresh generation), or an empty list when the corpus doesn't cover it well
+  /// enough. A single indexed
   /// read, so it runs on the snappy debounce to show reused ideas quickly.
   /// [tags] (from `#tag` filters) are folded into the required terms, so a
   /// cached idea must also carry that tag word in its name to qualify.
@@ -492,7 +494,17 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           .limit(20)
           .get();
       final tokenSet = tokens.toSet();
-      final prefs = dietary.map((e) => e.toLowerCase()).toSet();
+      // Only standard diets are recorded on cached ideas, so reuse is filtered
+      // by those alone: preset/localized labels are normalised to their
+      // canonical English form and custom free-text entries are dropped (they
+      // aren't considered for suggestions, only for generation). Filtering by a
+      // custom entry here would reject every cached idea and force a fresh
+      // generation on each search.
+      final prefs = dietary
+          .map(canonicalDietaryLabel)
+          .whereType<String>()
+          .map((e) => e.toLowerCase())
+          .toSet();
       final seenNames = <String>{};
       final names = <String>[];
       for (final d in snap.docs) {
@@ -518,7 +530,6 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       }
       if (names.length >= _minCachedIdeas) {
         return names
-            .take(_minCachedIdeas)
             .map((n) => RecipeSuggestion(kind: SuggestionKind.name, title: n))
             .toList();
       }

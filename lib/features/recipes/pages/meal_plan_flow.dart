@@ -740,10 +740,15 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
     final colorScheme = Theme.of(context).colorScheme;
     // Same gentle, on-brand mesh used by the recipe page's Smart Meal Planner
     // tap area, so the flow it opens into feels continuous.
+    final bool isDark = colorScheme.brightness == Brightness.dark;
+    // The pale light-mode mesh can't carry white text, so foreground follows
+    // the brightness: white on the deep dark-mode mesh, a dark on-brand tone
+    // on the pale light-mode one.
+    final Color meshForeground = isDark ? Colors.white : colorScheme.onPrimaryContainer;
     final meshColors = [
       Color.lerp(colorScheme.surface, colorScheme.primary, 0.35)!,
       Color.lerp(colorScheme.surface, colorScheme.tertiary, 0.4)!,
-      Color.lerp(colorScheme.surface, colorScheme.secondary, 0.35)!,
+      Color.lerp(colorScheme.surface, colorScheme.tertiaryContainer, 0.6)!,
       Color.lerp(colorScheme.surface, colorScheme.primaryContainer, 0.75)!,
     ];
 
@@ -754,7 +759,7 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
           colors: meshColors,
           options: AnimatedMeshGradientOptions(speed: 0.15),
         ),
-        Container(color: Colors.black.withOpacity(0.1)),
+        if (isDark) Container(color: Colors.black.withOpacity(0.1)),
         Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -763,7 +768,7 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
                 scale: Tween(begin: 0.85, end: 1.15).animate(
                   CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
                 ),
-                child: const Icon(Icons.auto_awesome, size: 48, color: Colors.white),
+                child: Icon(Icons.auto_awesome, size: 48, color: meshForeground),
               ),
               const SizedBox(height: 20),
               AnimatedSwitcher(
@@ -774,7 +779,7 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
                   style: Theme.of(context)
                       .textTheme
                       .titleMedium
-                      ?.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
+                      ?.copyWith(color: meshForeground, fontWeight: FontWeight.w600),
                 ),
               ),
             ],

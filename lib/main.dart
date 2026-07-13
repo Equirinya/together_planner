@@ -97,10 +97,13 @@ class _MyAppState extends State<MyApp> {
 /// surfaces. Pages keep using default widgets, so the feel is set here once.
 ThemeData _buildTheme(Color seed, Brightness brightness) {
   final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness);
+  // Light mode reads brightest on the top surface tone; dark keeps the dim one.
+  final Color background =
+      brightness == Brightness.dark ? scheme.surfaceDim : scheme.surfaceBright;
 
   return ThemeData(
     colorScheme: scheme,
-    scaffoldBackgroundColor: scheme.surfaceDim,
+    scaffoldBackgroundColor: background,
     splashFactory: InkSparkle.splashFactory,
     cardTheme: CardThemeData(
       elevation: 0,
@@ -108,8 +111,11 @@ ThemeData _buildTheme(Color seed, Brightness brightness) {
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
     ),
-    appBarTheme: const AppBarThemeData(
+    appBarTheme: AppBarThemeData(
       centerTitle: true,
+      backgroundColor: background,
+      surfaceTintColor: scheme.surfaceTint,
+      scrolledUnderElevation: 3,
     ),
     navigationBarTheme: NavigationBarThemeData(
       elevation: 0,
@@ -170,6 +176,10 @@ class _HomePageState extends State<HomePage> {
   /// A single-recipe share link tapped before a group was ready (e.g. cold
   /// start), held in memory and replayed once the group document loads.
   ({String groupId, String recipeId})? _pendingSharedRecipe;
+
+  /// A public-recipe share link tapped before a group was ready, held in memory
+  /// and replayed once the group document loads.
+  String? _pendingPublicRecipe;
 
   /// Whether the instant shimmering placeholder for a pending shared link is
   /// currently on screen, awaiting the real [RecipeDetailPage] to replace it.
@@ -341,6 +351,11 @@ class _HomePageState extends State<HomePage> {
   Future<void> _openRecipeFromUrl(String url) async {
     if (!mounted) return;
     // A shared single-recipe link opens the preview flow, not the URL importer.
+    final publicRecipe = parsePublicRecipeShareUri(Uri.parse(url));
+    if (publicRecipe != null) {
+      _openPublicRecipe(publicRecipe);
+      return;
+    }
     final sharedRecipe = parseRecipeShareUri(Uri.parse(url));
     if (sharedRecipe != null) {
       _openSharedRecipe(sharedRecipe.groupId, sharedRecipe.recipeId);
@@ -489,6 +504,11 @@ class _HomePageState extends State<HomePage> {
   void _handleUri(Uri uri) {
     // A single-recipe share link opens a read-only preview with a "save in own
     // recipes" button, before the invite/import fallbacks below.
+    final publicRecipe = parsePublicRecipeShareUri(uri);
+    if (publicRecipe != null) {
+      _openPublicRecipe(publicRecipe);
+      return;
+    }
     final sharedRecipe = parseRecipeShareUri(uri);
     if (sharedRecipe != null) {
       _openSharedRecipe(sharedRecipe.groupId, sharedRecipe.recipeId);
@@ -539,6 +559,26 @@ class _HomePageState extends State<HomePage> {
         groupId: _selectedGroup!,
         recipeId: recipeId,
         sharedSourceGroupId: sourceGroupId,
+      ),
+    ));
+  }
+
+  /// Opens a shared public recipe as a read-only preview offering to save it
+  /// into the active group's own recipes. Held until a group is ready if tapped
+  /// during a cold start.
+  void _openPublicRecipe(String publicId) {
+    if (!mounted) return;
+    if (_selectedGroup == null || !_groupDocReady) {
+      _pendingPublicRecipe = publicId;
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => RecipeDetailPage(
+        groupId: _selectedGroup!,
+        recipeId: '',
+        access: _aiAccess,
+        publicRecipeId: publicId,
+        canEditPublicRecipes: _canEditPublicRecipes,
       ),
     ));
   }
@@ -923,6 +963,12 @@ class _HomePageState extends State<HomePage> {
         final pending = _pendingSharedRecipe!;
         _pendingSharedRecipe = null;
         _openSharedRecipe(pending.groupId, pending.recipeId);
+      }
+      // Replay a public-recipe link tapped before a group was ready.
+      if (_pendingPublicRecipe != null) {
+        final pending = _pendingPublicRecipe!;
+        _pendingPublicRecipe = null;
+        _openPublicRecipe(pending);
       }
     });
   }

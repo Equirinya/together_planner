@@ -29,6 +29,22 @@ const String kRecipeLinkBase = 'https://equirinya.github.io/together_planner/rec
 
 String buildRecipeShareLink(String groupId, String recipeId) => '$kRecipeLinkBase?g=$groupId&r=$recipeId';
 
+/// Link to a single public recipe (…?p=<publicId>), letting anyone with the app
+/// preview and save it into their own recipes.
+String buildPublicRecipeShareLink(String publicId) => '$kRecipeLinkBase?p=$publicId';
+
+/// Extracts the public-recipe id from a public-recipe share link, accepting both
+/// the https landing URL and the coupleplanner://recipe scheme. Returns null if
+/// the URI is not a (well-formed) public-recipe share link.
+String? parsePublicRecipeShareUri(Uri uri) {
+  final p = uri.queryParameters['p'];
+  final looksLikeRecipe = uri.host == 'recipe' || uri.pathSegments.contains('recipe') || uri.path.contains('recipe');
+  if (looksLikeRecipe && p != null && p.isNotEmpty) {
+    return p;
+  }
+  return null;
+}
+
 /// Extracts the group/recipe ids from a single-recipe share link, accepting both
 /// the https landing URL and the coupleplanner://recipe scheme. Returns null if
 /// the URI is not a (well-formed) recipe share link.
