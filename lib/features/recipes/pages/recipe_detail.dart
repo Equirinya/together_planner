@@ -20,6 +20,7 @@ import 'package:couple_planner/features/recipes/services/recipe_share_education.
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/groups/pages/group_settings_page.dart' show shareRecipeViewerInvite;
 import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/ai/ai_errors.dart';
 import 'package:flutter/cupertino.dart';
@@ -512,7 +513,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       }
     });
     if (data['generationError'] == true) {
-      _snack('Could not finish generating this recipe.');
+      final reason = (data['generationErrorReason'] ?? '').toString().trim();
+      _snack(reason.isNotEmpty
+          ? reason
+          : 'Could not finish generating this recipe.');
     }
     if (hasPending && _pending.isEmpty) {
       _docSub?.cancel();
@@ -1375,7 +1379,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               child: const Icon(Icons.add_a_photo),
             ),
           ),
-          if (widget.access.canGenerateImage) ...[
+          if (widget.access.canGenerateImage && AiFeatureSettings.generationEnabled.value) ...[
             const SizedBox(height: 4),
             Expanded(
               child: ElevatedButton(
@@ -1419,7 +1423,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       style: Theme.of(context).textTheme.headlineSmall),
                 ),
                 const Spacer(),
-                if (edit && widget.access.canEnhanceText && !_loadingIngredients)
+                if (edit &&
+                    widget.access.canEnhanceText &&
+                    AiFeatureSettings.generationEnabled.value &&
+                    !_loadingIngredients)
                   IconButton(
                     icon: const Icon(Icons.auto_awesome),
                     tooltip: 'Generate with AI',
@@ -1578,7 +1585,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 Text("Steps",
                     style: Theme.of(context).textTheme.headlineSmall),
                 const Spacer(),
-                if (edit && widget.access.canEnhanceText && !_loadingSteps)
+                if (edit &&
+                    widget.access.canEnhanceText &&
+                    AiFeatureSettings.generationEnabled.value &&
+                    !_loadingSteps)
                   IconButton(
                     icon: const Icon(Icons.auto_awesome),
                     tooltip: 'Generate with AI',
@@ -1820,7 +1830,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (widget.access.canEnhanceImage && !isAi && !enhancing && !rotating)
+                    if (widget.access.canEnhanceImage &&
+                        AiFeatureSettings.generationEnabled.value &&
+                        !isAi &&
+                        !enhancing &&
+                        !rotating)
                       IconButton(
                         icon: Icon(Icons.auto_awesome,
                             color: cs.primary),

@@ -84,6 +84,28 @@ void main() {
       await _wait(tester, const Duration(seconds: 2));
     }
 
+    // Smart Meal Planner: open the auto-plan flow from the carousel's trigger
+    // day, generate a proposal and capture the finished plan. The plan is not
+    // committed (no "Looks good" tap), so nothing is written to the group.
+    final smartPlanner = find.text('Smart Meal\nPlanner');
+    if (smartPlanner.evaluate().isNotEmpty) {
+      await tester.tap(smartPlanner.first);
+      await _wait(tester, const Duration(seconds: 3));
+      await tester.tap(find.widgetWithText(FilledButton, 'Generate plan'));
+      // Generation calls a cloud function and streams in images, so wait until
+      // the finished plan (its confirm button) appears before capturing.
+      for (var i = 0; i < 30; i++) {
+        if (find.text('Looks good! Add to meal plan').evaluate().isNotEmpty) break;
+        await _wait(tester, const Duration(seconds: 2));
+      }
+      await _wait(tester, const Duration(seconds: 12));
+      await binding.takeScreenshot('${_label}_smart_meal_plan');
+      await tester.pageBack(); // back to the settings step
+      await _wait(tester, const Duration(seconds: 1));
+      await tester.pageBack(); // back to the recipe grid
+      await _wait(tester, const Duration(seconds: 2));
+    }
+
     // More tab → group overview.
     await tester.tap(find.byIcon(Icons.menu).last);
     await _wait(tester, const Duration(seconds: 2));
@@ -94,6 +116,16 @@ void main() {
       await tester.tap(find.byIcon(Icons.settings_outlined).first);
       await _wait(tester, const Duration(seconds: 3));
       await binding.takeScreenshot('${_label}_group_settings');
+      await tester.pageBack();
+      await _wait(tester, const Duration(seconds: 2));
+    }
+
+    // Dietary preferences settings screen (opened from the More tab).
+    final dietaryTile = find.text('Dietary preferences');
+    if (dietaryTile.evaluate().isNotEmpty) {
+      await tester.tap(dietaryTile);
+      await _wait(tester, const Duration(seconds: 3));
+      await binding.takeScreenshot('${_label}_dietary_preferences');
       await tester.pageBack();
       await _wait(tester, const Duration(seconds: 2));
     }

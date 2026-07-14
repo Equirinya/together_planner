@@ -77,8 +77,11 @@ class RecipeSuggestionCard extends StatelessWidget {
     // consistent dark title over a light scrim (see below) instead.
     final Color titleColor =
         isDark ? Colors.white : Theme.of(context).colorScheme.onSurface;
-    final icon =
-        suggestion.kind == SuggestionKind.url ? Icons.public : MdiIcons.creation;
+    final icon = switch (suggestion.kind) {
+      SuggestionKind.url => Icons.public,
+      SuggestionKind.name => Icons.tips_and_updates,
+      SuggestionKind.public => MdiIcons.creation,
+    };
 
     return ConstrainedBox(
       constraints: BoxConstraints(
@@ -90,7 +93,12 @@ class RecipeSuggestionCard extends StatelessWidget {
         aspectRatio: 4 / 3,
         child: Padding(
           padding: const EdgeInsets.all(4),
-          child: ClipRRect(
+          child: Material(
+            elevation: 2,
+            borderRadius: BorderRadius.circular(16),
+            color: Colors.transparent,
+            shadowColor: Colors.black.withValues(alpha: 1 / 3),
+            child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Container(
               decoration: BoxDecoration(
@@ -197,6 +205,7 @@ class RecipeSuggestionCard extends StatelessWidget {
                 },
               ),
             ),
+          ),
           ),
         ),
       ),

@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart' show canonicalDietaryLabel, dietarySynonyms;
 
 /// Ranking of the group's own recipes (via the cooking-plan usage history)
@@ -349,7 +350,9 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   /// quota left would reliably fail and leave that empty doc orphaned. Public
   /// recipe matches don't call this: adopting them doesn't spend quota.
   bool get _canOfferAiIdeas =>
-      widget.access.canUseSearchIdeas && widget.access.hasGenerationQuota;
+      widget.access.canUseSearchIdeas &&
+      widget.access.hasGenerationQuota &&
+      AiFeatureSettings.searchIdeasEnabled.value;
 
   /// Called on every keystroke (in addition to [generateSearchedRecipes]).
   /// Public matches use a short debounce (300 ms) and are shown regardless of

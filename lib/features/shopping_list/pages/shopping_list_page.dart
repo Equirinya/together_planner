@@ -298,6 +298,7 @@ class _AddItemBarState extends State<_AddItemBar> {
             child: SearchBar(
               focusNode: _focusNode,
               constraints: const BoxConstraints(minWidth: double.infinity, minHeight: 56),
+              elevation: const WidgetStatePropertyAll(0),
               shape: const WidgetStatePropertyAll(StadiumBorder()),
               hintText: 'Add item to shopping list',
               leading: Padding(

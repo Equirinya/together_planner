@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// Shown as a full-bleed overlay behind the search bar once the recipes
@@ -57,6 +58,11 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
   Offset? _plusHintAnchor;
   Offset? _plusButtonAnchor;
 
+  /// Whether the meal-planner hint/arrow should show at all: the plan must
+  /// allow it and the user must not have turned it off in settings.
+  bool get _mealPlannerAllowed =>
+      widget.access.canUseMealPlanner && AiFeatureSettings.mealPlannerEnabled.value;
+
   /// Re-measures the hint/button anchors (in [_rootKey]'s local coordinate
   /// space, which the arrow CustomPaint shares) after the next frame, and
   /// repaints the arrows if anything moved.
@@ -73,7 +79,7 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
         return rootBox.globalToLocal(box.localToGlobal(local));
       }
 
-      final meal = widget.access.canUseMealPlanner ? anchorOf(_mealPlannerHintKey, Alignment.topLeft) : null;
+      final meal = _mealPlannerAllowed ? anchorOf(_mealPlannerHintKey, Alignment.topLeft) : null;
       final plus = anchorOf(_plusHintKey, Alignment.centerRight);
       final button = anchorOf(widget.plusButtonKey, Alignment.topCenter);
 
@@ -115,7 +121,7 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
     // resolve a recipe from it, so the + hint carries its own period when
     // that line is hidden and it becomes the last one instead.
     final isLastHint = !widget.access.canGenerateRecipes;
-    final plusHintText = widget.access.canUseMealPlanner
+    final plusHintText = _mealPlannerAllowed
         ? 'tap + for your own${isLastHint ? '.' : ''}'
         : 'Tap + to add your own recipe${isLastHint ? '.' : ''}';
 
@@ -160,7 +166,7 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
                     style: textTheme.bodyMedium?.copyWith(color: colorScheme.outline),
                     textAlign: TextAlign.center,
                   ),
-                  if (widget.access.canUseMealPlanner) ...[
+                  if (_mealPlannerAllowed) ...[
                     const SizedBox(height: sectionGap),
                     Align(
                       alignment: Alignment.centerLeft,
@@ -199,7 +205,7 @@ class _EmptyRecipesStateState extends State<EmptyRecipesState> {
                               textStyle: hintStyle,
                             ),
                             child: Text(
-                              widget.access.canUseMealPlanner
+                              _mealPlannerAllowed
                                   ? 'copy recipes from another group'
                                   : 'Copy recipes from another group',
                             ),

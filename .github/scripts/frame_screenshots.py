@@ -65,7 +65,7 @@ MESH_BLOBS = (
 DARK_WASH = 0.12
 
 # The pages, in the order they should flow across the gradient.
-PAGE_ORDER = ["recipe", "shopping_list", "recipe_detail"]
+PAGE_ORDER = ["recipe", "shopping_list", "smart_meal_plan", "recipe_detail"]
 
 # headline + subtitle per page.
 CAPTIONS = {
@@ -77,6 +77,10 @@ CAPTIONS = {
     "recipe": (
         "Plan meals together",
         "Create a shared cooking plan and decide what's for dinner, together.",
+    ),
+    "smart_meal_plan": (
+        "Smart meal planner",
+        "A balanced weekly plan tailored to your tastes, at the tap of a button.",
     ),
     "recipe_detail": (
         "All your recipes in one place",
@@ -97,6 +101,7 @@ SPECS = [
 LAYOUTS = [
     {"tilt": -2.5, "caption": "top", "align": "left"},
     {"tilt": 2.5, "caption": "bottom", "align": "right"},
+    {"tilt": -2.5, "caption": "bottom", "align": "left"},
     {"tilt": 0, "caption": "top", "align": "center"},
 ]
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:mesh_gradient/mesh_gradient.dart';
 
 /// The "Plan next days" call-to-action shown on the carousel's trigger day.
@@ -123,7 +124,7 @@ class _PlanNextDaysButtonState extends State<PlanNextDaysButton> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.auto_awesome, color: meshForeground),
+                          Icon(MdiIcons.chefHat, color: meshForeground),
                           const SizedBox(height: 4),
                           Text(
                             'Smart Meal\nPlanner',

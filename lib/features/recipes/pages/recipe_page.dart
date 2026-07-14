@@ -23,6 +23,7 @@ import 'package:couple_planner/features/recipes/services/recipe_actions.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/recipes/pages/meal_plan_flow.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// Lets a parent widget (the bottom-nav host) query whether the recipe page's
@@ -1014,6 +1015,7 @@ class _RecipePageState extends State<RecipePage>
                           // moment after the trigger moves, so it fades out
                           // there instead of just vanishing.
                           if (widget.access.canUseMealPlanner &&
+                              AiFeatureSettings.mealPlannerEnabled.value &&
                               _plansLoaded &&
                               (dayKey == triggerDayKey || dayKey == _fadingTriggerDayKey))
                             PlanNextDaysButton(

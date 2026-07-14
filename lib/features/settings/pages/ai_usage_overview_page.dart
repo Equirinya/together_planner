@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/widgets/load_builders.dart';
+
 // Standard-tier Gemini API list prices, used only to turn the raw token/image
 // counts in `ai_usage/{month}` into a rough USD estimate for this page.
 // Source: https://ai.google.dev/gemini-api/docs/pricing (checked 2026-07-13).
@@ -70,6 +72,7 @@ class _AiUsageOverviewPageState extends State<AiUsageOverviewPage> {
   Map<String, dynamic> _byFunction = {};
   Map<String, dynamic> _byOperation = {};
   Map<String, dynamic> _byModel = {};
+  Map<String, dynamic> _byUser = {};
   double _totalCostUsd = 0;
 
   @override
@@ -105,6 +108,7 @@ class _AiUsageOverviewPageState extends State<AiUsageOverviewPage> {
         _byFunction = Map<String, dynamic>.from(data?['byFunction'] as Map? ?? {});
         _byOperation = Map<String, dynamic>.from(data?['byOperation'] as Map? ?? {});
         _byModel = byModel;
+        _byUser = Map<String, dynamic>.from(data?['byUser'] as Map? ?? {});
         _totalCostUsd = totalCostUsd;
         _loading = false;
       });
@@ -147,6 +151,8 @@ class _AiUsageOverviewPageState extends State<AiUsageOverviewPage> {
                       _BreakdownSection(title: 'By function', buckets: _byFunction),
                       const SizedBox(height: 24),
                       _BreakdownSection(title: 'By operation', buckets: _byOperation),
+                      const SizedBox(height: 24),
+                      _BreakdownSection(title: 'By user', buckets: _byUser, labelBuilder: _userLabel),
                     ],
                   ),
                 ),
@@ -205,11 +211,12 @@ class _TotalsCard extends StatelessWidget {
 }
 
 class _BreakdownSection extends StatelessWidget {
-  const _BreakdownSection({required this.title, required this.buckets, this.costEstimator});
+  const _BreakdownSection({required this.title, required this.buckets, this.costEstimator, this.labelBuilder});
 
   final String title;
   final Map<String, dynamic> buckets;
   final double Function(String? model, Map<String, dynamic> bucket)? costEstimator;
+  final Widget Function(String label)? labelBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -231,7 +238,7 @@ class _BreakdownSection extends StatelessWidget {
               final calls = bucket['calls'] ?? 0;
               final costUsd = costEstimator?.call(bucket['label'] as String?, bucket);
               return ListTile(
-                title: Text(label),
+                title: labelBuilder?.call(label) ?? Text(label),
                 subtitle: Text('$calls calls · ${_formatTokens(bucket['promptTokens'] ?? 0)} in · '
                     '${_formatTokens(bucket['candidatesTokens'] ?? 0)} out · ${bucket['images'] ?? 0} images'),
                 trailing: costUsd != null ? Text('\$${costUsd.toStringAsFixed(2)}') : null,
@@ -242,6 +249,17 @@ class _BreakdownSection extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Resolves a `byUser` bucket's uid label to a display name via
+/// `users_public/{uid}`. Falls back to the raw label (e.g. "unknown" for
+/// calls made outside an authenticated request) if it isn't a real uid.
+Widget _userLabel(String uid) {
+  if (uid == 'unknown') return const Text('Unknown');
+  return LoadDocumentBuilder(
+    docRef: FirebaseFirestore.instance.collection('users_public').doc(uid),
+    builder: (data) => Text((data['username'] ?? uid).toString()),
+  );
 }
 
 String _formatTokens(dynamic tokens) {

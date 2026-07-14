@@ -561,7 +561,9 @@ class _SuggestionTile extends StatelessWidget {
       )
           : Avatar(
         ingredientId: suggestion.ingredientId,
-        backgroundColor: isDone ? cs.surfaceContainerHighest : null,
+        backgroundColor: isDone && Theme.of(context).brightness == Brightness.dark
+            ? cs.surfaceContainerHighest
+            : null,
       ),
       title: Text(
         suggestion.displayName.isEmpty ? '?' : suggestion.displayName,

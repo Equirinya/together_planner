@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 
 /// What the user chose in the create-recipe menu.
 enum CreateRecipeType { blank, photo, text }
@@ -88,7 +89,7 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
             icon: const Icon(Icons.add),
             label: const Text('Create recipe'),
           ),
-          if (widget.access.canGenerateRecipes) ...[
+          if (widget.access.canGenerateRecipes && AiFeatureSettings.generationEnabled.value) ...[
             const SizedBox(height: 24),
             Row(
               children: [

@@ -1,6 +1,7 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -10,6 +11,7 @@ import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as account;
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
+import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 
 // GitHub Pages (see /docs).
 const String _homeUrl = 'https://equirinya.github.io/together_planner/';
@@ -133,6 +135,38 @@ class SettingsPage extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const AiPlanPage()),
             ),
           ),
+          const Divider(),
+          _SectionHeader('AI features'),
+          ValueListenableBuilder<bool>(
+            valueListenable: AiFeatureSettings.mealPlannerEnabled,
+            builder: (context, enabled, _) => SwitchListTile(
+              secondary: Icon(MdiIcons.chefHat),
+              title: const Text('Smart meal planner'),
+              subtitle: const Text('Show the AI meal-planning entry points on the recipe page'),
+              value: enabled,
+              onChanged: AiFeatureSettings.setMealPlannerEnabled,
+            ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: AiFeatureSettings.searchIdeasEnabled,
+            builder: (context, enabled, _) => SwitchListTile(
+              secondary: const Icon(Icons.tips_and_updates_outlined),
+              title: const Text('AI suggestions in search'),
+              subtitle: const Text('Show AI-generated recipe ideas while searching'),
+              value: enabled,
+              onChanged: AiFeatureSettings.setSearchIdeasEnabled,
+            ),
+          ),
+          ValueListenableBuilder<bool>(
+            valueListenable: AiFeatureSettings.generationEnabled,
+            builder: (context, enabled, _) => SwitchListTile(
+              secondary: const Icon(Icons.auto_fix_high_outlined),
+              title: const Text('AI generation'),
+              subtitle: const Text('Show buttons that generate or enhance content with AI'),
+              value: enabled,
+              onChanged: AiFeatureSettings.setGenerationEnabled,
+            ),
+          ),
           const _RecipeSuggestionToggle(),
           const Divider(),
           _SectionHeader('Account'),
@@ -232,7 +266,7 @@ class _RecipeSuggestionToggleState extends State<_RecipeSuggestionToggle> {
       mainAxisSize: MainAxisSize.min,
       children: [
         SwitchListTile(
-          secondary: const Icon(Icons.auto_awesome_outlined),
+          secondary: const Icon(Icons.restaurant_menu_outlined),
           title: const Text('Recipe suggestions'),
           subtitle: const Text('Show "Suggested for you" on the recipe page'),
           value: _enabled,

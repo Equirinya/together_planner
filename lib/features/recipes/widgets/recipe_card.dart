@@ -120,7 +120,12 @@ class RecipeCard extends StatelessWidget {
         aspectRatio: 4 / 3,
         child: Padding(
           padding: const EdgeInsets.all(4),
-          child: ClipRRect(
+          child: Material(
+            elevation: (recipeId != null && groupCollection != null) ? 2 : 0,
+            borderRadius: BorderRadius.circular(16),
+            color: Colors.transparent,
+            shadowColor: Colors.black.withValues(alpha: 1 / 3),
+            child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Container(
               decoration: (recipeId != null && groupCollection != null)
@@ -146,6 +151,7 @@ class RecipeCard extends StatelessWidget {
                 child: _content(context, color),
               ),
             ),
+          ),
           ),
         ),
       ),
