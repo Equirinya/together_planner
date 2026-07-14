@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:couple_planner/features/ingredients/models/ingredients.dart';
 
@@ -22,7 +23,7 @@ class UnitsCache {
     _sub ??= FirebaseFirestore.instance
         .collection('units')
         .snapshots()
-        .listen(_apply);
+        .listen(_apply, onError: (Object e) => debugPrint('Units cache listener error: $e'));
   }
 
   void _apply(QuerySnapshot snap) {

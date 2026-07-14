@@ -174,13 +174,13 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
     super.initState();
     _groupSub = _groupRef.snapshots().listen((s) {
       if (mounted) setState(() => _group = s.data());
-    });
+    }, onError: (Object e) => debugPrint('Group listener error: $e'));
     _membersSub = _groupRef.collection('members').snapshots().listen((s) {
       if (mounted) setState(() => _members = s.docs);
-    });
+    }, onError: (Object e) => debugPrint('Members listener error: $e'));
     _invitesSub = _groupRef.collection('invites').snapshots().listen((s) {
       if (mounted) setState(() => _invites = s.docs);
-    });
+    }, onError: (Object e) => debugPrint('Invites listener error: $e'));
   }
 
   @override

@@ -111,7 +111,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
           );
         }
       }
-    });
+    }, onError: (Object e) => debugPrint('Shopping list listener error: $e'));
   }
 
   // ── item mutations ─────────────────────────────────────────────────────────

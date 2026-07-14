@@ -266,6 +266,8 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
       if (!data.containsKey('pending')) return;
       final pending = List<String>.from(data['pending'] ?? const []);
       if (!pending.contains('ingredients')) ready.complete();
+    }, onError: (Object e) {
+      if (!ready.isCompleted) ready.completeError(e);
     });
     generation.catchError((Object e) {
       if (!ready.isCompleted) ready.completeError(e);
@@ -475,6 +477,11 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
           hasImage ||
           (data.containsKey('pending') && !pending.contains('image'));
       if (!done) return;
+      sub.cancel();
+      imageTrackSubs.remove(sub);
+      if (mounted) setState(() => uploadingRecipeIds.remove(recipeId));
+    }, onError: (Object e) {
+      debugPrint('Image generation tracking listener error: $e');
       sub.cancel();
       imageTrackSubs.remove(sub);
       if (mounted) setState(() => uploadingRecipeIds.remove(recipeId));

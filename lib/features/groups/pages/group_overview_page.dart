@@ -58,7 +58,7 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
           .snapshots()
           .listen((snap) {
         if (mounted) setState(() => _groupIds = snap.docs.map((d) => d.id).toList());
-      });
+      }, onError: (Object e) => debugPrint('Groups listener error: $e'));
     }
   }
 

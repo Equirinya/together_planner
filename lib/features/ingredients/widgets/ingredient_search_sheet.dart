@@ -95,7 +95,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
       if (_searchCtrl.text.trim().isEmpty) {
         setState(() => _suggestions = _doneItemSuggestions());
       }
-    });
+    }, onError: (Object e) => debugPrint('Ingredient list listener error: $e'));
     _onSearchChanged(''); // initial "done" suggestions
 
     // When a debounced server refresh changed the result set, rebuild.

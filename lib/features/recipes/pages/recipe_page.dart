@@ -283,7 +283,7 @@ class _RecipePageState extends State<RecipePage>
         _lastTriggerDayKey = newTriggerDayKey;
       });
       _maybeRefreshEmptyGroupSuggestedRow();
-    });
+    }, onError: (Object e) => debugPrint('Cooking plan listener error: $e'));
 
     _subscribeRecipes();
     _scrollController.addListener(_maybeLoadMoreRecipes);
@@ -323,7 +323,7 @@ class _RecipePageState extends State<RecipePage>
         usageLoaded = true;
         generateSearchedRecipes();
       });
-    });
+    }, onError: (Object e) => debugPrint('Cooking plan usage listener error: $e'));
 
     final keyboardVisibilityController = KeyboardVisibilityController();
     keyboardSubscription = keyboardVisibilityController.onChange.listen((visible) {
@@ -442,7 +442,7 @@ class _RecipePageState extends State<RecipePage>
         generateSearchedRecipes();
       });
       _maybeRefreshEmptyGroupSuggestedRow();
-    });
+    }, onError: (Object e) => debugPrint('Recipes listener error: $e'));
   }
 
   /// Grows the recipe window when the grid is scrolled near its end, so groups

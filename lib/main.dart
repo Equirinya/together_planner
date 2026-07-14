@@ -972,7 +972,7 @@ class _HomePageState extends State<HomePage> {
         _pendingPublicRecipe = null;
         _openPublicRecipe(pending);
       }
-    });
+    }, onError: (Object e) => debugPrint('Group doc listener error: $e'));
   }
 
   /// Returns the feature key that is currently visible, or null.

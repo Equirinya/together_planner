@@ -185,6 +185,8 @@ Future<void> _awaitIngredientsReady(DocumentReference<Map<String, dynamic>> reci
     if (!data.containsKey('pending')) return;
     final p = List<String>.from(data['pending'] ?? const []);
     if (!p.contains('ingredients')) ready.complete();
+  }, onError: (Object e) {
+    if (!ready.isCompleted) ready.completeError(e);
   });
   try {
     await ready.future;

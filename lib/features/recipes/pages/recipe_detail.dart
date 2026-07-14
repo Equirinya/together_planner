@@ -230,7 +230,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       // Show every part as pending up front so shimmers appear immediately,
       // then let the document stream clear them one by one.
       _pending = {'title', 'steps', 'ingredients', 'image'};
-      _docSub = docRef.snapshots().listen(_onDocSnap);
+      _docSub = docRef.snapshots().listen(
+            _onDocSnap,
+            onError: (Object e) => debugPrint('Recipe doc listener error: $e'),
+          );
     } else {
       _loadRecipeMaybeGenerating();
     }
@@ -250,7 +253,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         _applyStreamData(data);
         _pending = pending;
       });
-      _docSub = docRef.snapshots().listen(_onDocSnap);
+      _docSub = docRef.snapshots().listen(
+            _onDocSnap,
+            onError: (Object e) => debugPrint('Recipe doc listener error: $e'),
+          );
     } else {
       setState(() => _applyData(data));
     }
@@ -586,7 +592,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           );
         }
       }
-    });
+    }, onError: (Object e) => debugPrint('Ingredients listener error: $e'));
   }
 
   Future<void> _reloadStepsOnly() async {
