@@ -15,6 +15,7 @@ import 'package:system_theme/system_theme.dart';
 import 'package:couple_planner/firebase_options.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 
 import 'package:app_links/app_links.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
@@ -29,6 +30,9 @@ import 'package:couple_planner/features/groups/pages/join_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
+import 'package:couple_planner/features/settings/pages/profile_page.dart';
+import 'package:couple_planner/features/settings/pages/notification_info_page.dart';
+import 'package:couple_planner/features/settings/notification_feature_settings.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/restart_widget.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
@@ -65,6 +69,7 @@ void main() async {
   FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true, cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED);
   await LanguageService.instance.load();
   await AiFeatureSettings.load();
+  await NotificationFeatureSettings.load();
   runApp(const RestartWidget(child: MyApp()));
 }
 
@@ -130,6 +135,15 @@ ThemeData _buildTheme(Color seed, Brightness brightness) {
     chipTheme: ChipThemeData(
       side: BorderSide.none,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: scheme.surfaceContainerHighest,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(16),
+        borderSide: BorderSide.none,
+      ),
     ),
     bottomSheetTheme: const BottomSheetThemeData(
       showDragHandle: true,
@@ -197,6 +211,12 @@ class _HomePageState extends State<HomePage> {
 
   // ── push notifications (FCM token) ──────────────────────────────────────────
   StreamSubscription<String>? _fcmTokenSub;
+
+  /// Guards the notification priming check so it runs at most once per app
+  /// session. This is what makes the prompt appear only on a *startup* where the
+  /// user is already in a multi-member group — never the moment someone joins
+  /// while the app is open (that snapshot is ignored until the next launch).
+  bool _notifPrimingChecked = false;
 
   final db = FirebaseFirestore.instance;
 
@@ -276,16 +296,87 @@ class _HomePageState extends State<HomePage> {
     db.collection('users').doc(uid).update({'language': LanguageService.instance.code.value}).catchError((_) {});
   }
 
-  /// Requests notification permission and returns the device's FCM token, or
-  /// null if permission was denied or the token couldn't be fetched.
+  /// Returns the device's FCM token **only if** notification permission has
+  /// already been granted, without ever prompting the user. The permission
+  /// request itself now lives behind the priming screen
+  /// ([NotificationInfoPage], shown from [_maybeShowNotificationPriming]) so it
+  /// no longer fires on every cold start.
   Future<String?> _fetchFcmToken() async {
     try {
-      final settings = await FirebaseMessaging.instance.requestPermission();
-      if (settings.authorizationStatus == AuthorizationStatus.denied) return null;
+      final settings = await FirebaseMessaging.instance.getNotificationSettings();
+      final authed = settings.authorizationStatus == AuthorizationStatus.authorized ||
+          settings.authorizationStatus == AuthorizationStatus.provisional;
+      if (!authed) return null;
       return await FirebaseMessaging.instance.getToken();
     } catch (_) {
       return null;
     }
+  }
+
+  /// Fetches the FCM token (permission assumed granted) and mirrors it onto the
+  /// user document. Called after the user grants permission from the priming
+  /// screen. No-op while signed out.
+  Future<void> _storeFcmToken() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final token = await FirebaseMessaging.instance.getToken();
+      if (token == null) return;
+      await db.collection('users').doc(uid).update({'fcmToken': token}).catchError((_) {});
+    } catch (_) {}
+  }
+
+  /// Decides whether to show the notification priming/info screen on this
+  /// startup. It appears only when: the user is in a group with more than one
+  /// member, the OS permission is still undecided, and they haven't dismissed
+  /// the priming before. Runs at most once per session (see [_notifPrimingChecked]),
+  /// so a group crossing into "more than one member" while the app is open is
+  /// intentionally deferred to the next launch. If the user grants permission,
+  /// the FCM token is fetched and stored.
+  Future<void> _maybeShowNotificationPriming(List<String> groupIds) async {
+    if (_notifPrimingChecked) return;
+    if (!(Platform.isAndroid || Platform.isIOS)) return;
+    if (groupIds.isEmpty) return;
+    _notifPrimingChecked = true;
+
+    // Only prompt while the OS decision is still pending.
+    try {
+      final current = await FirebaseMessaging.instance.getNotificationSettings();
+      if (current.authorizationStatus != AuthorizationStatus.notDetermined) return;
+    } catch (_) {
+      return;
+    }
+
+    // Respect an earlier dismissal so we don't nag on every launch.
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('notif_priming_dismissed') ?? false) return;
+
+    if (!await _isInMultiMemberGroup(groupIds)) return;
+
+    if (!mounted) return;
+    final granted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const NotificationInfoPage()),
+    );
+    if (granted == true) {
+      await _storeFcmToken();
+    } else {
+      await prefs.setBool('notif_priming_dismissed', true);
+    }
+  }
+
+  /// Whether any of [groupIds] has more than one active member — i.e. the user
+  /// actually shares a group with someone. Short-circuits on the first match.
+  Future<bool> _isInMultiMemberGroup(List<String> groupIds) async {
+    for (final id in groupIds) {
+      try {
+        final snap = await db.collection('groups').doc(id).collection('members').get();
+        final active = snap.docs.where((d) => d.data()['status'] != 'left').length;
+        if (active > 1) return true;
+      } catch (_) {
+        // Ignore unreadable groups and keep checking the rest.
+      }
+    }
+    return false;
   }
 
   /// Keep the stored FCM token in sync if it rotates while the app is
@@ -304,7 +395,11 @@ class _HomePageState extends State<HomePage> {
     _authStateSub = FirebaseAuth.instance.authStateChanges().listen((user) {
       final isAuthed = user != null;
       if (_wasAuthed && !isAuthed && mounted) {
-        _testUserLoggedIn();
+        // Drop the previous account's group before routing to sign in, so a
+        // subsequent login can't inherit it.
+        _clearGroupState().then((_) {
+          if (mounted) _testUserLoggedIn();
+        });
       }
       _wasAuthed = isAuthed;
     });
@@ -715,6 +810,10 @@ class _HomePageState extends State<HomePage> {
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
   }
 
+  void _openProfile() {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProfilePage()));
+  }
+
   void _openOverview() {
     final ids = acceptedGroups?.map((d) => d.id).toList() ?? <String>[];
     if (_selectedGroup != null && _selectedGroup!.isNotEmpty && !ids.contains(_selectedGroup)) {
@@ -736,12 +835,52 @@ class _HomePageState extends State<HomePage> {
   /// pages render while auth and invite membership are verified in parallel.
   Future<void> _restoreCachedGroup() async {
     final prefs = await SharedPreferences.getInstance();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+
+    // The cache is tagged with the uid that wrote it. After a logout + login
+    // into a different account the stale group would otherwise survive (and,
+    // for an account with no groups at all, be kept forever by the fallback in
+    // the membership listener). Drop it when it belongs to someone else.
+    final cachedUid = prefs.getString('selected_group_uid');
+    if (uid == null || (cachedUid != null && cachedUid != uid)) {
+      await prefs.remove('selected_group');
+      await prefs.remove('selected_group_uid');
+      _cachedGroupId = null;
+      return;
+    }
+
     final cached = prefs.getString('selected_group');
     _cachedGroupId = (cached != null && cached.isNotEmpty) ? cached : null;
     if (cached != null && cached.isNotEmpty && _selectedGroup == null) {
       setState(() => _selectedGroup = cached);
       _subscribeToGroupDoc(cached);
     }
+  }
+
+  /// Wipe every trace of the previous account's group so the next sign-in
+  /// starts from a clean slate rather than rendering the old group's pages.
+  Future<void> _clearGroupState() async {
+    _groupListener?.cancel();
+    _groupListener = null;
+    _groupsStream = null;
+    _groupDocListener?.cancel();
+    _groupDocListener = null;
+    _groupInfoCache.clear();
+    _pendingShortcutFeature = null;
+    acceptedGroups = null;
+    _selectedGroup = null;
+    _cachedGroupId = null;
+    _groupDocReady = false;
+    _groupDefaultPage = null;
+    _mealPlannerUnlocked = false;
+    _enabledFeatures = List.of(_defaultEnabledFeatures);
+    _selectedIndex = 0;
+    _notifPrimingChecked = false;
+    if (mounted) setState(() {});
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('selected_group');
+    await prefs.remove('selected_group_uid');
   }
 
   @override
@@ -754,6 +893,17 @@ class _HomePageState extends State<HomePage> {
     _fcmTokenSub?.cancel();
     LanguageService.instance.code.removeListener(_persistLanguage);
     super.dispose();
+  }
+
+  /// Returns the OS version, e.g. "15" (Android) or "17.4.1" (iOS).
+  ///
+  /// `Platform.operatingSystemVersion` isn't usable for this: on Android OEMs
+  /// put arbitrary build fingerprints there (e.g. "BP2A.250605.031.A3...")
+  /// instead of the actual Android version. device_info_plus gives the real
+  /// version on both platforms.
+  Future<String> _majorOsVersion() async {
+    final deviceInfo = DeviceInfoPlugin();
+    return Platform.isAndroid ? (await deviceInfo.androidInfo).version.release : (await deviceInfo.iosInfo).systemVersion;
   }
 
   // ---------------------------------------------------------------------------
@@ -785,6 +935,11 @@ class _HomePageState extends State<HomePage> {
       _canEditPublicRecipes = (userDoc.data())?['editPublicRecipes'] == true;
       _viewAIUsage = (userDoc.data())?['viewAIUsage'] == true;
       _userDocData = userDoc.data();
+
+      // Adopt the notification opt-outs stored on the profile (source of truth
+      // for the backend). Fire-and-forget: a backfill write must not stall
+      // startup, and Firestore replays it if we're offline.
+      NotificationFeatureSettings.syncFromUserDoc(userDoc.data()).ignore();
 
       // If the user just signed up/in after tapping an invite link, open the
       // join screen now that they have an account.
@@ -829,14 +984,22 @@ class _HomePageState extends State<HomePage> {
 
           setState(() {});
           _refreshShortcuts();
+
+          // On this startup only (guarded to once per session), offer the
+          // notification priming screen if the user is already in a group with
+          // more than one member.
+          _maybeShowNotificationPriming(ids);
         });
 
         // Update user record
         final packageInfo = await PackageInfo.fromPlatform();
         final fcmToken = await _fetchFcmToken();
+        final osVersion = await _majorOsVersion();
         await db.collection('users').doc(uid).update({
           'lastLogin': FieldValue.serverTimestamp(),
           'appVersion': packageInfo.version,
+          'os': Platform.operatingSystem,
+          'osVersion': osVersion,
           'language': LanguageService.instance.code.value,
           if (fcmToken != null) 'fcmToken': fcmToken,
         }).catchError((
@@ -854,6 +1017,8 @@ class _HomePageState extends State<HomePage> {
     try {
       final fresh = await userRef.get(const GetOptions(source: Source.server));
       if (!mounted || !fresh.exists) return;
+      // Pick up notification opt-outs changed on another device this session.
+      NotificationFeatureSettings.syncFromUserDoc(fresh.data()).ignore();
       final canEdit = fresh.data()?['editIngredients'] == true;
       if (canEdit != _canEditIngredients) {
         setState(() => _canEditIngredients = canEdit);
@@ -891,10 +1056,23 @@ class _HomePageState extends State<HomePage> {
     _groupDocListener = null;
     _groupDocReady = false;
 
-    if (groupId == null) return;
+    if (groupId == null) {
+      // No group left: reset the feature list and tab index so the shell can't
+      // keep rendering the previous group's pages.
+      _enabledFeatures = List.of(_defaultEnabledFeatures);
+      _groupDefaultPage = null;
+      _mealPlannerUnlocked = false;
+      _selectedIndex = 0;
+      return;
+    }
 
     _touchGroupLastUsed(groupId);
-    SharedPreferences.getInstance().then((p) => p.setString('selected_group', groupId));
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    SharedPreferences.getInstance().then((p) {
+      p.setString('selected_group', groupId);
+      // Tag the cache with its owner so another account can't restore it.
+      if (uid != null) p.setString('selected_group_uid', uid);
+    });
 
     _groupDocListener = db.collection('groups').doc(groupId).snapshots().listen((snapshot) {
       if (!snapshot.exists) {
@@ -908,6 +1086,7 @@ class _HomePageState extends State<HomePage> {
             _cachedGroupId = null;
             _groupDocReady = false;
           });
+          _subscribeToGroupDoc(null);
         }
         return;
       }
@@ -972,7 +1151,22 @@ class _HomePageState extends State<HomePage> {
         _pendingPublicRecipe = null;
         _openPublicRecipe(pending);
       }
-    }, onError: (Object e) => debugPrint('Group doc listener error: $e'));
+    }, onError: (Object e) {
+      debugPrint('Group doc listener error: $e');
+      // A permission denial means we're not a member of this group (e.g. a
+      // group cached by a previously signed-in account). Drop it so the
+      // no-group screen shows instead of the previous account's pages.
+      final denied = e is FirebaseException && e.code == 'permission-denied';
+      if (!denied || !mounted) return;
+      final ids = acceptedGroups?.map((d) => d.id).toList() ?? const <String>[];
+      if (ids.contains(groupId)) return;
+      setState(() {
+        _selectedGroup = null;
+        _cachedGroupId = null;
+        _groupDocReady = false;
+      });
+      _subscribeToGroupDoc(null);
+    });
   }
 
   /// Returns the feature key that is currently visible, or null.
@@ -1142,6 +1336,10 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                     const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _openProfile,
+                      child: const Text('Profile Settings'),
+                    ),
                     TextButton(
                       onPressed: _openSettings,
                       child: const Text('App Settings'),

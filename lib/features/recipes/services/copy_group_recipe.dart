@@ -54,7 +54,9 @@ Future<String> copyGroupRecipe({
     'lastUsedAt': FieldValue.serverTimestamp(),
     'preparationTime': s['preparationTime'] ?? 0,
     'time': s['time'] ?? 0,
-    'servings': s['servings'] ?? 2,
+    // Kept null for recipes without a meaningful serving count (a cake, a loaf)
+    // so the copied recipe hides the servings control too.
+    'servings': s['servings'],
     'tags': List<dynamic>.from(s['tags'] ?? const []),
     'dietary': List<dynamic>.from(s['dietary'] ?? const []),
     if (s['languages'] != null) 'languages': List<dynamic>.from(s['languages']),

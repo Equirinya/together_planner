@@ -14,6 +14,7 @@ import 'package:couple_planner/features/recipes/pages/public_recipes_admin_page.
 import 'package:couple_planner/features/recipes/pages/shared_recipes_page.dart';
 import 'package:couple_planner/features/settings/pages/ai_usage_overview_page.dart';
 import 'package:couple_planner/features/settings/pages/dietary_preferences_page.dart';
+import 'package:couple_planner/features/settings/pages/profile_page.dart';
 import 'package:couple_planner/features/settings/pages/settings_page.dart';
 
 /// Lists the groups the user belongs to: tap to make one active, open its
@@ -175,6 +176,15 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
               ),
             ),
           if (widget.canEditIngredients || widget.canEditPublicRecipes || widget.viewAIUsage) const Divider(),
+          ListTile(
+            leading: const Icon(Icons.person_outline),
+            title: const Text('Profile'),
+            subtitle: const Text('Your name and account'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ProfilePage()),
+            ),
+          ),
           ListTile(
             leading: const Icon(Icons.restaurant_outlined),
             title: const Text('Dietary preferences'),

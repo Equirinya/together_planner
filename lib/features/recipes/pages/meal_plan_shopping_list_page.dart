@@ -57,6 +57,18 @@ class _MealPlanShoppingListPageState extends State<MealPlanShoppingListPage> {
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
+  /// Skipping the shopping list still has to keep a servings change: the plans
+  /// were committed with [widget.people], so leaving without saving would show
+  /// the wrong count on the cooking plans. Fire-and-forget — the user is on
+  /// their way out and a failed write only leaves the original count.
+  void _skip() {
+    final sections = _sections;
+    if (sections != null && _people != widget.people) {
+      saveSectionServings(sections).ignore();
+    }
+    _finish();
+  }
+
   void _setPeople(int people) {
     final sections = _sections;
     if (sections == null || people < 1) return;
@@ -109,7 +121,7 @@ class _MealPlanShoppingListPageState extends State<MealPlanShoppingListPage> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: _saving ? null : _finish,
+                onPressed: _saving ? null : _skip,
                 child: const Text('Skip'),
               ),
             ),

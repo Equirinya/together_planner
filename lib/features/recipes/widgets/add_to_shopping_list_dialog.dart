@@ -46,6 +46,12 @@ class AddToShoppingListDialog extends StatefulWidget {
   final String recipeId;
   final DocumentReference<Map<String, dynamic>> planRef;
   final int recipeServings;
+  // The recipe's own base serving count that its ingredient quantities are
+  // calibrated to. Kept as a separate double from [recipeServings] (an int,
+  // used only to seed the selector) because a recipe can have a fractional
+  // base like 0.5 — flooring that to an int before scaling would silently
+  // double every quantity.
+  final double baseServings;
   final List<IngPreload> preloadedRows;
 
   const AddToShoppingListDialog({
@@ -54,6 +60,7 @@ class AddToShoppingListDialog extends StatefulWidget {
     required this.recipeId,
     required this.planRef,
     required this.recipeServings,
+    required this.baseServings,
     required this.preloadedRows,
   });
 
@@ -196,7 +203,10 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
   }
 
   void _rescale() {
-    final base = widget.recipeServings < 1 ? 1 : widget.recipeServings;
+    // Guard against only a genuinely invalid (zero/negative) base — a
+    // fractional base like 0.5 is real and must not be rounded up to 1,
+    // or every quantity would be scaled by half of what it should be.
+    final base = widget.baseServings <= 0 ? 1.0 : widget.baseServings;
     final ratio = servings / base;
     for (final row in rows) {
       row.cur = row.base.map(

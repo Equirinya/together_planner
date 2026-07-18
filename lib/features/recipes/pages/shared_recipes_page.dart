@@ -10,6 +10,7 @@ import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/widgets/recipe_card.dart' show RecipeCard;
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
+import 'package:couple_planner/features/recipes/services/delete_recipe.dart';
 
 /// Browses another group's recipes (as a recipe viewer) and lets the user add
 /// any of them to their own active group. A filled round check marks recipes
@@ -135,19 +136,8 @@ class _SharedRecipesPageState extends State<SharedRecipesPage> {
 
   /// Deletes a copied recipe from the active group, mirroring the detail page's
   /// delete: any cooking plans referencing it are removed too.
-  Future<void> _removeCopy(String destId, String recipeId) async {
-    final destGroup = _db.collection('groups').doc(destId);
-    final plans = await destGroup
-        .collection('cooking_plan')
-        .where('recipe', isEqualTo: recipeId)
-        .get();
-    final batch = _db.batch();
-    for (final p in plans.docs) {
-      batch.delete(p.reference);
-    }
-    batch.delete(destGroup.collection('recipes').doc(recipeId));
-    await batch.commit();
-  }
+  Future<void> _removeCopy(String destId, String recipeId) =>
+      deleteGroupRecipe(groupId: destId, recipeId: recipeId);
 
   Future<void> _leave() async {
     final confirmed = await showDialog<bool>(

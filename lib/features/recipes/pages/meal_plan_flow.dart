@@ -16,6 +16,7 @@ import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/recipes/pages/meal_plan_shopping_list_page.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/meal_plan_service.dart';
+import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
@@ -327,15 +328,8 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
                   textInputAction: TextInputAction.done,
                   minLines: 1,
                   maxLines: 3,
-                  decoration: InputDecoration(
+                  decoration: const InputDecoration(
                     hintText: 'Anything else? e.g. "use up the zucchini"…',
-                    filled: true,
-                    fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -476,9 +470,50 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   bool _committing = false;
   final Map<String, Future<PublicRecipePreload>> _publicPreloads = {};
 
+  /// The optional "Additionally?" suggestion (a complementary non-main item),
+  /// shown once at the end of the list. Null until it has been generated.
+  MealPlanSlot? _extra;
+
+  /// Every recipe name surfaced anywhere in this planning session — across days,
+  /// swaps, regenerates and the extra. Passed as `avoidNames` on every
+  /// subsequent generation so a swap/regenerate never re-proposes something the
+  /// user has already seen. [_shownLower] backs de-duplication; [_shownNames]
+  /// preserves original casing for the prompt (newest last, capped).
+  final List<String> _shownNames = [];
+  final Set<String> _shownLower = {};
+
   String get _lang => LanguageService.instance.code.value;
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
   List<MealPlanSlot> get _activeSlots => (_slots ?? []).where((s) => !s.removed).toList();
+
+  /// The day slots plus the extra (when the user hasn't disabled it) — i.e.
+  /// everything that actually gets written on confirm. The extra shares its day
+  /// with that day's main, so the day simply ends up with two planned recipes.
+  List<MealPlanSlot> get _committableSlots => [
+        ..._activeSlots,
+        if (_extra != null && !_extra!.removed) _extra!,
+      ];
+
+  /// Plants the extra on one of the plan's middle days, so it lands in the
+  /// thick of the week rather than on the first or last day.
+  void _placeExtra(MealPlanSlot extra) {
+    final days = _activeSlots.isNotEmpty ? _activeSlots : (_slots ?? const <MealPlanSlot>[]);
+    extra.date = days.isEmpty ? widget.startDate : days[days.length ~/ 2].date;
+  }
+
+  /// Records [slots]' names as "seen this session". Safe to call repeatedly.
+  void _remember(Iterable<MealPlanSlot?> slots) {
+    for (final s in slots) {
+      final name = s?.name.trim();
+      if (name == null || name.isEmpty) continue;
+      if (_shownLower.add(name.toLowerCase())) _shownNames.add(name);
+    }
+  }
+
+  /// The names to avoid on the next generation — everything seen so far, capped
+  /// to the most recent 40 so a long session can't bloat the prompt.
+  List<String> get _avoidNames =>
+      _shownNames.length > 40 ? _shownNames.sublist(_shownNames.length - 40) : _shownNames;
 
   @override
   void initState() {
@@ -505,6 +540,9 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         missingDates.add(d);
       }
     }
+    // Reused proposals count as already seen this session, so a later
+    // swap/regenerate won't circle back to them.
+    _remember(reused);
 
     if (missingDates.isEmpty) {
       _startBackgroundWork(reused);
@@ -512,6 +550,8 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         _slots = reused;
         _error = null;
       });
+      // Every day was reused, so no generation ran — fetch the extra on its own.
+      _ensureExtra();
       return;
     }
 
@@ -521,7 +561,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
     });
     try {
       final locked = reused.where((s) => !s.removed).toList();
-      final generated = await generateMealPlan(
+      final result = await generateMealPlan(
         groupId: widget.groupId,
         startDate: widget.startDate,
         days: widget.days,
@@ -531,16 +571,96 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         notes: widget.notes,
         regenerateDates: missingDates,
         lockedSlots: locked,
-        avoidNames: [for (final s in locked) s.name],
+        avoidNames: _avoidNames,
+        includeExtra: true,
         lang: _lang,
       );
-      final slots = [...reused, ...generated]..sort((a, b) => a.date.compareTo(b.date));
+      final slots = [...reused, ...result.slots]..sort((a, b) => a.date.compareTo(b.date));
+      _remember(result.slots);
       _startBackgroundWork(slots);
       if (!mounted) return;
-      setState(() => _slots = slots);
+      setState(() {
+        _slots = slots;
+        final extra = result.extra;
+        if (extra != null) {
+          _remember([extra]);
+          _startBackgroundWork([extra]);
+          _placeExtra(extra); // needs _slots set, so place after assigning them
+          _extra = extra;
+        }
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = _messageFor(e));
+    }
+  }
+
+  /// Fetches an "Additionally?" extra on its own (no day slots), used when the
+  /// initial proposal was fully served from cache so no generation ran.
+  Future<void> _ensureExtra() async {
+    if (_extra != null) return;
+    try {
+      final result = await generateMealPlan(
+        groupId: widget.groupId,
+        startDate: widget.startDate,
+        days: widget.days,
+        people: widget.people,
+        dietary: widget.dietary,
+        styles: widget.styles,
+        notes: widget.notes,
+        regenerateDates: [widget.startDate],
+        lockedSlots: _activeSlots,
+        avoidNames: _avoidNames,
+        extraOnly: true,
+        lang: _lang,
+      );
+      final extra = result.extra;
+      if (extra == null || !mounted) return;
+      _remember([extra]);
+      _startBackgroundWork([extra]);
+      _placeExtra(extra);
+      setState(() => _extra = extra);
+    } catch (_) {
+      // A missing extra is non-fatal — the plan itself is unaffected.
+    }
+  }
+
+  /// Regenerates just the "Additionally?" suggestion, avoiding everything shown
+  /// so far this session.
+  Future<void> _regenerateExtra() async {
+    final current = _extra;
+    if (current == null) return;
+    setState(() => current.regenerating = true);
+    try {
+      final result = await generateMealPlan(
+        groupId: widget.groupId,
+        startDate: widget.startDate,
+        days: widget.days,
+        people: widget.people,
+        dietary: widget.dietary,
+        styles: widget.styles,
+        notes: widget.notes,
+        regenerateDates: [widget.startDate],
+        lockedSlots: _activeSlots,
+        avoidNames: _avoidNames,
+        extraOnly: true,
+        lang: _lang,
+      );
+      final extra = result.extra;
+      if (extra == null || !mounted) {
+        if (mounted) _snack('Could not find another extra right now.');
+        return;
+      }
+      _remember([extra]);
+      _startBackgroundWork([extra]);
+      _placeExtra(extra);
+      // A disabled extra stays disabled across a regenerate.
+      extra.removed = current.removed;
+      setState(() => _extra = extra);
+    } catch (_) {
+      if (mounted) _snack('Could not swap the extra. Please try again.');
+    } finally {
+      if (mounted && _extra == current) setState(() => current.regenerating = false);
     }
   }
 
@@ -584,11 +704,15 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         notes: widget.notes,
         regenerateDates: [slot.date],
         lockedSlots: locked,
-        avoidNames: [slot.name],
+        // Avoid every name seen this session — not just the one being swapped —
+        // so a swap never lands on a dish already shown for another day or an
+        // earlier proposal.
+        avoidNames: _avoidNames,
         lang: _lang,
       );
-      if (result.isEmpty || !mounted) return;
-      final fresh = result.first;
+      if (result.slots.isEmpty || !mounted) return;
+      final fresh = result.slots.first;
+      _remember([fresh]);
       _startBackgroundWork([fresh]);
       // The swapped-away slot's own early-started "new idea" recipe (if any)
       // is simply discarded — it only ever lived in `public_recipes`, so
@@ -613,7 +737,8 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   }
 
   Future<void> _confirm() async {
-    final active = _activeSlots;
+    // Includes the "Additionally?" extra on its middle day unless disabled.
+    final active = _committableSlots;
     if (active.isEmpty) return;
     setState(() => _committing = true);
     showDialog(
@@ -682,6 +807,19 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
                                 _publicPreloads.putIfAbsent(id, () => preloadPublicRecipe(id)),
                           ),
                         ),
+                      if (_extra != null) ...[
+                        const _AdditionallyHeader(),
+                        _MealPlanDayTile(
+                          slot: _extra!,
+                          groupId: widget.groupId,
+                          groupDoc: widget.groupDoc,
+                          access: widget.access,
+                          onSwap: _regenerateExtra,
+                          onToggleRemove: () => _toggleRemove(_extra!),
+                          publicPreload: (id) =>
+                              _publicPreloads.putIfAbsent(id, () => preloadPublicRecipe(id)),
+                        ),
+                      ],
                     ],
                   ),
         bottomNavigationBar: (_slots == null || _error != null)
@@ -689,7 +827,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
             : SafeArea(
                 minimum: const EdgeInsets.all(16),
                 child: FilledButton.icon(
-                  onPressed: _activeSlots.isEmpty || _committing ? null : _confirm,
+                  onPressed: _committableSlots.isEmpty || _committing ? null : _confirm,
                   icon: const Icon(Icons.check),
                   label: const Text('Looks good! Add to meal plan'),
                 ),
@@ -840,6 +978,34 @@ class _MealPlanBlockingDialog extends StatelessWidget {
   }
 }
 
+/// Separates the "Additionally?" extra from the day tiles: a bit of a gap, a
+/// hairline divider and a soft label, so the extra reads as a bonus rather than
+/// another day in the plan.
+class _AdditionallyHeader extends StatelessWidget {
+  const _AdditionallyHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 20, bottom: 12),
+      child: Row(
+        children: [
+          Text(
+            'Additionally?',
+            style: Theme.of(context)
+                .textTheme
+                .labelLarge
+                ?.copyWith(color: colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(width: 12),
+          Expanded(child: Divider(color: colorScheme.outlineVariant, height: 1)),
+        ],
+      ),
+    );
+  }
+}
+
 class _MealPlanDayTile extends StatelessWidget {
   const _MealPlanDayTile({
     required this.slot,
@@ -856,15 +1022,23 @@ class _MealPlanDayTile extends StatelessWidget {
   final DocumentReference<Map<String, dynamic>> groupDoc;
   final AiAccess access;
   final VoidCallback onSwap;
-  final VoidCallback onToggleRemove;
+
+  /// Null for the "Additionally?" extra, which can't be skipped (it's never
+  /// committed with the plan) — its remove action is simply hidden.
+  final VoidCallback? onToggleRemove;
   final Future<PublicRecipePreload> Function(String publicRecipeId) publicPreload;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    if (slot.removed) {
-      return _SkippedTile(date: slot.date, onRestore: onToggleRemove);
+    if (slot.removed && onToggleRemove != null) {
+      return _SkippedTile(
+        date: slot.date,
+        onRestore: onToggleRemove!,
+        title: slot.isExtra ? 'Additionally' : null,
+        subtitle: slot.isExtra ? 'Not added' : null,
+      );
     }
 
     final content = SizedBox(
@@ -885,7 +1059,11 @@ class _MealPlanDayTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    getRelativeDateString(slot.date),
+                    // The extra now lands on a real day too, so show which one
+                    // — the section header above already marks it as the extra.
+                    slot.isExtra
+                        ? 'Alongside ${getRelativeDateString(slot.date)}'
+                        : getRelativeDateString(slot.date),
                     style: Theme.of(context)
                         .textTheme
                         .labelMedium
@@ -912,7 +1090,12 @@ class _MealPlanDayTile extends StatelessWidget {
               ),
             ),
           ),
-          _TileActions(regenerating: slot.regenerating, onSwap: onSwap, onToggleRemove: onToggleRemove),
+          _TileActions(
+            regenerating: slot.regenerating,
+            isExtra: slot.isExtra,
+            onSwap: onSwap,
+            onToggleRemove: onToggleRemove,
+          ),
         ],
       ),
     );
@@ -950,10 +1133,12 @@ class _MealPlanDayTile extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      builder: (_) => _PublicRecipeSheet(
+      builder: (_) => _RecipePreviewSheet(
         name: slot.name,
         image: slot.publicImage,
-        preload: publicPreload(publicId),
+        alwaysShowImage: false,
+        dataStream: Stream.fromFuture(publicPreload(publicId))
+            .map((p) => localizeRecipeData(p.data, LanguageService.instance.code.value)),
       ),
     );
   }
@@ -961,6 +1146,9 @@ class _MealPlanDayTile extends StatelessWidget {
   void _openOwnPreview(BuildContext context) {
     final recipeId = slot.recipeId;
     if (recipeId == null) return;
+    final recipeDoc = slot.source == MealPlanSource.newIdea
+        ? FirebaseFirestore.instance.collection('public_recipes').doc(recipeId)
+        : groupDoc.collection('recipes').doc(recipeId);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -969,12 +1157,14 @@ class _MealPlanDayTile extends StatelessWidget {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      builder: (_) => _OwnIdeaRecipeSheet(
+      builder: (_) => _RecipePreviewSheet(
         name: slot.name,
-        recipeDoc: slot.source == MealPlanSource.newIdea
-            ? FirebaseFirestore.instance.collection('public_recipes').doc(recipeId)
-            : groupDoc.collection('recipes').doc(recipeId),
-        isPublicDoc: slot.source == MealPlanSource.newIdea,
+        image: slot.publicImage,
+        alwaysShowImage: true,
+        dataStream: recipeDoc.snapshots().map((s) {
+          final d = s.data();
+          return d == null ? null : localizeRecipeData(d, LanguageService.instance.code.value);
+        }),
       ),
     );
   }
@@ -983,11 +1173,17 @@ class _MealPlanDayTile extends StatelessWidget {
 /// Trailing swap/remove actions, replaced by a spinner while a single-day
 /// swap is in flight.
 class _TileActions extends StatelessWidget {
-  const _TileActions({required this.regenerating, required this.onSwap, required this.onToggleRemove});
+  const _TileActions({
+    required this.regenerating,
+    required this.isExtra,
+    required this.onSwap,
+    required this.onToggleRemove,
+  });
 
   final bool regenerating;
+  final bool isExtra;
   final VoidCallback onSwap;
-  final VoidCallback onToggleRemove;
+  final VoidCallback? onToggleRemove;
 
   @override
   Widget build(BuildContext context) {
@@ -1004,16 +1200,17 @@ class _TileActions extends StatelessWidget {
       children: [
         IconButton(
           visualDensity: VisualDensity.compact,
-          tooltip: 'Regenerate this day',
+          tooltip: isExtra ? 'Suggest a different extra' : 'Regenerate this day',
           onPressed: onSwap,
           icon: const Icon(Icons.refresh, size: 20),
         ),
-        IconButton(
-          visualDensity: VisualDensity.compact,
-          tooltip: 'Skip this day',
-          onPressed: onToggleRemove,
-          icon: const Icon(Icons.remove_circle_outline, size: 20),
-        ),
+        if (onToggleRemove != null)
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            tooltip: isExtra ? "Don't add this extra" : 'Skip this day',
+            onPressed: onToggleRemove,
+            icon: const Icon(Icons.remove_circle_outline, size: 20),
+          ),
       ],
     );
   }
@@ -1023,9 +1220,19 @@ class _TileActions extends StatelessWidget {
 /// to bring it back. Same fixed height/margin as the regular tile's [Card] so
 /// it lines up exactly instead of running wider.
 class _SkippedTile extends StatelessWidget {
-  const _SkippedTile({required this.date, required this.onRestore});
+  const _SkippedTile({
+    required this.date,
+    required this.onRestore,
+    this.title,
+    this.subtitle,
+  });
   final DateTime date;
   final VoidCallback onRestore;
+
+  /// Overrides for the disabled "Additionally?" extra, which isn't a skipped
+  /// day and shouldn't read like one.
+  final String? title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -1051,10 +1258,11 @@ class _SkippedTile extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(getRelativeDateString(date), style: Theme.of(context).textTheme.titleSmall),
+                    Text(title ?? getRelativeDateString(date),
+                        style: Theme.of(context).textTheme.titleSmall),
                     const SizedBox(height: 2),
                     Text(
-                      'Skipped',
+                      subtitle ?? 'Skipped',
                       style: Theme.of(context)
                           .textTheme
                           .bodySmall
@@ -1158,14 +1366,31 @@ class _Thumbnail extends StatelessWidget {
   }
 }
 
-/// Bottom sheet previewing a not-yet-adopted public recipe (image,
-/// description, steps) so it can be inspected before the plan is confirmed.
-class _PublicRecipeSheet extends StatelessWidget {
-  const _PublicRecipeSheet({required this.name, required this.image, required this.preload});
+/// Bottom sheet previewing a recipe (image, description, steps) before the
+/// plan is confirmed. Shared by public-recipe slots (a one-shot preload,
+/// wrapped as a single-event stream) and own/new-idea slots (a live
+/// Firestore stream, so a still-generating recipe's fields pop in as they
+/// land) — see the `_open*Preview` callers for how each wires up
+/// [dataStream].
+class _RecipePreviewSheet extends StatelessWidget {
+  const _RecipePreviewSheet({
+    required this.name,
+    required this.image,
+    required this.dataStream,
+    required this.alwaysShowImage,
+  });
 
+  /// Fallback name/image shown immediately, before the first [dataStream]
+  /// event arrives (or if a field isn't present yet).
   final String name;
   final String? image;
-  final Future<PublicRecipePreload> preload;
+  final Stream<Map<String, dynamic>?> dataStream;
+
+  /// Whether to render a persistent shimmer placeholder when no image is
+  /// available yet (own/new-idea slots, whose image may still be
+  /// generating) vs. simply omitting the image block (public slots, which
+  /// always already have one).
+  final bool alwaysShowImage;
 
   @override
   Widget build(BuildContext context) {
@@ -1175,28 +1400,47 @@ class _PublicRecipeSheet extends StatelessWidget {
       minChildSize: 0.4,
       maxChildSize: 0.95,
       expand: false,
-      builder: (context, scrollController) => FutureBuilder<PublicRecipePreload>(
-        future: preload,
+      builder: (context, scrollController) => StreamBuilder<Map<String, dynamic>?>(
+        stream: dataStream,
         builder: (context, snap) {
-          final data = snap.data?.data;
+          final data = snap.data;
+          final loading = data == null;
+          final images = data?['images'] is List
+              ? List<String>.from(data!['images'])
+              : ((data?['image'] as String?)?.isNotEmpty == true
+                  ? [data!['image'] as String]
+                  : const <String>[]);
+          final displayImage = images.isNotEmpty ? images.first : image;
           final steps = List<String>.from(data?['steps'] ?? const []);
           final description = (data?['description'] ?? '').toString();
           final time = (data?['time'] as num?)?.toInt() ?? 0;
-          final loading = snap.connectionState != ConnectionState.done;
+          final pending = data?['pending'] as List?;
+          final stepsDone = pending == null || !pending.contains('steps');
+          final displayName =
+              (data?['name'] as String?)?.isNotEmpty == true ? data!['name'] as String : name;
           return ListView(
             controller: scrollController,
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
             children: [
-              if (image != null && image!.isNotEmpty)
+              if (displayImage != null && displayImage.isNotEmpty)
                 ClipRRect(
                   borderRadius: BorderRadius.circular(20),
                   child: AspectRatio(
                     aspectRatio: 16 / 9,
-                    child: StorageImage(storagePath: image!, fit: BoxFit.cover),
+                    child: StorageImage(storagePath: displayImage, fit: BoxFit.cover),
+                  ),
+                )
+              else if (alwaysShowImage)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: AspectRatio(
+                    aspectRatio: 16 / 9,
+                    child: _Shimmer(child: Container(color: colorScheme.surfaceContainerHighest)),
                   ),
                 ),
-              if (image != null && image!.isNotEmpty) const SizedBox(height: 16),
-              Text(name, style: Theme.of(context).textTheme.headlineSmall),
+              if ((displayImage != null && displayImage.isNotEmpty) || alwaysShowImage)
+                const SizedBox(height: 16),
+              Text(displayName, style: Theme.of(context).textTheme.headlineSmall),
               if (time > 0) ...[
                 const SizedBox(height: 8),
                 _SheetTimeRow(minutes: time),
@@ -1212,7 +1456,7 @@ class _PublicRecipeSheet extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 20),
-              if (loading)
+              if (loading || !stepsDone)
                 for (int i = 0; i < 4; i++)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 10),
@@ -1278,119 +1522,6 @@ class _SheetTimeRow extends StatelessWidget {
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
         ),
       ],
-    );
-  }
-}
-
-/// Bottom sheet previewing an own/new-idea recipe live from Firestore
-/// (mirrors [_PublicRecipeSheet] for public-recipe slots, kept as a separate
-/// small widget rather than a shared abstraction — see this file's other
-/// small-duplicate notes) so a still-generating "new" idea's name/image/steps
-/// pop in as they land, before the plan is confirmed.
-class _OwnIdeaRecipeSheet extends StatelessWidget {
-  const _OwnIdeaRecipeSheet({required this.name, required this.recipeDoc, this.isPublicDoc = false});
-
-  final String name;
-  final DocumentReference<Map<String, dynamic>> recipeDoc;
-
-  /// Whether [recipeDoc] is a `public_recipes` doc (single `image` field)
-  /// rather than a group recipe (`images` list) — true for a still-previewing
-  /// "new idea" slot, which lives in `public_recipes` until the plan is
-  /// confirmed.
-  final bool isPublicDoc;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DraggableScrollableSheet(
-      initialChildSize: 0.7,
-      minChildSize: 0.4,
-      maxChildSize: 0.95,
-      expand: false,
-      builder: (context, scrollController) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: recipeDoc.snapshots(),
-        builder: (context, snap) {
-          final data = snap.data?.data();
-          final images = isPublicDoc
-              ? [if ((data?['image'] as String?)?.isNotEmpty == true) data!['image'] as String]
-              : List<String>.from(data?['images'] ?? const []);
-          final steps = List<String>.from(data?['steps'] ?? const []);
-          final description = (data?['description'] ?? '').toString();
-          final time = (data?['time'] as num?)?.toInt() ?? 0;
-          final pending = data?['pending'] as List?;
-          final stepsDone = pending == null || !pending.contains('steps');
-          final displayName = (data?['name'] as String?)?.isNotEmpty == true ? data!['name'] as String : name;
-          return ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: images.isNotEmpty
-                      ? StorageImage(storagePath: images.first, fit: BoxFit.cover)
-                      : _Shimmer(child: Container(color: colorScheme.surfaceContainerHighest)),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(displayName, style: Theme.of(context).textTheme.headlineSmall),
-              if (time > 0) ...[
-                const SizedBox(height: 8),
-                _SheetTimeRow(minutes: time),
-              ],
-              if (description.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  description,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: colorScheme.onSurfaceVariant),
-                ),
-              ],
-              const SizedBox(height: 20),
-              if (!stepsDone)
-                for (int i = 0; i < 4; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _Shimmer(
-                      child: Container(
-                        height: 16,
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  )
-              else if (steps.isEmpty)
-                Text('No steps available.', style: TextStyle(color: colorScheme.onSurfaceVariant))
-              else
-                for (int i = 0; i < steps.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CircleAvatar(
-                          radius: 12,
-                          backgroundColor: colorScheme.primaryContainer,
-                          child: Text(
-                            '${i + 1}',
-                            style: TextStyle(fontSize: 12, color: colorScheme.onPrimaryContainer),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                            child: Text(steps[i], style: Theme.of(context).textTheme.bodyMedium)),
-                      ],
-                    ),
-                  ),
-            ],
-          );
-        },
-      ),
     );
   }
 }

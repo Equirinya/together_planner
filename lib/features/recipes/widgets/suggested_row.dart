@@ -32,6 +32,15 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   // yesterday's picks until the next app start.
   String? _suggestedRowDayKey;
 
+  // The raw public-recipe docs backing the suggested row, cached per calendar
+  // day and per group shape (empty vs. not). Fetching is separated from
+  // ranking so the row can be re-ranked — after a dismissal, a day-rollover
+  // recheck, the empty-group recheck, or a dietary-preference change — by
+  // reusing these docs instead of re-reading `public_recipes` every time.
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _suggestedDocs = [];
+  String? _suggestedDocsDayKey;
+  bool _suggestedDocsEmptyGroup = false;
+
   Future<void> loadDismissed() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -73,195 +82,179 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   Future<void> loadSuggestedRow() async {
     try {
       final col = FirebaseFirestore.instance.collection('public_recipes');
-
-      // A group with no recipes and no cooking plans yet has no usage signal
-      // to weight suggestions by, so the usual weighted-random/dismissal/
-      // seasonal ordering below isn't meaningful for it. Instead just show
-      // recipes matching every one of the user's diets, sorted by popularity
-      // alone (falling back to popularity alone if none match).
-      final groupEmpty = recipesLoaded && plansLoaded && recipes.isEmpty && cookingPlans.isEmpty;
-      if (groupEmpty) {
-        final now = DateTime.now();
-        _suggestedRowDayKey = '${now.year}-${now.month}-${now.day}';
-        final ordered = await _loadEmptyGroupSuggestions(col);
-        if (!mounted) return;
-        setState(() => suggestedPool = ordered);
-        return;
-      }
-
-      const poolSize = 40;
       final now = DateTime.now();
-      _suggestedRowDayKey = '${now.year}-${now.month}-${now.day}';
-      final seed =
-          _stableHash('${widget.groupId}-${now.year}-${now.month}-${now.day}');
-      final pivot = (_stableHash('pivot-$seed') % 100000) / 100000.0;
-      final docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-      final firstFuture = col
-          .where('random', isGreaterThanOrEqualTo: pivot)
-          .orderBy('random')
-          .limit(poolSize)
-          .get();
-      // Also pull the most popular recipes so widely-adopted ones have a real
-      // chance to surface, on top of the daily random sample. They still go
-      // through the weighted sampling below, so the row stays varied. Fired
-      // alongside `firstFuture` (rather than after it) since the two queries
-      // don't depend on each other.
-      final popularFuture = col
-          .orderBy('popularity', descending: true)
-          .limit(15)
-          .get();
-      final first = await firstFuture;
-      docs.addAll(first.docs);
-      if (docs.length < poolSize) {
-        final second = await col
-            .where('random', isLessThan: pivot)
-            .orderBy('random')
-            .limit(poolSize - docs.length)
-            .get();
-        docs.addAll(second.docs);
-      }
-      try {
-        final popular = await popularFuture;
-        docs.addAll(popular.docs);
-      } catch (_) {}
-      // Fallback for public recipes missing the `random` field: those documents
-      // are excluded from the range queries above, so fetch a plain page rather
-      // than leaving the row empty.
-      if (docs.isEmpty) {
-        final plain = await col.limit(poolSize).get();
-        docs.addAll(plain.docs);
+      final dayKey = '${now.year}-${now.month}-${now.day}';
+      // A group with no recipes and no cooking plans yet has no usage signal to
+      // weight suggestions by, so it uses a simpler popularity ordering (see
+      // _rankEmptyGroup) instead of the weighted-random/seasonal path.
+      final groupEmpty =
+          recipesLoaded && plansLoaded && recipes.isEmpty && cookingPlans.isEmpty;
+      _suggestedRowDayKey = dayKey;
+      final seed = _stableHash('${widget.groupId}-$dayKey');
+
+      // Fetch the backing docs once per day (per group shape) and reuse them on
+      // later calls — the init, dietary-change, day-rollover and empty-group
+      // rechecks all re-rank this same pool rather than re-reading Firestore.
+      if (_suggestedDocsDayKey != dayKey ||
+          _suggestedDocsEmptyGroup != groupEmpty ||
+          _suggestedDocs.isEmpty) {
+        _suggestedDocs = groupEmpty
+            ? await _fetchEmptyGroupDocs(col)
+            : await _fetchSuggestedDocs(col, seed);
+        _suggestedDocsDayKey = dayKey;
+        _suggestedDocsEmptyGroup = groupEmpty;
       }
 
-      final lang = LanguageService.instance.code.value;
-      final prefs = dietary.map((e) => e.toLowerCase()).toSet();
-      final seen = <String>{};
-      final scored = <({double key, bool seasonal, int dismissed, RecipeSuggestion s})>[];
-      for (final d in docs) {
-        if (!seen.add(d.id)) continue;
-        // Recipes dismissed today stay hidden until the next daily reshuffle.
-        if (_dismissedDay[d.id] == _suggestedRowDayKey) continue;
-        final data = d.data();
-        final recipeDietary = List<String>.from(data['dietary'] ?? [])
-            .map((e) => e.toLowerCase())
-            .toSet();
-        // A recipe is in season when its suitable months (1–12) include the
-        // current month; a null/empty list means it fits any time of year.
-        final suitableMonths = data['suitableMonths'];
-        var title = (data['name'] ?? '').toString();
-        if (lang != 'en') {
-          final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
-          if (languages.contains(lang)) {
-            final localized = (data['translations'] as Map?)?[lang] as Map?;
-            final localizedName = (localized?['name'] ?? '').toString();
-            if (localizedName.isNotEmpty) title = localizedName;
-          }
-        }
-
-        // Weighted-random ordering: a recipe's chance of ranking high grows with
-        // how many of the user's dietary tags it matches and how often it has
-        // been adopted (popularity), and shrinks each time it is dismissed.
-        // Nothing is filtered out, so the row always fills.
-        final matches = prefs.where(recipeDietary.contains).length;
-        final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
-        final dismissed = _dismissed[d.id] ?? 0;
-        final weight = (1 + 2 * matches) *
-            (1 + math.log(1 + popularity)) /
-            math.pow(4, dismissed);
-        // Deterministic per-recipe uniform in (0,1], identical for every group
-        // member and reshuffled each day via the group+date seed.
-        final r = (_stableHash('$seed-${d.id}') % 100000 + 1) / 100001.0;
-        // Efraimidis–Spirakis key: smaller wins, higher weight → smaller key.
-        final key = -math.log(r) / weight;
-
-        scored.add((
-          key: key,
-          seasonal: suitableMonths is List && suitableMonths.contains(now.month),
-          dismissed: dismissed,
-          s: RecipeSuggestion(
-            kind: SuggestionKind.public,
-            title: title,
-            publicId: d.id,
-            publicImage: data['image'] as String?,
-          ),
-        ));
-      }
-      scored.sort((a, b) => a.key.compareTo(b.key));
-      // Interleave in-season and any-time recipes so roughly half of the shown
-      // suggestions fit the current season, while each stream keeps the ranking
-      // above. When one stream runs out the rest are simply appended.
-      List<RecipeSuggestion> interleaveSeasonal(
-          Iterable<({double key, bool seasonal, int dismissed, RecipeSuggestion s})> entries) {
-        final seasonal = [for (final e in entries) if (e.seasonal) e.s];
-        final anytime = [for (final e in entries) if (!e.seasonal) e.s];
-        final out = <RecipeSuggestion>[];
-        for (var i = 0; i < seasonal.length || i < anytime.length; i++) {
-          if (i < seasonal.length) out.add(seasonal[i]);
-          if (i < anytime.length) out.add(anytime[i]);
-        }
-        return out;
-      }
-
-      // Never-dismissed recipes always come before any previously dismissed
-      // one, so a dismissal keeps a recipe out of the row unless the fresh
-      // pool runs dry.
-      final ordered = <RecipeSuggestion>[
-        ...interleaveSeasonal(scored.where((e) => e.dismissed == 0)),
-        ...interleaveSeasonal(scored.where((e) => e.dismissed > 0)),
-      ];
+      final ordered = groupEmpty
+          ? _rankEmptyGroup(_suggestedDocs)
+          : _rankSuggested(_suggestedDocs, seed, now);
       if (!mounted) return;
-      setState(() {
-        suggestedPool = ordered.toList();
-      });
+      setState(() => suggestedPool = ordered);
     } catch (_) {}
   }
 
-  /// Suggestions for a group with no recipes and no cooking plans yet: the
-  /// top public recipes by popularity that match every one of the user's
-  /// diets, or — if none of the top-popularity recipes satisfy that unusual a
-  /// combination — the top public recipes by popularity regardless of diet,
-  /// so the row is never left empty.
-  Future<List<RecipeSuggestion>> _loadEmptyGroupSuggestions(
-      CollectionReference<Map<String, dynamic>> col) async {
-    final lang = LanguageService.instance.code.value;
-    final prefs = dietary.map((e) => e.toLowerCase()).toSet();
+  /// The daily random+popular sample of public recipes backing the row. A
+  /// seeded `random`-range window (identical for every group member, reshuffled
+  /// daily) plus the most popular recipes so widely-adopted ones can surface,
+  /// with plain-page and de-dup handling. Fetch only — ranking is separate so
+  /// it can re-run against this cached pool without re-reading.
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fetchSuggestedDocs(
+      CollectionReference<Map<String, dynamic>> col, int seed) async {
+    const poolSize = 40;
+    final pivot = (_stableHash('pivot-$seed') % 100000) / 100000.0;
+    final docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    // Fired together (they don't depend on each other): the daily random window
+    // and the top-popularity recipes.
+    final firstFuture = col
+        .where('random', isGreaterThanOrEqualTo: pivot)
+        .orderBy('random')
+        .limit(poolSize)
+        .get();
+    final popularFuture =
+        col.orderBy('popularity', descending: true).limit(15).get();
+    final first = await firstFuture;
+    docs.addAll(first.docs);
+    if (docs.length < poolSize) {
+      final second = await col
+          .where('random', isLessThan: pivot)
+          .orderBy('random')
+          .limit(poolSize - docs.length)
+          .get();
+      docs.addAll(second.docs);
+    }
+    try {
+      docs.addAll((await popularFuture).docs);
+    } catch (_) {}
+    // Fallback for public recipes missing the `random` field: those are
+    // excluded from the range queries above, so fetch a plain page rather than
+    // leaving the row empty.
+    if (docs.isEmpty) {
+      docs.addAll((await col.limit(poolSize).get()).docs);
+    }
+    return docs;
+  }
 
-    Future<List<RecipeSuggestion>> topPopular({required bool requireAllDiets}) async {
-      final snap = await col.orderBy('popularity', descending: true).limit(100).get();
+  /// The top public recipes by popularity, backing the row for a group with no
+  /// recipes/plans yet.
+  Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _fetchEmptyGroupDocs(
+      CollectionReference<Map<String, dynamic>> col) async {
+    final snap = await col.orderBy('popularity', descending: true).limit(100).get();
+    return snap.docs;
+  }
+
+  /// Ranks the daily pool. Recipes matching more of the user's diets always
+  /// come first (a preference, not a hard filter, so the row still fills); each
+  /// dietary tier is then ordered by the weighted-random key, with never-
+  /// dismissed recipes ahead of dismissed ones and in-season interleaved with
+  /// any-time.
+  List<RecipeSuggestion> _rankSuggested(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+      int seed,
+      DateTime now) {
+    final lang = LanguageService.instance.code.value;
+    final seen = <String>{};
+    final scored =
+        <({int diet, double key, bool seasonal, int dismissed, RecipeSuggestion s})>[];
+    for (final d in docs) {
+      if (!seen.add(d.id)) continue;
+      // Recipes dismissed today stay hidden until the next daily reshuffle.
+      if (_dismissedDay[d.id] == _suggestedRowDayKey) continue;
+      final data = d.data();
+      final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
+      final dismissed = _dismissed[d.id] ?? 0;
+      // Weight carries popularity and the dismissal penalty; dietary fit is the
+      // primary ordering below rather than a weighting boost, so a matching
+      // recipe can never be buried under a non-matching one by the random draw.
+      final weight =
+          (1 + math.log(1 + popularity)) / math.pow(4, dismissed);
+      // Deterministic per-recipe uniform in (0,1], identical for every group
+      // member and reshuffled each day via the group+date seed.
+      final r = (_stableHash('$seed-${d.id}') % 100000 + 1) / 100001.0;
+      // Efraimidis–Spirakis key: smaller wins, higher weight → smaller key.
+      final key = -math.log(r) / weight;
+      // In season when its suitable months (1–12) include the current month; a
+      // null/empty list means it fits any time of year.
+      final suitableMonths = data['suitableMonths'];
+      scored.add((
+        diet: dietMatchCount(data),
+        key: key,
+        seasonal: suitableMonths is List && suitableMonths.contains(now.month),
+        dismissed: dismissed,
+        s: publicSuggestion(d.id, data, lang),
+      ));
+    }
+    scored.sort((a, b) => a.key.compareTo(b.key));
+
+    // Interleave in-season and any-time recipes so roughly half the shown
+    // suggestions fit the current season, each stream keeping the key ranking.
+    List<RecipeSuggestion> interleaveSeasonal(
+        Iterable<({int diet, double key, bool seasonal, int dismissed, RecipeSuggestion s})>
+            entries) {
+      final seasonal = [for (final e in entries) if (e.seasonal) e.s];
+      final anytime = [for (final e in entries) if (!e.seasonal) e.s];
       final out = <RecipeSuggestion>[];
-      for (final d in snap.docs) {
-        final data = d.data();
-        if (requireAllDiets && prefs.isNotEmpty) {
-          final recipeDietary = List<String>.from(data['dietary'] ?? [])
-              .map((e) => e.toLowerCase())
-              .toSet();
-          if (!prefs.every(recipeDietary.contains)) continue;
-        }
-        var title = (data['name'] ?? '').toString();
-        if (lang != 'en') {
-          final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
-          if (languages.contains(lang)) {
-            final localized = (data['translations'] as Map?)?[lang] as Map?;
-            final localizedName = (localized?['name'] ?? '').toString();
-            if (localizedName.isNotEmpty) title = localizedName;
-          }
-        }
-        out.add(RecipeSuggestion(
-          kind: SuggestionKind.public,
-          title: title,
-          publicId: d.id,
-          publicImage: data['image'] as String?,
-        ));
+      for (var i = 0; i < seasonal.length || i < anytime.length; i++) {
+        if (i < seasonal.length) out.add(seasonal[i]);
+        if (i < anytime.length) out.add(anytime[i]);
       }
       return out;
     }
 
-    try {
-      final matched = await topPopular(requireAllDiets: true);
-      if (matched.isNotEmpty) return matched;
-      return await topPopular(requireAllDiets: false);
-    } catch (_) {
-      return const [];
+    // Best dietary fit first; within each tier, never-dismissed ahead of
+    // dismissed (so a dismissal keeps a recipe out unless the pool runs dry).
+    final tiers = scored.map((e) => e.diet).toSet().toList()
+      ..sort((a, b) => b.compareTo(a));
+    final ordered = <RecipeSuggestion>[];
+    for (final tier in tiers) {
+      final inTier = scored.where((e) => e.diet == tier);
+      ordered
+        ..addAll(interleaveSeasonal(inTier.where((e) => e.dismissed == 0)))
+        ..addAll(interleaveSeasonal(inTier.where((e) => e.dismissed > 0)));
     }
+    return ordered;
+  }
+
+  /// Ranks the empty-group pool: best dietary fit first, then most popular. Not
+  /// a hard filter — non-matching recipes still follow, so the row never empties
+  /// even for an unusual diet combination.
+  List<RecipeSuggestion> _rankEmptyGroup(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    final lang = LanguageService.instance.code.value;
+    final scored = <({int diet, double popularity, RecipeSuggestion s})>[];
+    for (final d in docs) {
+      if (_dismissedDay[d.id] == _suggestedRowDayKey) continue;
+      final data = d.data();
+      scored.add((
+        diet: dietMatchCount(data),
+        popularity: (data['popularity'] as num?)?.toDouble() ?? 0,
+        s: publicSuggestion(d.id, data, lang),
+      ));
+    }
+    scored.sort((a, b) {
+      if (a.diet != b.diet) return b.diet.compareTo(a.diet);
+      return b.popularity.compareTo(a.popularity);
+    });
+    return [for (final e in scored) e.s];
   }
 
   /// Reloads the suggested row if the calendar day has advanced since it was

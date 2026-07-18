@@ -304,15 +304,8 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
               child: TextField(
                 controller: _customCtrl,
                 textInputAction: TextInputAction.done,
-                decoration: InputDecoration(
+                decoration: const InputDecoration(
                   hintText: 'e.g. "no shellfish", "avoids cilantro"…',
-                  filled: true,
-                  fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    borderSide: BorderSide.none,
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 ),
                 onSubmitted: (_) => _addCustom(),
               ),

@@ -98,7 +98,17 @@ class _RecipePageState extends State<RecipePage>
   String? _fadingTriggerDayKey;
   Timer? _fadingTriggerTimer;
   final Set<String> _deletingPlanIds = {};
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? recipesListener;
+  // Two listeners feed the merged [recipes] window: one ordered by
+  // `createdAt` so freshly added recipes are always loaded, one ordered by
+  // `lastUsedAt` so recently-cooked recipes are always loaded. A single
+  // `orderBy` would silently drop every doc missing that field from the
+  // query entirely (Firestore excludes docs without the ordered field), so
+  // one query alone can't guarantee both "new" and "recently used" recipes
+  // are in the loaded window — see [_subscribeRecipes].
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? recipesByCreatedListener;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? recipesByUsedListener;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _recipesByCreated = [];
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _recipesByUsed = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> recipes = [];
   List<QueryDocumentSnapshot<Map<String, dynamic>>> searchedRecipes = [];
 
@@ -110,7 +120,7 @@ class _RecipePageState extends State<RecipePage>
   bool _recipesMaybeMore = true;
   // While searching, the window is widened to cover the whole group so search
   // isn't limited to whatever page happened to be loaded already.
-  static const int _allRecipesLimit = 100000;
+  static const int _allRecipesLimit = 1000;
   bool _searchActive = false;
   // True once the recipes stream has delivered its first snapshot, so the
   // "no recipes yet" empty state doesn't flash on briefly before real data
@@ -392,7 +402,8 @@ class _RecipePageState extends State<RecipePage>
     RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
     _fadingTriggerTimer?.cancel();
-    recipesListener?.cancel();
+    recipesByCreatedListener?.cancel();
+    recipesByUsedListener?.cancel();
     usageListener?.cancel();
     keyboardSubscription.cancel();
     for (final sub in imageTrackSubs) {
@@ -414,42 +425,83 @@ class _RecipePageState extends State<RecipePage>
     }
   }
 
-  /// (Re)subscribes to the group's recipes with the current [_recipeLimit], or
-  /// with [_allRecipesLimit] while [_searchActive] so search covers every
-  /// recipe rather than just the loaded page. Ordered by `createdAt` so
-  /// freshly added recipes always sit in the loaded window (a recipe never
-  /// cooked yet has no `lastUsedAt`); the grid itself is re-ranked
+  /// (Re)subscribes to the group's recipes.
+  ///
+  /// A good "cook again" ranking (see [_rankOwnRecipes]) needs both freshly
+  /// *added* recipes (`createdAt`) and recently *cooked* ones (`lastUsedAt`)
+  /// to actually be present in the loaded window — but a single `orderBy`
+  /// can't deliver both: Firestore excludes any doc missing the ordered
+  /// field from the query entirely, so ordering by `lastUsedAt` alone drops
+  /// every never-cooked recipe (no `lastUsedAt` yet), and ordering by
+  /// `createdAt` alone can miss an old recipe that was just cooked again. So
+  /// this runs two queries — one per field — and merges their docs
+  /// (de-duplicated by id) into [recipes]; the grid itself is then re-ranked
   /// client-side by [_rankOwnRecipes] when not searching.
   ///
-  /// While searching the `orderBy` is dropped entirely: search re-sorts by
-  /// match score anyway, and a doc whose `createdAt` is still an unresolved
-  /// `FieldValue.serverTimestamp()` write is excluded by Firestore from any
-  /// query ordered by that same field until the write reaches the server —
-  /// which made a just-saved recipe briefly vanish from the search results.
+  /// The `createdAt` query stays fixed at [_recipePageSize]: any freshly
+  /// added recipe is guaranteed to be among the newest [_recipePageSize] by
+  /// creation time, so it never needs to grow. Only the `lastUsedAt` query
+  /// grows with [_recipeLimit] as the grid is scrolled (see
+  /// [_maybeLoadMoreRecipes]), since older recipes further down the "cook
+  /// again" ranking are what scrolling is meant to surface.
+  ///
+  /// While searching, both queries widen to [_allRecipesLimit] so search
+  /// isn't limited to whatever page happened to be loaded already; search
+  /// re-sorts by match score anyway, so which query surfaced a doc doesn't
+  /// matter there.
   void _subscribeRecipes() {
-    recipesListener?.cancel();
-    final limit = _searchActive ? _allRecipesLimit : _recipeLimit;
-    Query<Map<String, dynamic>> query = groupDoc.collection('recipes');
-    if (!_searchActive) {
-      query = query.orderBy('createdAt', descending: true);
-    }
-    recipesListener = query.limit(limit).snapshots().listen((snapshot) {
+    recipesByCreatedListener?.cancel();
+    recipesByUsedListener?.cancel();
+    final createdLimit = _searchActive ? _allRecipesLimit : _recipePageSize;
+    final usedLimit = _searchActive ? _allRecipesLimit : _recipeLimit;
+    final collection = groupDoc.collection('recipes');
+
+    void mergeAndPublish() {
+      final byId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+      for (final d in _recipesByCreated) {
+        byId[d.id] = d;
+      }
+      for (final d in _recipesByUsed) {
+        byId[d.id] = d;
+      }
       setState(() {
-        recipes = snapshot.docs;
+        recipes = byId.values.toList();
         _recipesLoaded = true;
-        // A full page means there may be more to load on scroll.
-        _recipesMaybeMore = !_searchActive && snapshot.docs.length >= _recipeLimit;
+        // A full page on the (growable) lastUsedAt query means there may be
+        // more to load on scroll; the createdAt query never grows so it
+        // doesn't factor into "more available".
+        _recipesMaybeMore = !_searchActive && _recipesByUsed.length >= usedLimit;
         generateSearchedRecipes();
       });
       _maybeRefreshEmptyGroupSuggestedRow();
-    }, onError: (Object e) => debugPrint('Recipes listener error: $e'));
+    }
+
+    recipesByCreatedListener = collection
+        .orderBy('createdAt', descending: true)
+        .limit(createdLimit)
+        .snapshots()
+        .listen((snapshot) {
+      _recipesByCreated = snapshot.docs;
+      mergeAndPublish();
+    }, onError: (Object e) => debugPrint('Recipes (createdAt) listener error: $e'));
+
+    recipesByUsedListener = collection
+        .orderBy('lastUsedAt', descending: true)
+        .limit(usedLimit)
+        .snapshots()
+        .listen((snapshot) {
+      _recipesByUsed = snapshot.docs;
+      mergeAndPublish();
+    }, onError: (Object e) => debugPrint('Recipes (lastUsedAt) listener error: $e'));
   }
 
   /// Grows the recipe window when the grid is scrolled near its end, so groups
   /// with more than a page of recipes keep loading further ones on demand.
   void _maybeLoadMoreRecipes() {
     if (!_recipesMaybeMore) return;
-    if (recipes.length < _recipeLimit) return; // current page not full yet
+    // Only the lastUsedAt query grows with _recipeLimit (see
+    // _subscribeRecipes); the createdAt query stays fixed at _recipePageSize.
+    if (_recipesByUsed.length < _recipeLimit) return; // current page not full yet
     final pos = _scrollController.position;
     if (pos.pixels < pos.maxScrollExtent - 600) return;
     _recipeLimit += _recipePageSize;
@@ -568,7 +620,8 @@ class _RecipePageState extends State<RecipePage>
               group: groupDoc,
               recipeId: data.id,
               planRef: planRef,
-              recipeServings: servings.toInt(),
+              recipeServings: servings.round().clamp(1, 1 << 30),
+              baseServings: servings.toDouble(),
               preloadedRows: rows,
             ),
           );
@@ -960,6 +1013,9 @@ class _RecipePageState extends State<RecipePage>
                                                 initialData:
                                                 _recipeDataFor(dayPlans[i]['recipe']),
                                                 onTagTap: onDetailTagTap,
+                                                planRef: dayPlans[i].reference,
+                                                planServings: (dayPlans[i].data()
+                                                    as Map<String, dynamic>?)?['servings'] as num?,
                                                 child: RecipeCard(
                                                   recipeId: dayPlans[i]['recipe'],
                                                   groupCollection: groupDoc,

@@ -23,6 +23,8 @@ class RecipeOpenContainer extends StatelessWidget {
     required this.initialData,
     required this.child,
     this.onTagTap,
+    this.planRef,
+    this.planServings,
   });
 
   final String recipeId;
@@ -32,6 +34,16 @@ class RecipeOpenContainer extends StatelessWidget {
   final Map<String, dynamic>? initialData;
   final Widget child;
   final void Function(String tag)? onTagTap;
+
+  /// When this card represents a cooking-plan entry (not a plain recipe), the
+  /// plan document. The opened detail page then shows the plan's own serving
+  /// count and scales ingredients to it, persisting serving changes back to
+  /// this plan instead of the shared recipe.
+  final DocumentReference<Map<String, dynamic>>? planRef;
+
+  /// The serving count stored on [planRef], used to open the detail page scaled
+  /// to the plan (may be null on older plans that predate stored servings).
+  final num? planServings;
 
   @override
   Widget build(BuildContext context) {
@@ -52,6 +64,8 @@ class RecipeOpenContainer extends StatelessWidget {
         access: access,
         initialData: initialData,
         onTagTap: onTagTap,
+        planRef: planRef,
+        planServings: planServings,
       ),
     );
   }

@@ -11,10 +11,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
+import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/firebase_options.dart';
 import 'package:couple_planner/features/auth/pages/login_page.dart';
 
@@ -50,7 +52,7 @@ const Map<String, String> _featureBlurbs = {
   'money': 'Track and split shared expenses.',
 };
 
-enum _Step { showcase, login, details, createGroup, register }
+enum _Step { showcase, login, details, createGroup, invite }
 
 class WelcomePage extends StatefulWidget {
   const WelcomePage({super.key, required this.onFinished, this.joinMode = false});
@@ -80,13 +82,13 @@ class _WelcomePageState extends State<WelcomePage> {
   Timer? _dietaryTimer;
   bool _showDietary = false;
 
-  final TextEditingController _emailCtrl = TextEditingController();
-  final TextEditingController _passCtrl = TextEditingController();
-  final TextEditingController _pass2Ctrl = TextEditingController();
-  final FocusNode _emailNode = FocusNode();
-  final FocusNode _passNode = FocusNode();
-  final FocusNode _pass2Node = FocusNode();
-  bool _passVisible = false;
+  /// The group created during onboarding (new-group flow); drives the invite
+  /// screen shown afterwards.
+  String? _newGroupId;
+
+  /// Shareable member invite link for [_newGroupId], prepared before the invite
+  /// screen is shown.
+  String? _inviteLink;
 
   bool _loading = false;
   String? _error;
@@ -99,11 +101,6 @@ class _WelcomePageState extends State<WelcomePage> {
     super.initState();
     if (widget.joinMode) _joinOnly = true; // arriving via invite: no group creation
     _usernameCtrl.addListener(_onUsernameChanged);
-    for (final c in [_emailCtrl, _passCtrl, _pass2Ctrl]) {
-      c.addListener(() {
-        if (mounted) setState(() {});
-      });
-    }
   }
 
   @override
@@ -112,12 +109,6 @@ class _WelcomePageState extends State<WelcomePage> {
     _dietaryTimer?.cancel();
     _usernameCtrl.dispose();
     _groupCtrl.dispose();
-    _emailCtrl.dispose();
-    _passCtrl.dispose();
-    _pass2Ctrl.dispose();
-    _emailNode.dispose();
-    _passNode.dispose();
-    _pass2Node.dispose();
     super.dispose();
   }
 
@@ -169,8 +160,8 @@ class _WelcomePageState extends State<WelcomePage> {
         case _Step.createGroup:
           step = _Step.details;
           break;
-        case _Step.register:
-          step = _joinOnly ? _Step.details : _Step.createGroup;
+        case _Step.invite:
+          // The account and group already exist; there is nothing to go back to.
           break;
         case _Step.showcase:
           break;
@@ -179,12 +170,10 @@ class _WelcomePageState extends State<WelcomePage> {
   }
 
   void _forward() {
+    // Join mode: the only forward action is creating the (anonymous) account
+    // and letting the host open the join screen afterwards.
     if (step == _Step.details && _joinMode && _detailsValid) {
-      setState(() => step = _Step.register);
-    } else if (step == _Step.createGroup && _createGroupValid) {
-      setState(() => step = _Step.register);
-    } else if (step == _Step.register && _registerValid) {
-      _finishRegistration();
+      _finishAccount();
     }
   }
 
@@ -200,27 +189,14 @@ class _WelcomePageState extends State<WelcomePage> {
 
   bool get _createGroupValid => _selected.isNotEmpty;
 
-  List<(String, bool)> get _passwordChecks {
-    final p = _passCtrl.text;
-    return [
-      ('At least 8 characters', p.length >= 8),
-      ('An uppercase letter', p.contains(RegExp(r'[A-Z]'))),
-      ('A lowercase letter', p.contains(RegExp(r'[a-z]'))),
-      ('A number', p.contains(RegExp(r'[0-9]'))),
-    ];
-  }
-
-  bool get _registerValid {
-    final email = _emailCtrl.text.trim();
-    return email.contains('@') &&
-        email.contains('.') &&
-        _passwordChecks.every((c) => c.$2) &&
-        _passCtrl.text == _pass2Ctrl.text;
-  }
-
   // ── account / group creation ─────────────────────────────────────────────--
 
-  Future<void> _finishRegistration() async {
+  /// Creates the (anonymous) account plus the user profile and — unless we're in
+  /// a join-only flow — the first group. On success:
+  ///   • new-group flow  → moves to the invite screen (share the group link);
+  ///   • join-only flow  → finishes onboarding so the host can open the join
+  ///     screen (or, when there is no pending invite, shows a hint first).
+  Future<void> _finishAccount() async {
     setState(() {
       _loading = true;
       _error = null;
@@ -235,9 +211,66 @@ class _WelcomePageState extends State<WelcomePage> {
       }
       return;
     }
-    TextInput.finishAutofillContext();
-    if (_joinOnly && !_joinMode) await _showInviteInfo();
-    _finish();
+
+    if (_joinOnly) {
+      if (!_joinMode) await _showInviteInfo();
+      _finish();
+      return;
+    }
+
+    // New-group flow: prepare a shareable invite link and show the invite step.
+    await _prepareInviteLink();
+    if (!mounted) return;
+    setState(() {
+      _loading = false;
+      step = _Step.invite;
+    });
+  }
+
+  /// Creates a member invite link for the freshly created group so it can be
+  /// shared from the invite screen. Best-effort: the screen still works (with a
+  /// disabled share button) if this fails.
+  Future<void> _prepareInviteLink() async {
+    final groupId = _newGroupId;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (groupId == null || uid == null) return;
+    try {
+      final ref = FirebaseFirestore.instance
+          .collection('groups')
+          .doc(groupId)
+          .collection('invites')
+          .doc();
+      await ref.set({
+        'createdAt': FieldValue.serverTimestamp(),
+        'expiresAt': Timestamp.fromDate(DateTime.now().add(const Duration(days: 14))),
+        'createdBy': uid,
+      });
+      _inviteLink = buildInviteLink(groupId, ref.id);
+    } catch (_) {
+      _inviteLink = null;
+    }
+  }
+
+  Future<void> _shareInvite() async {
+    final link = _inviteLink;
+    if (link == null) return;
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(ShareParams(
+      text: 'Join my group on Together Planner: $link',
+      subject: 'Together Planner invite',
+      sharePositionOrigin: box != null ? box.localToGlobal(Offset.zero) & box.size : null,
+    ));
+  }
+
+  Future<void> _copyInvite() async {
+    final link = _inviteLink;
+    if (link == null) return;
+    await Clipboard.setData(ClipboardData(text: link));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invite link copied')),
+      );
+    }
   }
 
   Future<void> _showInviteInfo() async {
@@ -264,23 +297,21 @@ class _WelcomePageState extends State<WelcomePage> {
     }
 
     final auth = FirebaseAuth.instance;
-    final email = _emailCtrl.text.trim();
-    final password = _passCtrl.text;
 
+    // Default flow: no email/password. Create a throwaway anonymous account the
+    // user can later upgrade (add an email + password) from the profile page.
     try {
-      await auth.createUserWithEmailAndPassword(email: email, password: password);
+      if (auth.currentUser == null) {
+        await auth.signInAnonymously();
+      }
     } on FirebaseAuthException catch (e) {
       switch (e.code) {
-        case 'weak-password':
-          return 'That password is too weak.';
-        case 'email-already-in-use':
-          return 'An account with this email already exists.';
-        case 'invalid-email':
-          return 'Please enter a valid email address.';
         case 'network-request-failed':
           return "You're not connected to the internet.";
+        case 'operation-not-allowed':
+          return 'Anonymous sign-in is disabled. Please try again later.';
         default:
-          return 'Sign up failed. Please try again.';
+          return 'Could not get you started. Please try again.';
       }
     } catch (_) {
       return 'An unknown error occurred.';
@@ -330,6 +361,8 @@ class _WelcomePageState extends State<WelcomePage> {
       });
     }
 
+    _newGroupId = groupId;
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('userCreated', true);
     if (groupId != null) {
@@ -353,7 +386,12 @@ class _WelcomePageState extends State<WelcomePage> {
     return PopScope(
       canPop: step == _Step.showcase,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back();
+        if (didPop) return;
+        if (step == _Step.invite) {
+          _finish();
+          return;
+        }
+        _back();
       },
       child: Scaffold(
         body: Theme(
@@ -409,8 +447,8 @@ class _WelcomePageState extends State<WelcomePage> {
         return _detailsPage();
       case _Step.createGroup:
         return _createGroupPage();
-      case _Step.register:
-        return _registerPage();
+      case _Step.invite:
+        return _invitePage();
     }
   }
 
@@ -437,6 +475,8 @@ class _WelcomePageState extends State<WelcomePage> {
                 labelText: 'Your name',
               ),
             ),
+            const SizedBox(height: 20),
+            _termsText(),
           ],
         ),
       );
@@ -485,6 +525,11 @@ class _WelcomePageState extends State<WelcomePage> {
             }),
           ),
         ),
+        const SizedBox(height: 20),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: _termsText(),
+        ),
         const SizedBox(height: 16),
       ],
     );
@@ -525,7 +570,7 @@ class _WelcomePageState extends State<WelcomePage> {
       Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
         child: const Text(
-          "You can later create more groups — with friends, family or anyone else. "
+          "You can later create more groups - with friends, family or anyone else. "
               "But let's start with your first one:",
           style: TextStyle(color: Colors.black87, fontSize: 14),
         ),
@@ -586,7 +631,12 @@ class _WelcomePageState extends State<WelcomePage> {
     );
   }
 
-  Widget _registerPage() {
+  /// Shown right after the group is created: invite friends by sharing the
+  /// group link. No recipe-viewer option here — this is a plain member invite.
+  Widget _invitePage() {
+    final groupName = _groupCtrl.text.trim().isEmpty
+        ? "${_usernameCtrl.text.trim()}'s Group"
+        : _groupCtrl.text.trim();
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -594,92 +644,74 @@ class _WelcomePageState extends State<WelcomePage> {
             constraints: BoxConstraints(minHeight: constraints.maxHeight),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
-              child: AutofillGroup(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    TextField(
-                      controller: _emailCtrl,
-                      focusNode: _emailNode,
-                      enabled: !_loading,
-                      keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [AutofillHints.username, AutofillHints.email],
-                      onSubmitted: (_) => _passNode.requestFocus(),
-                      decoration: const InputDecoration(prefixIcon: Icon(Icons.email_outlined), labelText: 'Email'),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _passCtrl,
-                      focusNode: _passNode,
-                      enabled: !_loading,
-                      obscureText: !_passVisible,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [AutofillHints.password],
-                      onSubmitted: (_) => _pass2Node.requestFocus(),
-                      decoration: InputDecoration(
-                        prefixIcon: const Icon(Icons.lock_outline),
-                        labelText: 'Password',
-                        suffixIcon: ExcludeFocus(
-                          child: IconButton(
-                            icon: Icon(_passVisible ? Icons.visibility : Icons.visibility_off),
-                            onPressed: () => setState(() => _passVisible = !_passVisible),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Icon(Icons.celebration_outlined, size: 56, color: Colors.black),
+                  const SizedBox(height: 16),
+                  Text(
+                    '"$groupName" is ready!',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.black, fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Together Planner is better with company. Invite your '
+                    'friends or family by sharing your group link: anyone who '
+                    'opens it can join and start planning with you.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black87, fontSize: 15),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_inviteLink != null) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha(230),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _inviteLink!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.black87, fontSize: 13),
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 8),
+                          InkWell(
+                            onTap: _copyInvite,
+                            borderRadius: BorderRadius.circular(8),
+                            child: const Padding(
+                              padding: EdgeInsets.all(4),
+                              child: Icon(Icons.copy, size: 20, color: Colors.black87),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 12),
-                    ..._passwordChecks.map((c) => _criterionRow(c.$1, c.$2)),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _pass2Ctrl,
-                      focusNode: _pass2Node,
-                      enabled: !_loading,
-                      obscureText: true,
-                      textInputAction: TextInputAction.done,
-                      autofillHints: const [AutofillHints.password],
-                      onSubmitted: (_) {
-                        if (_registerValid) _finishRegistration();
-                      },
-                      decoration: const InputDecoration(prefixIcon: Icon(Icons.lock_outline), labelText: 'Confirm password'),
+                    FilledButton.icon(
+                      onPressed: _shareInvite,
+                      icon: const Icon(Icons.ios_share),
+                      label: const Text('Share invite link'),
                     ),
-                    if (_pass2Ctrl.text.isNotEmpty && _pass2Ctrl.text != _passCtrl.text)
-                      const Padding(
-                        padding: EdgeInsets.only(top: 8),
-                        child: Text("Passwords don't match.", style: TextStyle(color: Colors.red, fontSize: 13)),
-                      ),
-                    const SizedBox(height: 16),
-                    _termsText(),
-                    if (_error != null && _error!.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
-                      ),
-                  ],
-                ),
+                  ] else
+                    const Text(
+                      'You can create an invite link any time from your group '
+                      'settings.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.black54, fontSize: 13),
+                    ),
+                ],
               ),
             ),
           ),
         );
       },
-    );
-  }
-
-  Widget _criterionRow(String label, bool met) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Icon(
-            met ? Icons.check_circle : Icons.circle_outlined,
-            size: 18,
-            color: met ? const Color(0xFF1B9E3E) : Colors.black45,
-          ),
-          const SizedBox(width: 8),
-          Text(label, style: TextStyle(color: met ? const Color(0xFF1B9E3E) : Colors.black54, fontSize: 13)),
-        ],
-      ),
     );
   }
 
@@ -690,7 +722,7 @@ class _WelcomePageState extends State<WelcomePage> {
       TextSpan(
         style: base,
         children: [
-          const TextSpan(text: 'By signing up to Together Planner you agree to the '),
+          const TextSpan(text: 'By continuing you agree to the '),
           TextSpan(text: 'Terms & Conditions', style: link, recognizer: TapGestureRecognizer()..onTap = () => _openLink(_termsUrl)),
           const TextSpan(text: ' and the '),
           TextSpan(text: 'Privacy Policy', style: link, recognizer: TapGestureRecognizer()..onTap = () => _openLink(_privacyUrl)),
@@ -705,51 +737,68 @@ class _WelcomePageState extends State<WelcomePage> {
     if (step == _Step.showcase) return const SizedBox(height: 8);
 
     if (step == _Step.details && !_joinMode) {
-      final enabled = _detailsValid && _showDietary && !_loading;
+      if (_loading) {
+        return const Padding(
+          padding: EdgeInsets.fromLTRB(8, 4, 8, 20),
+          child: Center(child: CupertinoActivityIndicator()),
+        );
+      }
+      final enabled = _detailsValid && _showDietary;
       return Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            IconButton(
-              onPressed: _loading ? null : _back,
-              icon: const Icon(Icons.arrow_back, color: Colors.black),
-              tooltip: 'Back',
-            ),
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: enabled
-                    ? () => setState(() {
-                  _joinOnly = true;
-                  step = _Step.register;
-                })
-                    : null,
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(56),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  foregroundColor: Colors.black,
-                ).copyWith(
-                  side: WidgetStateProperty.resolveWith(
-                        (states) => states.contains(WidgetState.disabled)
-                        ? BorderSide(color: Colors.black.withOpacity(0.12))
-                        : const BorderSide(color: Colors.black),
+            if (_error != null && _error!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
+              ),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: _back,
+                  icon: const Icon(Icons.arrow_back, color: Colors.black),
+                  tooltip: 'Back',
+                ),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: enabled
+                        ? () {
+                            setState(() => _joinOnly = true);
+                            _finishAccount();
+                          }
+                        : null,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(56),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      foregroundColor: Colors.black,
+                    ).copyWith(
+                      side: WidgetStateProperty.resolveWith(
+                            (states) => states.contains(WidgetState.disabled)
+                            ? BorderSide(color: Colors.black.withOpacity(0.12))
+                            : const BorderSide(color: Colors.black),
+                      ),
+                    ),
+                    icon: const Icon(Icons.login),
+                    label: const Text('Join group'),
                   ),
                 ),
-                icon: const Icon(Icons.login),
-                label: const Text('Join group'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: enabled
-                    ? () => setState(() {
-                  _joinOnly = false;
-                  step = _Step.createGroup;
-                })
-                    : null,
-                icon: const Icon(Icons.add),
-                label: const Text('New group'),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: enabled
+                        ? () => setState(() {
+                          _joinOnly = false;
+                          step = _Step.createGroup;
+                        })
+                        : null,
+                    icon: const Icon(Icons.add),
+                    label: const Text('New group'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -760,50 +809,46 @@ class _WelcomePageState extends State<WelcomePage> {
       final enabled = _createGroupValid && !_loading;
       return Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            IconButton(
-              onPressed: _loading ? null : _back,
-              icon: const Icon(Icons.arrow_back, color: Colors.black),
-              tooltip: 'Back',
-            ),
-            Expanded(
-              child: FilledButton(
-                onPressed: enabled
-                    ? () => setState(() => step = _Step.register)
-                    : null,
-                child: const Text('Continue'),
+            if (_error != null && _error!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
               ),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: _loading ? null : _back,
+                  icon: const Icon(Icons.arrow_back, color: Colors.black),
+                  tooltip: 'Back',
+                ),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: enabled ? _finishAccount : null,
+                    child: _loading ? const CupertinoActivityIndicator() : const Text('Continue'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       );
     }
 
-    if (step == _Step.register) {
-      final enabled = _registerValid && !_loading;
+    if (step == _Step.invite) {
       return Padding(
         padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-        child: Row(
-          children: [
-            IconButton(
-              onPressed: _loading ? null : _back,
-              icon: const Icon(Icons.arrow_back, color: Colors.black),
-              tooltip: 'Back',
-            ),
-            Expanded(
-              child: FilledButton(
-                onPressed: enabled ? _finishRegistration : null,
-                child: _loading ? const CupertinoActivityIndicator() : const Text('Register'),
-              ),
-            ),
-          ],
+        child: FilledButton(
+          onPressed: _finish,
+          child: const Text('Done'),
         ),
       );
     }
 
-    final forwardVisible = (step == _Step.details && _joinMode && _detailsValid) ||
-        (step == _Step.register && _registerValid);
+    final forwardVisible = step == _Step.details && _joinMode && _detailsValid;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
@@ -884,7 +929,7 @@ class _ShowcasePage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
             child: Text(
-              "You've been invited to a group — create an account or sign in to join.",
+              "You've been invited to a group: create an account or sign in to join.",
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.black87, fontSize: 14),
             ),

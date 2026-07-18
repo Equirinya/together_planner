@@ -15,6 +15,7 @@ import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/copy_group_recipe.dart';
+import 'package:couple_planner/features/recipes/services/delete_recipe.dart';
 import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
 import 'package:couple_planner/features/recipes/services/recipe_share_education.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
@@ -71,12 +72,24 @@ class RecipeDetailPage extends StatefulWidget {
     this.sharedSourceGroupId,
     this.canEditPublicRecipes = false,
     this.onTagTap,
+    this.planRef,
+    this.planServings,
   });
 
   final String groupId;
   final String recipeId;
   final bool editMode;
   final AiAccess access;
+
+  /// When set, the page was opened from a cooking-plan entry: the servings
+  /// control and ingredient amounts reflect [planServings] rather than the
+  /// recipe's own default, and changing the count writes back to this plan doc
+  /// instead of the shared recipe (so it never changes the recipe's default).
+  final DocumentReference<Map<String, dynamic>>? planRef;
+
+  /// The plan's stored serving count. Null on older plans without one; the page
+  /// then falls back to the recipe's default until the user picks a count.
+  final num? planServings;
 
   /// Called instead of the default behaviour when a tag chip is tapped (view
   /// mode only). The caller is responsible for closing this page and acting on
@@ -158,9 +171,39 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   late int prepMinute;
 
   // ── servings / scaling ────────────────────────────────────────────────────
-  int servings = 2;
-  int? _baseServings;
+  // Fractional counts are supported (0.25 / 0.5 / 0.75 / 1.5) via the stepper
+  // ladder in [_nextServings] / [_prevServings].
+  double servings = 2;
+  // False when the recipe has no meaningful serving count (a cake, a loaf): the
+  // stored `servings` is null and the servings/scaling controls are hidden.
+  bool _hasServings = true;
+  // The count in effect when the stepper was last stepped down past 0.25 into
+  // "–". Lets plus resume where it left off instead of jumping to 1.
+  double? _clearedServings;
+  double? _baseServings;
   bool _autoScale = false;
+
+  // When opened from a cooking plan, the plan's own serving count. It overrides
+  // the recipe's default as the displayed [servings] and is what the stepper
+  // writes back to (see [_setServings]); ingredient amounts are display-scaled
+  // by [servings] / [_baseServings] in view mode. Null means the plan had no
+  // stored count yet, so the recipe's default is shown until the user picks one.
+  double? _planServings;
+  bool get _isPlanView => widget.planRef != null;
+  // The plan override is active only while viewing. Entering edit mode edits the
+  // shared recipe itself, so the recipe's own serving count is shown and saved
+  // there, and the plan count is restored on leaving edit.
+  bool get _planActive => _isPlanView && !edit;
+
+  // View-mode multiplier applied to displayed ingredient amounts so a plan (or
+  // any adjusted count) shows quantities scaled from the recipe's base
+  // servings. 1.0 whenever the shown count equals the base, so the normal
+  // recipe view is unchanged.
+  double get _displayScale {
+    final base = _baseServings;
+    if (!_hasServings || base == null || base <= 0) return 1.0;
+    return servings / base;
+  }
 
   // ── ingredients (live stream) ─────────────────────────────────────────────
   List<Map<String, dynamic>> ingredients = [];
@@ -209,6 +252,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
     _publicId = widget.publicRecipeId;
     _sharedGroupId = widget.sharedSourceGroupId;
+    _planServings = widget.planServings?.toDouble();
 
     if (widget.initialData != null) _applyData(widget.initialData!);
 
@@ -301,8 +345,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     totalMinute = (data['time'] ?? 0) % 60;
     prepHour = ((data['preparationTime'] ?? 0) / 60).floor();
     prepMinute = (data['preparationTime'] ?? 0) % 60;
-    servings = ((data['servings'] ?? 2) as num).toInt().clamp(1, 999);
+    _hasServings = data['servings'] != null;
+    // A null count means "–": keep the value we already had rather than
+    // snapping back to the 2 default, so a cleared stepper doesn't silently
+    // reset its position (and its scale factor) under us.
+    servings = ((data['servings'] ?? servings) as num).toDouble();
     _baseServings ??= servings;
+    // In a plan view the shown count follows the plan, not the recipe default.
+    // `_baseServings` above still captures the recipe's own count (the amounts
+    // the stored ingredient quantities correspond to), so ingredients scale
+    // correctly against it. Runs on every stream update to keep the plan count
+    // pinned even as the recipe doc changes underneath.
+    if (_planActive && _planServings != null) {
+      servings = _planServings!;
+      _hasServings = true;
+    }
 
     nameController ??= TextEditingController(text: data['name']);
     descriptionController ??=
@@ -343,7 +400,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       'images': (imagePath is String && imagePath.isNotEmpty)
           ? <String>[imagePath]
           : <String>[],
-      'servings': p['servings'] ?? 2,
+      'servings': p['servings'],
       'time': p['time'] ?? 0,
       'preparationTime': p['preparationTime'] ?? 0,
       if (p['attribution'] != null) 'attribution': p['attribution'],
@@ -404,7 +461,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       if (s['translations'] != null) 'translations': s['translations'],
       'steps': List<dynamic>.from(s['steps'] ?? const []),
       'images': List<String>.from(s['images'] ?? const []),
-      'servings': s['servings'] ?? 2,
+      'servings': s['servings'],
       'time': s['time'] ?? 0,
       'preparationTime': s['preparationTime'] ?? 0,
       if (s['attribution'] != null) 'attribution': s['attribution'],
@@ -610,20 +667,93 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   // ── servings / scaling ────────────────────────────────────────────────────
 
-  void _changeServings(int newVal) {
-    newVal = newVal.clamp(1, 999);
-    if (newVal == servings) return;
-    setState(() => servings = newVal);
-    docRef.update({'servings': newVal});
+  // Servings ladder: quarter steps below 1, a half step up to 1.5, then whole
+  // numbers. Stepping down past 0.25 clears the count (null → "–").
+  double _nextServings(double v) {
+    if (v < 0.5) return 0.5;
+    if (v < 0.75) return 0.75;
+    if (v < 1) return 1.0;
+    if (v < 1.5) return 1.5;
+    if (v < 2) return 2.0;
+    // floor+1 (not round) so the up/down ladder stays symmetric for values
+    // that aren't whole: 2.5 → 3 → 2, never 2.5 → 4.
+    return v.floorToDouble() + 1;
+  }
+
+  double? _prevServings(double v) {
+    if (v <= 0.25) return null; // clear to "–"
+    if (v <= 0.5) return 0.25;
+    if (v <= 0.75) return 0.5;
+    if (v <= 1) return 0.75;
+    if (v <= 1.5) return 1.0;
+    if (v <= 2) return 1.5;
+    return v.ceilToDouble() - 1;
+  }
+
+  // Plus from "–" restores the count we cleared from (so stepping all the way
+  // down and back up retraces the same ladder), falling back to 1 if the page
+  // opened with no count at all.
+  void _incrementServings() => _setServings(
+      _hasServings ? _nextServings(servings) : (_clearedServings ?? 1.0));
+
+  void _decrementServings() {
+    if (!_hasServings) return;
+    _setServings(_prevServings(servings));
+  }
+
+  // Whole counts are stored as int (so other consumers keep seeing an int),
+  // fractional ones as double.
+  num _servingsForStore(double v) => v == v.roundToDouble() ? v.toInt() : v;
+
+  // Formats a count for display: "2", "0.5", "0.25", "1.5" (no trailing ".0").
+  String _formatServings(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toString();
+
+  void _setServings(double? newVal) {
+    // Plan view: the count belongs to the cooking plan, not the recipe. Persist
+    // to the plan doc and display-scale the amounts; never touch the recipe's
+    // own default or its stored ingredient quantities. A "–" (null) clear isn't
+    // offered here — a plan always cooks for some number of people — so a null
+    // is treated as clearing back to no override.
+    if (_planActive) {
+      final v = (newVal ?? 1).clamp(0.25, 999).toDouble();
+      if (v == servings) return;
+      setState(() {
+        servings = v;
+        _planServings = v;
+        _hasServings = true;
+      });
+      widget.planRef!.update({'servings': _servingsForStore(v)});
+      return;
+    }
+    // Null clears the count: the recipe has no meaningful serving count (shown
+    // as "–"), stored as null.
+    if (newVal == null) {
+      if (!_hasServings) return;
+      setState(() {
+        _clearedServings = servings;
+        _hasServings = false;
+      });
+      docRef.update({'servings': null});
+      return;
+    }
+    final v = newVal.clamp(0.25, 999).toDouble();
+    if (_hasServings && v == servings) return;
+    setState(() {
+      servings = v;
+      _hasServings = true;
+      _clearedServings = null;
+    });
+    docRef.update({'servings': _servingsForStore(v)});
     if (_autoScale &&
         ingredients.isNotEmpty &&
         _baseServings != null &&
-        newVal != _baseServings) {
-      _applyScale(newVal);
+        v != _baseServings) {
+      _applyScale(v);
     }
   }
 
-  Future<void> _applyScale(int target) async {
+  Future<void> _applyScale(double target) async {
     final base = _baseServings;
     if (base == null || base == 0) return;
     final factor = target / base;
@@ -731,7 +861,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           .toList() ??
           steps,
       'images': images,
-      'servings': servings,
+      'servings': _hasServings ? _servingsForStore(servings) : null,
       'ingredients': ingredients
           .map((ing) => {
         'name': ing['displayName'] ?? ing['ingredientId'] ?? '',
@@ -919,15 +1049,27 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           .map((t) => t.trim())
           .where((t) => t.isNotEmpty)
           .toList(),
-      'servings': servings,
+      'servings': _hasServings ? _servingsForStore(servings) : null,
     });
     if (_isRecipeEmpty()) {
       await update;
-      await docRef.delete();
+      // Routed through the shared helper rather than a bare docRef.delete():
+      // _isRecipeEmpty() only sees the locally-loaded ingredient list, so an
+      // in-flight AI generation (or the other member) may have written
+      // ingredients server-side that would otherwise be orphaned.
+      await deleteGroupRecipe(groupId: widget.groupId, recipeId: recipeId);
       if (mounted) Navigator.of(context).pop();
       return;
     }
     if (!mounted) return;
+    // Opened from a cooking plan: edit mode edits the recipe's own count, so on
+    // save carry that count over to the plan as well. Without this the plan's
+    // stale override is re-pinned by [_applyData] the moment we leave edit and
+    // the just-edited count appears to snap back / be uneditable.
+    if (_isPlanView && _hasServings) {
+      _planServings = servings;
+      widget.planRef!.update({'servings': _servingsForStore(servings)});
+    }
     setState(() {
       edit = false;
       _autoScale = false;
@@ -1105,16 +1247,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       style: FilledButton.styleFrom(
                           backgroundColor: Theme.of(ctx).colorScheme.error),
                       onPressed: () async {
-                        final publicId = _publicId!;
-                        final db = FirebaseFirestore.instance;
-                        final publicRef = db.doc('public_recipes/$publicId');
-                        final ingsSnap = await publicRef.collection('ingredients').get();
-                        final batch = db.batch();
-                        for (final d in ingsSnap.docs) {
-                          batch.delete(d.reference);
-                        }
-                        batch.delete(publicRef);
-                        await batch.commit();
+                        await deletePublicRecipe(publicRecipeId: _publicId!);
                         Navigator.of(ctx).pop();
                         Navigator.of(context).pop();
                       },
@@ -1142,19 +1275,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                     style: FilledButton.styleFrom(
                         backgroundColor: Theme.of(ctx).colorScheme.error),
                     onPressed: () async {
-                      final db = FirebaseFirestore.instance;
-                      final plans = await db
-                          .collection('groups')
-                          .doc(widget.groupId)
-                          .collection('cooking_plan')
-                          .where('recipe', isEqualTo: recipeId)
-                          .get();
-                      final batch = db.batch();
-                      for (final plan in plans.docs) {
-                        batch.delete(plan.reference);
-                      }
-                      batch.delete(docRef);
-                      await batch.commit();
+                      await deleteGroupRecipe(
+                        groupId: widget.groupId,
+                        recipeId: recipeId,
+                      );
                       Navigator.of(ctx).pop();
                       Navigator.of(context).pop();
                     },
@@ -1175,6 +1299,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
               icon: const Icon(Icons.edit),
               onPressed: () {
                 setState(() {
+                  // In a plan view the shown count is the plan's; editing acts
+                  // on the recipe, so switch back to the recipe's own count
+                  // (kept in _baseServings) before entering edit.
+                  if (_isPlanView && _baseServings != null) {
+                    servings = _baseServings!;
+                  }
                   edit = true;
                   _autoScale = false;
                   _baseServings = servings;
@@ -1204,13 +1334,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             edit
                 ? Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: TextField(
-                controller: nameController,
-                style: Theme.of(context).textTheme.headlineMedium,
-                decoration: const InputDecoration(
-                  hintText: 'Recipe name',
-                  isDense: true,
-                  contentPadding: EdgeInsets.only(bottom: 4),
+              child: Theme(
+                data: Theme.of(context)
+                    .copyWith(inputDecorationTheme: const InputDecorationTheme()),
+                child: TextField(
+                  controller: nameController,
+                  style: Theme.of(context).textTheme.headlineMedium,
+                  decoration: const InputDecoration(
+                    hintText: 'Recipe name',
+                    isDense: true,
+                    contentPadding: EdgeInsets.only(bottom: 4),
+                  ),
                 ),
               ),
             )
@@ -1249,12 +1383,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   edit
-                      ? TextField(
-                          controller: tagsController,
-                          style: Theme.of(context).textTheme.bodyMedium,
-                          decoration: const InputDecoration(
-                            hintText: '#tag1 #tag2…',
-                            isDense: true,
+                      ? Theme(
+                          data: Theme.of(context).copyWith(
+                              inputDecorationTheme:
+                                  const InputDecorationTheme()),
+                          child: TextField(
+                            controller: tagsController,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            decoration: const InputDecoration(
+                              hintText: '#tag1 #tag2…',
+                              isDense: true,
+                            ),
                           ),
                         )
                       : Wrap(
@@ -1408,7 +1547,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
 
   Widget _ingredientsSection() {
     final cs = Theme.of(context).colorScheme;
+    // `edit` alone is enough to exclude the plan-view stepper: while editing,
+    // [_planActive] is false, so `servings` and [_baseServings] are both the
+    // recipe's own numbers and scaling acts on the recipe as it should. Gating
+    // on !_isPlanView as well hid the button for good on any recipe reached
+    // through a cooking plan.
     final showScaleButton = edit &&
+        _hasServings &&
         !_autoScale &&
         _baseServings != null &&
         servings != _baseServings &&
@@ -1459,18 +1604,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // ── Servings ────────────────────────────────────────────
-                if (!edit)
-                // View mode: "🍽 2 Servings" as a ListTile
-                  ListTile(
-                    leading: const Icon(Icons.restaurant_menu),
-                    title: Text(
-                      '$servings ${servings == 1 ? 'Serving' : 'Servings'}',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                  )
-                else
-                // Edit mode: stepper + optional scale button
+                // ── Servings ─────────────────────────────────────────────
+                // Edit mode always shows the stepper so a count can be added or
+                // cleared ("–" means no/unknown count). View mode shows it only
+                // once the count is known and set — hidden while the recipe is
+                // still generating (servings arrive with the title) and when the
+                // recipe has no meaningful serving count.
+                if (edit || _isPlanView)
+                // Edit mode (or a plan view): stepper + optional scale button.
+                // In a plan view the stepper adjusts the plan's own count and
+                // the amounts below rescale live; the scale-to-recipe button
+                // stays edit-only (see [showScaleButton]).
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
                     child: Column(
@@ -1487,21 +1631,26 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                             const Spacer(),
                             IconButton.filledTonal(
                               icon: const Icon(Icons.remove),
-                              onPressed: () =>
-                                  _changeServings(servings - 1),
+                              // Steps down the ladder; past 0.25 it clears the
+                              // count to "–". Disabled once already cleared.
+                              onPressed:
+                                  _hasServings ? _decrementServings : null,
                             ),
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 12),
-                              child: Text("$servings",
+                              child: Text(
+                                  _hasServings
+                                      ? _formatServings(servings)
+                                      : "–",
                                   style: Theme.of(context)
                                       .textTheme
                                       .titleLarge),
                             ),
                             IconButton.filledTonal(
                               icon: const Icon(Icons.add),
-                              onPressed: () =>
-                                  _changeServings(servings + 1),
+                              // From "–", plus starts the count at 1.
+                              onPressed: _incrementServings,
                             ),
                           ],
                         ),
@@ -1512,7 +1661,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                             child: FilledButton.tonalIcon(
                               icon: const Icon(Icons.straighten),
                               label: Text(
-                                  "Scale amounts to $servings servings"),
+                                  "Scale amounts to ${_formatServings(servings)} servings"),
                               onPressed: () async {
                                 await _applyScale(servings);
                                 if (mounted)
@@ -1521,6 +1670,15 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                             ),
                           ),
                       ],
+                    ),
+                  )
+                else if (_hasServings && !_pending.contains('title'))
+                // View mode: "🍽 2 Servings" as a ListTile
+                  ListTile(
+                    leading: const Icon(Icons.restaurant_menu),
+                    title: Text(
+                      '${_formatServings(servings)} ${servings == 1 ? 'Serving' : 'Servings'}',
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
 
@@ -1539,6 +1697,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                       ing: ingredients[i],
                       lang: lang,
                       editMode: edit,
+                      // View-mode amounts scale to the shown servings (1.0 for a
+                      // normal recipe; the plan's ratio in a plan view). Edit
+                      // mode always shows the raw stored quantity.
+                      scale: _displayScale,
                       onQuantityTap: () =>
                           _openQuantityEditor(ingredients[i]),
                       onRemove: () => _removeIngredient(
@@ -1614,28 +1776,35 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         else ...[
           for (var (index, step) in steps.indexed)
             if (edit)
-              Card(
-                margin: const EdgeInsets.symmetric(
+              Padding(
+                padding: const EdgeInsets.symmetric(
                     horizontal: 16, vertical: 4),
-                elevation: 0,
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: Text("${index + 1}:",
-                          style:
-                          Theme.of(context).textTheme.titleMedium),
+                      padding: const EdgeInsets.only(top: 8),
+                      child: CircleAvatar(
+                        radius: 12,
+                        backgroundColor:
+                            Theme.of(context).colorScheme.primaryContainer,
+                        child: Text(
+                          '${index + 1}',
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onPrimaryContainer),
+                        ),
+                      ),
                     ),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: TextField(
                         controller: stepsControllers![index],
                         maxLines: null,
                         style:
                         Theme.of(context).textTheme.bodyMedium,
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.all(8),
-                        ),
                       ),
                     ),
                   ],
@@ -2139,11 +2308,17 @@ class _RecipeIngredientTile extends StatefulWidget {
     required this.onQuantityTap,
     required this.onRemove,
     required this.onDescriptionSave,
+    this.scale = 1.0,
   });
 
   final Map<String, dynamic> ing;
   final String lang;
   final bool editMode;
+
+  /// View-mode multiplier for the displayed amount (used to scale a recipe's
+  /// base quantities to a cooking plan's serving count). Ignored in edit mode,
+  /// where the raw stored quantity is shown and edited.
+  final double scale;
   final VoidCallback onQuantityTap;
   final VoidCallback onRemove;
   final void Function(String) onDescriptionSave;
@@ -2201,9 +2376,13 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
     (widget.ing['description'] as String?)?.isNotEmpty == true
         ? widget.ing['description'] as String
         : null;
-    final qtyLabel = q != null
-        ? '${fmtQty(q.qty)} ${UnitsCache.instance.display(q.unitId, widget.lang, q.qty)}'
-        : '';
+    // Edit mode edits the raw stored value; view mode scales it to the shown
+    // servings (a no-op at scale 1.0).
+    final num? displayQty =
+        q == null ? null : (widget.editMode ? q.qty : q.qty * widget.scale);
+    final qtyLabel = (q == null || displayQty == null)
+        ? ''
+        : '${fmtQty(displayQty)} ${UnitsCache.instance.display(q.unitId, widget.lang, displayQty)}';
 
     if (!widget.editMode) {
       return ListTile(
@@ -2242,7 +2421,10 @@ class _RecipeIngredientTileState extends State<_RecipeIngredientTile> {
                   decoration: InputDecoration(
                     isDense: true,
                     contentPadding: EdgeInsets.zero,
+                    filled: false,
                     border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
                     hintText: 'preparation note…',
                     hintStyle: TextStyle(
                         color: Theme.of(context)

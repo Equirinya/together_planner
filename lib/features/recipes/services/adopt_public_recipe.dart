@@ -85,7 +85,9 @@ Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPrelo
     'lastUsedAt': FieldValue.serverTimestamp(),
     'preparationTime': p['preparationTime'] ?? 0,
     'time': p['time'] ?? 0,
-    'servings': p['servings'] ?? 2,
+    // Kept null for recipes without a meaningful serving count (a cake, a loaf)
+    // so the adopted copy hides the servings control too.
+    'servings': p['servings'],
     'tags': List<dynamic>.from(p['tags'] ?? const []),
     'dietary': List<dynamic>.from(p['dietary'] ?? const []),
     if (p['languages'] != null) 'languages': List<dynamic>.from(p['languages']),

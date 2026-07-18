@@ -39,6 +39,11 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
   final Set<String> _optimisticallyHidden = {};
 
+  /// Items that just left the active set on the *remote* end (deleted, or
+  /// marked done by someone else) and are still shrinking away. Keyed by id,
+  /// dropped once the shrink animation finishes (see _AnimatedShoppingItem).
+  final Map<String, Map<String, dynamic>> _removingItems = {};
+
   /// Items created before this session opened are not "new".
   /// Null until loaded — during the async gap nothing shows as new.
   DateTime? _lastSeen;
@@ -82,10 +87,18 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     super.dispose();
   }
 
+  /// Items that should currently be counted as "on the list": not done and
+  /// not optimistically hidden by a local mark-done that hasn't confirmed yet.
+  List<Map<String, dynamic>> _activeItems() => _currentItems
+      .where((i) => i['doneAt'] == null && !_optimisticallyHidden.contains(i['id']))
+      .toList();
+
   void _startListSubscription() {
     _listSub = _listRef.snapshots().listen((snap) {
       if (!mounted) return;
       setState(() {
+        final previouslyActive = _activeItems();
+
         _currentItems = snap.docs
             .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
             .toList();
@@ -96,6 +109,16 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
         _optimisticallyHidden.removeWhere(
               (id) => byId[id] == null || byId[id]!['doneAt'] != null,
         );
+
+        // Items that fell out of the active set on this snapshot (and
+        // weren't already hidden locally) start shrinking away; items that
+        // came back cancel any pending shrink.
+        final newActiveIds = _activeItems().map((i) => i['id'] as String).toSet();
+        for (final item in previouslyActive) {
+          final id = item['id'] as String;
+          if (!newActiveIds.contains(id)) _removingItems[id] = item;
+        }
+        _removingItems.removeWhere((id, _) => newActiveIds.contains(id));
       });
       // Persist "now" after each confirmed snapshot so the saved timestamp is
       // always >= any createdAt the user has actually seen on screen.
@@ -134,13 +157,20 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
   @override
   Widget build(BuildContext context) {
-    final active = _currentItems
-        .where((i) => i['doneAt'] == null && !_optimisticallyHidden.contains(i['id']))
-        .toList();
+    final active = _activeItems();
+
+    // Items still on the list, plus any remotely-removed ones still
+    // shrinking away — both need to be rendered.
+    final activeIds = active.map((i) => i['id'] as String).toSet();
+    final display = [
+      ...active,
+      for (final entry in _removingItems.entries)
+        if (!activeIds.contains(entry.key)) entry.value,
+    ];
 
     // ── group by category ──────────────────────────────────────────────────
     final Map<String, List<Map<String, dynamic>>> groups = {};
-    for (final item in active) {
+    for (final item in display) {
       final cat = (item['category'] as String?)?.trim() ?? '';
       (groups[cat] ??= []).add(item);
     }
@@ -177,7 +207,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     return Stack(
       children: [
         Positioned.fill(
-          child: active.isEmpty
+          child: display.isEmpty
               ? const Center(child: Text('Your shopping list is empty.'))
               : ListView(
             padding: const EdgeInsets.only(bottom: 88),
@@ -186,15 +216,20 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                 if (showHeaders)
                   _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
                 for (final item in groups[cat]!)
-                  _ShoppingItem(
+                  _AnimatedShoppingItem(
                     key: ValueKey(item['id']),
-                    item: item,
-                    groupId: widget.groupId,
-                    lang: _lang,
-                    isNew: isNew(item),
-                    onMarkDone: () => _markDone(item),
-                    onQuantityChanged: (u, q) =>
-                        _updateQuantity(item['id'] as String, u, q),
+                    present: !_removingItems.containsKey(item['id']),
+                    onRemoved: () =>
+                        setState(() => _removingItems.remove(item['id'])),
+                    child: _ShoppingItem(
+                      item: item,
+                      groupId: widget.groupId,
+                      lang: _lang,
+                      isNew: isNew(item),
+                      onMarkDone: () => _markDone(item),
+                      onQuantityChanged: (u, q) =>
+                          _updateQuantity(item['id'] as String, u, q),
+                    ),
                   ),
               ],
             ],
@@ -317,6 +352,43 @@ class _AddItemBarState extends State<_AddItemBar> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Wraps a shopping-list row so that when it leaves the list remotely (marked
+/// done or deleted by someone else) it shrinks away and fades out instead of
+/// vanishing. Built entirely from Flutter's implicit animation widgets.
+class _AnimatedShoppingItem extends StatelessWidget {
+  const _AnimatedShoppingItem({
+    super.key,
+    required this.present,
+    required this.onRemoved,
+    required this.child,
+  });
+
+  /// Whether the item is still on the (active) list.
+  final bool present;
+
+  /// Called once the shrink-away animation finishes, so the caller can drop
+  /// the item from its bookkeeping.
+  final VoidCallback onRemoved;
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeInOut,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 220),
+        opacity: present ? 1 : 0,
+        onEnd: () {
+          if (!present) onRemoved();
+        },
+        child: present ? child : const SizedBox(width: double.infinity),
       ),
     );
   }

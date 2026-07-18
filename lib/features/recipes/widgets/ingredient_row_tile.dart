@@ -73,12 +73,17 @@ class IngredientRowTile extends StatelessWidget {
           title: Text(name),
           subtitle: description.isNotEmpty ? Text(description) : null,
           trailing: onIncrease == null && onDecrease == null
-              ? (quantityText.isNotEmpty
-                  ? Text(quantityText,
-                      textAlign: TextAlign.end, style: Theme.of(context).textTheme.bodyLarge)
-                  : Text('—',
-                      style:
-                          Theme.of(context).textTheme.bodyLarge?.copyWith(color: colorScheme.outline)))
+              ? Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: quantityText.isNotEmpty
+                      ? Text(quantityText,
+                          textAlign: TextAlign.end, style: Theme.of(context).textTheme.bodyLarge)
+                      : Text('—',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodyLarge
+                              ?.copyWith(color: colorScheme.outline)),
+                )
               : Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [

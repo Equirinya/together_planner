@@ -95,10 +95,29 @@ class IngredientIndex extends ChangeNotifier {
       if (id.isNotEmpty &&
           id != kPendingIngredient &&
           id != kUnknownIngredient) {
+        await _cacheResolvedId(id, displayName, lang);
         return id;
       }
     } catch (_) {}
     return kUnknownIngredient;
+  }
+
+  /// After a cloud-function resolution, fetches the resolved doc (which also
+  /// seeds Firestore's on-disk offline cache) and stores it under the query
+  /// key so an identical search later in this session — and after a restart
+  /// — hits cache instead of paying for another cloud round-trip.
+  Future<void> _cacheResolvedId(
+      String id, String displayName, String lang) async {
+    try {
+      final doc = await _col.doc(id).get();
+      final data = doc.data();
+      if (data == null) return;
+      final key = '$lang|${displayName.trim().toLowerCase()}';
+      _results[key] = [MatchedIngredient(id, data)];
+      _serverFresh.add(key);
+    } catch (_) {
+      // offline or failed — next lookup just retries via the cloud function
+    }
   }
 
   /// Fetches the stored category for [id], or '' when unavailable.

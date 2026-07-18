@@ -41,7 +41,10 @@ final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
 
 /// One proposed (or already-committed) day in a generated meal plan.
 class MealPlanSlot {
-  final DateTime date;
+  /// Mutable only so the "Additionally?" extra can be re-planted on the plan's
+  /// middle day once the day slots are known (see [isExtra]); day slots keep
+  /// the date they were generated for.
+  DateTime date;
   MealPlanSource source;
   String? recipeId; // set for `own`; also set for `newIdea` once generation starts
   String? publicRecipeId;
@@ -57,6 +60,13 @@ class MealPlanSlot {
 
   /// Client-only: true while a swap for this single day is in flight.
   bool regenerating = false;
+
+  /// Client-only: true for the optional "Additionally?" suggestion — a
+  /// complementary non-main item (soup, dessert, side, …) shown once at the end
+  /// of the proposal, separated from the days. It is planned onto one of the
+  /// plan's middle days (see [date]) alongside that day's main and committed
+  /// with the rest, unless the user disables it via [removed].
+  bool isExtra = false;
 
   MealPlanSlot({
     required this.date,
@@ -94,12 +104,26 @@ class MealPlanCommittedSlot {
   const MealPlanCommittedSlot(this.date, this.recipeId, this.planRef);
 }
 
+/// The outcome of a [generateMealPlan] call: the per-day [slots] plus an
+/// optional [extra] — the complementary "Additionally?" non-main suggestion,
+/// present only when [generateMealPlan] was asked for one via `includeExtra`
+/// or `extraOnly`.
+class MealPlanGenResult {
+  final List<MealPlanSlot> slots;
+  final MealPlanSlot? extra;
+  const MealPlanGenResult(this.slots, this.extra);
+}
+
 /// Calls `recipes-generateMealPlan`. Reused for the initial proposal, a
 /// single-day swap and a full regenerate — callers just vary
 /// [regenerateDates]/[lockedSlots]/[avoidNames]. The server re-derives which
 /// dates are actually empty, so the returned slots may cover fewer dates than
 /// requested (e.g. another group member filled one in the meantime).
-Future<List<MealPlanSlot>> generateMealPlan({
+///
+/// Set [includeExtra] to also request the complementary "Additionally?"
+/// suggestion, or [extraOnly] to regenerate just that extra without touching
+/// any day slots (the returned [MealPlanGenResult.slots] is then empty).
+Future<MealPlanGenResult> generateMealPlan({
   required String groupId,
   required DateTime startDate,
   required int days,
@@ -110,6 +134,8 @@ Future<List<MealPlanSlot>> generateMealPlan({
   required List<DateTime> regenerateDates,
   List<MealPlanSlot> lockedSlots = const [],
   List<String> avoidNames = const [],
+  bool includeExtra = false,
+  bool extraOnly = false,
   required String lang,
 }) async {
   final res = await _functions.httpsCallable('recipes-generateMealPlan').call(<String, dynamic>{
@@ -125,6 +151,8 @@ Future<List<MealPlanSlot>> generateMealPlan({
       for (final s in lockedSlots) {'source': _sourceToString(s.source), 'name': s.name},
     ],
     'avoidNames': avoidNames,
+    'includeExtra': includeExtra,
+    'extraOnly': extraOnly,
     'lang': lang,
   });
   final data = Map<String, dynamic>.from(res.data as Map);
@@ -137,7 +165,15 @@ Future<List<MealPlanSlot>> generateMealPlan({
     final date = DateTime(parts[0], parts[1], parts[2]);
     slots.add(MealPlanSlot.fromJson(date, Map<String, dynamic>.from(rawSlots[i] as Map)));
   }
-  return slots;
+
+  MealPlanSlot? extra;
+  final rawExtra = data['extra'];
+  if (rawExtra is Map) {
+    // The server picks no day for the extra; [startDate] is a placeholder the
+    // caller replaces with the plan's middle day before showing/committing it.
+    extra = MealPlanSlot.fromJson(startDate, Map<String, dynamic>.from(rawExtra))..isExtra = true;
+  }
+  return MealPlanGenResult(slots, extra);
 }
 
 /// Fires the staged public-recipe-generation callable for a brand-new idea,
@@ -289,7 +325,10 @@ class MealPlanRecipeSection {
   final String recipeName;
   final List<String> images;
   final DocumentReference<Map<String, dynamic>> planRef;
-  final int baseServings; // servings the recipe's own ingredient quantities correspond to
+  // Servings the recipe's own ingredient quantities correspond to. A double
+  // because a recipe's base can be fractional (e.g. 0.5) — flooring it to an
+  // int before scaling would silently double every quantity.
+  final double baseServings;
   int servings;
   final List<MealPlanIngredientRow> rows;
 
@@ -307,7 +346,9 @@ class MealPlanRecipeSection {
   /// Rescales every row's [MealPlanIngredientRow.cur] from [base] to
   /// [servings], mirroring AddToShoppingListDialogState's `_rescale`.
   void rescale() {
-    final base = baseServings < 1 ? 1 : baseServings;
+    // Only guard against a genuinely invalid (zero/negative) base — a
+    // fractional base like 0.5 is real and must not be rounded up to 1.
+    final base = baseServings <= 0 ? 1.0 : baseServings;
     final ratio = servings / base;
     for (final row in rows) {
       row.cur = row.base.map(
@@ -341,7 +382,7 @@ Future<List<MealPlanRecipeSection>> loadShoppingSections({
       recipeName: (data['name'] ?? '').toString(),
       images: List<String>.from(data['images'] ?? const []),
       planRef: c.planRef,
-      baseServings: (data['servings'] as num?)?.toInt() ?? 2,
+      baseServings: (data['servings'] as num?)?.toDouble() ?? 2,
       servings: people,
       rows: [
         for (final p in preload)
@@ -368,6 +409,11 @@ Future<List<MealPlanRecipeSection>> loadShoppingSections({
 /// `itemIds`/`quantities` still reflects only what THAT recipe contributed —
 /// so a later single-plan removal (RecipePage._removePlan) subtracts the
 /// right amount rather than the merged total.
+///
+/// Each plan's `servings` is rewritten from its section too: [commitMealPlan]
+/// wrote the serving count the flow was started with, but the review page lets
+/// the user change it, and the cooking plan must show the same count the
+/// quantities were scaled to.
 Future<void> applyIngredientContributions({
   required DocumentReference<Map<String, dynamic>> group,
   required List<MealPlanRecipeSection> sections,
@@ -430,7 +476,24 @@ Future<void> applyIngredientContributions({
       itemIds.add(itemRefFor[row.$1]!.id);
       quantities.add(row.$2);
     }
-    batch.update(sections[i].planRef, {'itemIds': itemIds, 'quantities': quantities});
+    batch.update(sections[i].planRef, {
+      'itemIds': itemIds,
+      'quantities': quantities,
+      'servings': sections[i].servings,
+    });
+  }
+  await batch.commit();
+}
+
+/// Writes just the review page's current serving count back to every plan,
+/// for the path where the user changes servings but skips the shopping list —
+/// [applyIngredientContributions] never runs, so without this the plans would
+/// keep the count the flow was started with.
+Future<void> saveSectionServings(List<MealPlanRecipeSection> sections) async {
+  if (sections.isEmpty) return;
+  final batch = FirebaseFirestore.instance.batch();
+  for (final section in sections) {
+    batch.update(section.planRef, {'servings': section.servings});
   }
   await batch.commit();
 }

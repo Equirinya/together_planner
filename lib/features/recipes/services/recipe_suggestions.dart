@@ -177,6 +177,60 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
     return value.map((e) => e.toString().toLowerCase()).toList();
   }
 
+  // ── shared public-recipe helpers ────────────────────────────────────────
+  // Used by both the search-time public matches and the "suggested for you"
+  // row so the two paths localize titles, build tiles and score dietary fit
+  // identically instead of each reimplementing it.
+
+  /// The user's dietary preferences as canonical lowercase labels, matching how
+  /// `dietary` is stored on public recipes (always canonical English). Custom
+  /// free-text prefs that don't map to a standard diet are dropped, since they
+  /// can't be matched against a recipe's tags.
+  Set<String> get _dietPrefs => dietary
+      .map(canonicalDietaryLabel)
+      .whereType<String>()
+      .map((e) => e.toLowerCase())
+      .toSet();
+
+  /// How many of the user's diets a public recipe [data] satisfies. Used as the
+  /// primary ordering everywhere public recipes are shown, so a better-matching
+  /// recipe is always preferred over a worse-matching one — without hard-
+  /// filtering non-matching recipes out (the row/results still fill).
+  int dietMatchCount(Map<String, dynamic> data) {
+    final prefs = _dietPrefs;
+    if (prefs.isEmpty) return 0;
+    final recipeDietary = _lowerStringList(data['dietary']).toSet();
+    return prefs.where(recipeDietary.contains).length;
+  }
+
+  /// The localized display title for a public recipe [data] in [lang], falling
+  /// back to the English base name when there's no translation for it.
+  String publicRecipeTitle(Map<String, dynamic> data, String lang) {
+    var title = (data['name'] ?? '').toString();
+    if (lang != 'en') {
+      final languages = (data['languages'] as List?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const ['en'];
+      if (languages.contains(lang)) {
+        final localized = (data['translations'] as Map?)?[lang] as Map?;
+        final name = (localized?['name'] ?? '').toString();
+        if (name.isNotEmpty) title = name;
+      }
+    }
+    return title;
+  }
+
+  /// Builds the suggestion tile for a public recipe doc.
+  RecipeSuggestion publicSuggestion(
+          String id, Map<String, dynamic> data, String lang) =>
+      RecipeSuggestion(
+        kind: SuggestionKind.public,
+        title: publicRecipeTitle(data, lang),
+        publicId: id,
+        publicImage: data['image'] as String?,
+      );
+
   /// Splits a raw search string into `#tag` filters and the remaining free
   /// text. A `#tag` token requires an exact (case-insensitive) tag match;
   /// everything else is matched as free text, as before.
@@ -585,10 +639,10 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           .where('searchTokens', arrayContainsAny: tokens.take(10).toList())
           .orderBy(FieldPath.documentId);
       // Public recipes keep an English base plus a `translations` map for the
-      // languages listed in `languages`. Recipes available in the user's
-      // language come first (shown translated); within each language bucket the
-      // best matches — more query tokens hit, then more popular — come first.
-      final ranked = <({bool hasOwn, double score, RecipeSuggestion s})>[];
+      // languages listed in `languages`. Ordering is: recipes matching more of
+      // the user's diets first, then ones available in the user's language
+      // (shown translated), then the best token/popularity match.
+      final ranked = <({int diet, bool hasOwn, double score, RecipeSuggestion s})>[];
 
       // arrayContainsAny only matches ANY of the requested tokens, so with a
       // `#tag` filter most of a page can be pruned by the exact-tag check
@@ -612,12 +666,6 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           final data = d.data();
           final languages = (data['languages'] as List?)?.map((e) => e.toString()).toList() ?? const ['en'];
           final hasOwn = lang != 'en' && languages.contains(lang);
-          var title = (data['name'] ?? '').toString();
-          if (hasOwn) {
-            final localized = (data['translations'] as Map?)?[lang] as Map?;
-            final name = (localized?['name'] ?? '').toString();
-            if (name.isNotEmpty) title = name;
-          }
           if (tags.isNotEmpty) {
             // Check the base tags plus every language's translated tags (not
             // just the current UI language), so a tag only translated into a
@@ -647,14 +695,10 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
           final relevance = tokenSet.where(recipeTokens.contains).length;
           final popularity = (data['popularity'] as num?)?.toDouble() ?? 0;
           ranked.add((
+            diet: dietMatchCount(data),
             hasOwn: hasOwn,
             score: relevance * 10 + math.log(1 + popularity),
-            s: RecipeSuggestion(
-              kind: SuggestionKind.public,
-              title: title,
-              publicId: d.id,
-              publicImage: data['image'] as String?,
-            ),
+            s: publicSuggestion(d.id, data, lang),
           ));
         }
 
@@ -663,6 +707,7 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
       }
 
       ranked.sort((a, b) {
+        if (a.diet != b.diet) return b.diet.compareTo(a.diet);
         if (a.hasOwn != b.hasOwn) return a.hasOwn ? -1 : 1;
         return b.score.compareTo(a.score);
       });

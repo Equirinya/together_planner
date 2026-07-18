@@ -1,5 +1,3 @@
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -7,11 +5,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/core/language.dart';
-import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
-import 'package:couple_planner/features/groups/invite_links.dart' as account;
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
+import 'package:couple_planner/features/settings/notification_feature_settings.dart';
 
 // GitHub Pages (see /docs).
 const String _homeUrl = 'https://equirinya.github.io/together_planner/';
@@ -28,78 +25,6 @@ class SettingsPage extends StatelessWidget {
     try {
       await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
     } catch (_) {}
-  }
-
-  Future<void> _deleteAccount(BuildContext context) async {
-    var deleteRecipes = false;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: const Text('Delete account?'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('This happens immediately and cannot be undone. The following will be permanently deleted:'),
-              const SizedBox(height: 8),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: true,
-                onChanged: (_) {},
-                title: const Text('All data of your account'),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: true,
-                onChanged: (_) {},
-                title: const Text('All groups where you are the last member'),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                value: deleteRecipes,
-                onChanged: (v) => setState(() => deleteRecipes = v ?? false),
-                title: const Text('Recipes you created in groups with other members'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep my account')),
-            FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: Theme.of(ctx).colorScheme.error,
-                foregroundColor: Theme.of(ctx).colorScheme.onError,
-              ),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Delete forever'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
-    try {
-      await account.deleteAccount(deleteOwnedRecipes: deleteRecipes);
-      await FirebaseAuth.instance.signOut();
-    } on FirebaseFunctionsException catch (e) {
-      if (!context.mounted) return;
-      Navigator.pop(context); // dismiss the progress indicator
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message ?? 'Could not delete your account.')),
-      );
-    } catch (_) {
-      if (!context.mounted) return;
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not delete your account.')),
-      );
-    }
   }
 
   @override
@@ -126,14 +51,6 @@ class SettingsPage extends StatelessWidget {
                 ),
               );
             },
-          ),
-          ListTile(
-            leading: const Icon(Icons.auto_awesome),
-            title: const Text('AI plan'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const AiPlanPage()),
-            ),
           ),
           const Divider(),
           _SectionHeader('AI features'),
@@ -169,32 +86,8 @@ class SettingsPage extends StatelessWidget {
           ),
           const _RecipeSuggestionToggle(),
           const Divider(),
-          _SectionHeader('Account'),
-          ListTile(
-            leading: const Padding(
-              padding: EdgeInsets.only(left: 2),
-              child: Icon(Icons.logout),
-            ),
-            title: const Text('Log out'),
-            onTap: () async {
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Log out?'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Log out')),
-                  ],
-                ),
-              );
-              if (confirmed == true) await FirebaseAuth.instance.signOut();
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.delete_outline),
-            title: const Text('Delete account'),
-            onTap: () => _deleteAccount(context),
-          ),
+          _SectionHeader('Notifications'),
+          ...NotificationFeatureSettings.buildTiles(),
           const Divider(),
           _SectionHeader('About'),
           ListTile(

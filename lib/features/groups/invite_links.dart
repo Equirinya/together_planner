@@ -86,3 +86,14 @@ Future<void> deleteAccount({required bool deleteOwnedRecipes}) async {
       .httpsCallable('userManagement-deleteAccount')
       .call(<String, dynamic>{'deleteOwnedRecipes': deleteOwnedRecipes});
 }
+
+/// Promotes the (now email/password-linked) guest account to a permanent one:
+/// clears the server-side `anonymous` flag and raises the AI tier to the
+/// full-user default. Call after [User.linkWithCredential] succeeds. Returns the
+/// resulting AI tier.
+Future<int> upgradeAnonymousAccount() async {
+  final res = await _functions.httpsCallable('userManagement-upgradeAnonymousAccount').call();
+  final data = res.data;
+  final tier = (data is Map) ? data['tier'] : null;
+  return tier is num ? tier.toInt() : 0;
+}
