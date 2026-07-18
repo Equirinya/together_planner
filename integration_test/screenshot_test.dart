@@ -30,20 +30,23 @@ void main() {
     for (var attempt = 1; attempt <= _maxLaunchAttempts; attempt++) {
       await _launch(tester, binding, first: attempt == 1);
 
+      // The nav bar is built from the group's `enabledFeatures`, so which tabs
+      // exist depends on the tester account's group document.
+      debugPrint('Navigation destinations: ${_navIcons()}');
+
       // Shopping list tab (NavigationBar hides labels, so match by icon).
       // Wait long enough for the category icons (loaded from Storage) to arrive.
-      await _tap(tester, find.descendant(
-        of: find.byType(NavigationBar),
-        matching: find.byIcon(Icons.shopping_bag),
-      ), describe: 'shopping list tab');
-      await _wait(tester, const Duration(seconds: 12));
-      await binding.takeScreenshot('${_label}_shopping_list');
+      if (await _tapNav(tester, Icons.shopping_bag, 'shopping list tab')) {
+        await _wait(tester, const Duration(seconds: 12));
+        await binding.takeScreenshot('${_label}_shopping_list');
+      }
 
       // Recipes tab. Wait long so every recipe image finishes downloading.
-      await _tap(tester, find.descendant(
-        of: find.byType(NavigationBar),
-        matching: find.byIcon(Icons.restaurant_menu),
-      ), describe: 'recipes tab');
+      if (!await _tapNav(tester, Icons.restaurant_menu, 'recipes tab')) {
+        fail('The recipes tab is missing from the navigation bar. '
+            'Destinations present: ${_navIcons()}. Check `enabledFeatures` on '
+            "the tester account's group document.");
+      }
       await _wait(tester, const Duration(seconds: 20));
 
       if (_recipeImagesSettled() || attempt == _maxLaunchAttempts) break;
@@ -115,10 +118,9 @@ void main() {
     }
 
     // More tab → group overview.
-    await _tap(tester, find.descendant(
-      of: find.byType(NavigationBar),
-      matching: find.byIcon(Icons.menu),
-    ), describe: 'more tab');
+    if (!await _tapNav(tester, Icons.menu, 'more tab')) {
+      fail('The "More" tab is missing. Destinations present: ${_navIcons()}.');
+    }
     await _wait(tester, const Duration(seconds: 2));
     await binding.takeScreenshot('${_label}_more');
 
@@ -207,11 +209,37 @@ Future<void> _launch(
   }
 
   // Wait for sign-in and the group (and its pages) to load from Firestore. The
-  // NavigationBar only renders once the group is ready, so it is the signal
-  // that the home screen is actually usable.
-  await _waitFor(tester, navBar, const Duration(seconds: 90),
+  // NavigationBar only renders while `_groupDocReady` is true, and that can flip
+  // back to false shortly after the first frame (the group-doc snapshot and the
+  // memberships query race on a cold start). So require the bar to stay put for
+  // a few seconds rather than accepting the first frame it appears in.
+  await _waitForStable(tester, navBar, const Duration(seconds: 90),
+      stableFor: const Duration(seconds: 3),
       describe: 'home screen navigation bar');
-  await _wait(tester, const Duration(seconds: 3));
+}
+
+/// Waits until [finder] has matched continuously for [stableFor], so a widget
+/// that appears and is then torn down again doesn't count as ready.
+Future<void> _waitForStable(
+  WidgetTester tester,
+  Finder finder,
+  Duration timeout, {
+  required Duration stableFor,
+  required String describe,
+}) async {
+  const step = Duration(milliseconds: 200);
+  var stable = Duration.zero;
+  for (var elapsed = Duration.zero; elapsed < timeout; elapsed += step) {
+    if (finder.evaluate().isNotEmpty) {
+      stable += step;
+      if (stable >= stableFor) return;
+    } else {
+      stable = Duration.zero;
+    }
+    await tester.pump(step);
+  }
+  fail('Timed out after ${timeout.inSeconds}s waiting for $describe to stay '
+      'on screen for ${stableFor.inSeconds}s.');
 }
 
 /// Pumps until [finder] matches at least one widget, or [timeout] elapses.
@@ -242,6 +270,56 @@ Future<int> _waitForAny(
     await tester.pump(step);
   }
   return -1;
+}
+
+/// Taps the navigation destination carrying [icon], returning false (without
+/// failing) when the current group doesn't have that feature enabled.
+Future<bool> _tapNav(
+  WidgetTester tester,
+  IconData icon,
+  String describe, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
+  // The bar can be torn down and rebuilt while the group settles, so wait for
+  // it again here instead of assuming it survived since launch. Without this
+  // the failure below is ambiguous: a missing bar and a missing destination
+  // both report "0 widgets descending from NavigationBar".
+  await _waitForStable(tester, find.byType(NavigationBar), timeout,
+      stableFor: const Duration(seconds: 2),
+      describe: 'navigation bar (before tapping $describe)');
+
+  final finder = find.descendant(
+    of: find.byType(NavigationBar),
+    matching: find.byIcon(icon),
+  );
+  if (await _waitForAny(tester, [finder], timeout) < 0) {
+    debugPrint('Skipping $describe: no such navigation destination. '
+        'Destinations present: ${_navIcons()}');
+    return false;
+  }
+  await tester.tap(finder.first);
+  return true;
+}
+
+/// The destinations currently shown in the navigation bar, by label, for
+/// diagnostics. These come straight from the active group's `enabledFeatures`,
+/// so an unexpected list means the app selected a different group than
+/// intended (or that group's feature list differs).
+List<String> _navIcons() {
+  final bar = find.byType(NavigationBar);
+  if (bar.evaluate().isEmpty) return const ['<no NavigationBar>'];
+  final labels = find
+      .descendant(of: bar, matching: find.byType(NavigationDestination))
+      .evaluate()
+      .map((e) => (e.widget as NavigationDestination).label)
+      .toList();
+  if (labels.isNotEmpty) return labels;
+  // Fall back to raw icon codepoints if the destinations aren't matchable.
+  return find
+      .descendant(of: bar, matching: find.byType(Icon))
+      .evaluate()
+      .map((e) => 'U+${(e.widget as Icon).icon?.codePoint.toRadixString(16)}')
+      .toList();
 }
 
 /// Waits for [finder] to appear and taps its first match.
