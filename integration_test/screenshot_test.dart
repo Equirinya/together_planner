@@ -32,12 +32,18 @@ void main() {
 
       // Shopping list tab (NavigationBar hides labels, so match by icon).
       // Wait long enough for the category icons (loaded from Storage) to arrive.
-      await tester.tap(find.byIcon(Icons.shopping_bag).last);
+      await _tap(tester, find.descendant(
+        of: find.byType(NavigationBar),
+        matching: find.byIcon(Icons.shopping_bag),
+      ), describe: 'shopping list tab');
       await _wait(tester, const Duration(seconds: 12));
       await binding.takeScreenshot('${_label}_shopping_list');
 
       // Recipes tab. Wait long so every recipe image finishes downloading.
-      await tester.tap(find.byIcon(Icons.restaurant_menu).last);
+      await _tap(tester, find.descendant(
+        of: find.byType(NavigationBar),
+        matching: find.byIcon(Icons.restaurant_menu),
+      ), describe: 'recipes tab');
       await _wait(tester, const Duration(seconds: 20));
 
       if (_recipeImagesSettled() || attempt == _maxLaunchAttempts) break;
@@ -48,6 +54,8 @@ void main() {
     // Open a recipe and capture its detail page. A configured recipe name is
     // searched for and opened; otherwise the first (most recently used) card.
     final grid = find.byType(GridView);
+    await _waitFor(tester, find.descendant(of: grid, matching: find.byType(RecipeCard)),
+        const Duration(seconds: 30), describe: 'recipe grid');
     if (_recipeName.isNotEmpty) {
       await tester.enterText(
         find.descendant(of: find.byType(SearchBar), matching: find.byType(EditableText)),
@@ -107,7 +115,10 @@ void main() {
     }
 
     // More tab → group overview.
-    await tester.tap(find.byIcon(Icons.menu).last);
+    await _tap(tester, find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.byIcon(Icons.menu),
+    ), describe: 'more tab');
     await _wait(tester, const Duration(seconds: 2));
     await binding.takeScreenshot('${_label}_more');
 
@@ -131,7 +142,8 @@ void main() {
     }
 
     // New group page (only opened for the screenshot — no group is created).
-    await tester.tap(find.widgetWithText(FloatingActionButton, 'New group'));
+    await _tap(tester, find.widgetWithText(FloatingActionButton, 'New group'),
+        describe: 'new group button');
     await _wait(tester, const Duration(seconds: 3));
     await binding.takeScreenshot('${_label}_new_group');
   });
@@ -160,27 +172,87 @@ Future<void> _launch(
   }
 
   // The onboarding background animates continuously, so pumpAndSettle would
-  // never return — drive the test with fixed waits instead.
-  await _wait(tester, const Duration(seconds: 10));
-
+  // never return — poll for the widget we expect instead of settling.
+  //
   // A signed-out launch shows the onboarding showcase: capture the start page,
   // then open the login form and sign in. After a restart the persisted session
-  // is already on the home screen, so this is skipped.
-  if (find.text('I already have an account').evaluate().isNotEmpty) {
+  // goes straight to the home screen, so whichever of the two appears first
+  // decides what happens next. A cold start on CI can take a while (Firebase
+  // init + the splash), so allow a generous timeout here.
+  final welcome = find.text('I already have an account');
+  final navBar = find.byType(NavigationBar);
+  final ready = await _waitForAny(
+    tester,
+    [welcome, navBar],
+    const Duration(seconds: 90),
+  );
+  if (ready < 0) {
+    fail('App never reached the welcome page or the home screen after launch.');
+  }
+
+  if (ready == 0) {
     await binding.takeScreenshot('${_label}_welcome');
 
-    await tester.tap(find.text('I already have an account'));
+    await _tap(tester, welcome, describe: 'welcome page login link');
     await _wait(tester, const Duration(seconds: 1));
 
     // Email + password, then submit.
+    await _waitFor(tester, find.byType(TextField), const Duration(seconds: 20),
+        describe: 'login form');
     await tester.enterText(find.byType(TextField).at(0), _email);
     await tester.enterText(find.byType(TextField).at(1), _password);
     await _wait(tester, const Duration(milliseconds: 500));
-    await tester.tap(find.widgetWithText(FilledButton, 'Login'));
+    await _tap(tester, find.widgetWithText(FilledButton, 'Login'),
+        describe: 'login button');
   }
 
-  // Wait for sign-in and the group (and its pages) to load from Firestore.
-  await _wait(tester, const Duration(seconds: 5));
+  // Wait for sign-in and the group (and its pages) to load from Firestore. The
+  // NavigationBar only renders once the group is ready, so it is the signal
+  // that the home screen is actually usable.
+  await _waitFor(tester, navBar, const Duration(seconds: 90),
+      describe: 'home screen navigation bar');
+  await _wait(tester, const Duration(seconds: 3));
+}
+
+/// Pumps until [finder] matches at least one widget, or [timeout] elapses.
+/// Fails the test with a readable message instead of a bare "No element".
+Future<void> _waitFor(
+  WidgetTester tester,
+  Finder finder,
+  Duration timeout, {
+  required String describe,
+}) async {
+  if (await _waitForAny(tester, [finder], timeout) < 0) {
+    fail('Timed out after ${timeout.inSeconds}s waiting for $describe '
+        '($finder).');
+  }
+}
+
+/// Pumps until one of [finders] matches and returns its index, or -1 on timeout.
+Future<int> _waitForAny(
+  WidgetTester tester,
+  List<Finder> finders,
+  Duration timeout,
+) async {
+  const step = Duration(milliseconds: 200);
+  for (var elapsed = Duration.zero; elapsed < timeout; elapsed += step) {
+    for (var i = 0; i < finders.length; i++) {
+      if (finders[i].evaluate().isNotEmpty) return i;
+    }
+    await tester.pump(step);
+  }
+  return -1;
+}
+
+/// Waits for [finder] to appear and taps its first match.
+Future<void> _tap(
+  WidgetTester tester,
+  Finder finder, {
+  required String describe,
+  Duration timeout = const Duration(seconds: 30),
+}) async {
+  await _waitFor(tester, finder, timeout, describe: describe);
+  await tester.tap(finder.first);
 }
 
 /// Whether every recipe image in the grid has finished loading. A downloading

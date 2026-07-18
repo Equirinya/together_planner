@@ -10,9 +10,11 @@ import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 import 'package:flutter/material.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -149,9 +151,32 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     }
   }
 
-  Future<void> _updateQuantity(String id, String unitId, num? qty) =>
-      _listRef.doc(id).update(
-          {'quantity': qty == null ? null : {unitId: qty.toDouble()}});
+  /// Hand edits from the quantity editor. The *change* is attributed to
+  /// whoever made it: bumping 200 g to 300 g credits them with 100 g, dialling
+  /// it back down debits them again. Changing the unit moves the whole amount
+  /// over, since a delta across units would be meaningless.
+  Future<void> _updateQuantity(
+      Map<String, dynamic> item, String unitId, num? qty) {
+    final before = readQuantity(item['quantity']);
+    final after = qty == null || qty <= 0 ? null : qty;
+
+    final Map<String, dynamic> attribution;
+    if (before?.unitId == unitId) {
+      attribution = manualDelta(unitId, (after ?? 0) - before!.qty);
+    } else {
+      attribution = manualUnitSwitch(
+        fromUnitId: before?.unitId,
+        fromQty: before?.qty ?? 0,
+        toUnitId: unitId,
+        toQty: after ?? 0,
+      );
+    }
+
+    return _listRef.doc(item['id'] as String).update({
+      'quantity': qty == null ? null : {unitId: qty.toDouble()},
+      ...attribution,
+    });
+  }
 
   // ── build ──────────────────────────────────────────────────────────────────
 
@@ -227,8 +252,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                       lang: _lang,
                       isNew: isNew(item),
                       onMarkDone: () => _markDone(item),
-                      onQuantityChanged: (u, q) =>
-                          _updateQuantity(item['id'] as String, u, q),
+                      onQuantityChanged: (u, q) => _updateQuantity(item, u, q),
                     ),
                   ),
               ],
@@ -247,6 +271,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                 targetRef: _listRef,
                 lang: _lang,
                 hintText: 'Add item to shopping list',
+                trackContributions: true,
               ),
             ),
           ),
@@ -510,6 +535,7 @@ class _ShoppingItem extends StatelessWidget {
       builder: (dialogCtx) => _RecipeSourcesDialog(
         groupId: groupId,
         itemId: item['id'] as String,
+        manual: readManualQuantities(item[kManualQuantitiesField]),
         lang: lang,
         onOpenRecipe: (recipeId) {
           Navigator.of(dialogCtx).pop();
@@ -543,21 +569,56 @@ class _RecipeSource {
   final Map<String, num> quantity;
 }
 
-/// Dialog listing the recipes a shopping-list item was added from. Each row
-/// shows the recipe's cropped square image, its name and the amount it
-/// contributed; tapping a row opens the recipe.
+/// A group member who put part of this item on the list by hand, with the
+/// amount they contributed (empty when they added it without a quantity).
+class _ManualSource {
+  _ManualSource({required this.uid, required this.name, required this.quantity});
+
+  final String uid;
+  final String name;
+  final Map<String, num> quantity;
+}
+
+/// Dialog listing where a shopping-list item came from: the recipes that
+/// contributed to it, each with the amount it added, followed by the members
+/// who added the rest by hand. Tapping a recipe row opens the recipe.
 class _RecipeSourcesDialog extends StatelessWidget {
   const _RecipeSourcesDialog({
     required this.groupId,
     required this.itemId,
+    required this.manual,
     required this.lang,
     required this.onOpenRecipe,
   });
 
   final String groupId;
   final String itemId;
+
+  /// Hand-added amounts per uid, straight off the item document.
+  final Map<String, Map<String, num>> manual;
+
   final String lang;
   final void Function(String recipeId) onOpenRecipe;
+
+  /// Resolves each contributing uid to its public username. The signed-in user
+  /// is shown as "You" without a lookup.
+  Future<List<_ManualSource>> _loadManual() async {
+    final me = FirebaseAuth.instance.currentUser?.uid;
+    final db = FirebaseFirestore.instance;
+    final entries = manual.entries.toList();
+    return Future.wait(entries.map((e) async {
+      if (e.key == me) {
+        return _ManualSource(uid: e.key, name: 'You', quantity: e.value);
+      }
+      String name = 'Member';
+      try {
+        final snap = await db.collection('users_public').doc(e.key).get();
+        final username = snap.data()?['username']?.toString();
+        if (username != null && username.isNotEmpty) name = username;
+      } catch (_) {}
+      return _ManualSource(uid: e.key, name: name, quantity: e.value);
+    }));
+  }
 
   Future<List<_RecipeSource>> _load() async {
     final db = FirebaseFirestore.instance;
@@ -605,15 +666,22 @@ class _RecipeSourcesDialog extends StatelessWidget {
           '${fmtQty(e.value)} ${UnitsCache.instance.display(e.key, lang, e.value)}')
       .join(', ');
 
+  Future<(List<_RecipeSource>, List<_ManualSource>)> _loadAll() async {
+    final recipesFuture = _load();
+    final manualFuture = _loadManual();
+    return (await recipesFuture, await manualFuture);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return AlertDialog(
-      title: const Text('From recipes'),
+      title: const Text('Where this came from'),
       contentPadding: const EdgeInsets.symmetric(vertical: 8),
       content: SizedBox(
         width: double.maxFinite,
-        child: FutureBuilder<List<_RecipeSource>>(
-          future: _load(),
+        child: FutureBuilder<(List<_RecipeSource>, List<_ManualSource>)>(
+          future: _loadAll(),
           builder: (context, snap) {
             if (!snap.hasData) {
               return const SizedBox(
@@ -621,8 +689,8 @@ class _RecipeSourcesDialog extends StatelessWidget {
                 child: Center(child: CircularProgressIndicator()),
               );
             }
-            final sources = snap.data!;
-            if (sources.isEmpty) {
+            final (sources, manualSources) = snap.data!;
+            if (sources.isEmpty && manualSources.isEmpty) {
               return const SizedBox(
                 height: 80,
                 child: Center(child: Text('This item is not from any recipe.')),
@@ -651,6 +719,25 @@ class _RecipeSourcesDialog extends StatelessWidget {
                     title: Text(s.name),
                     subtitle: s.quantity.isEmpty ? null : Text(_amountLabel(s.quantity)),
                     onTap: () => onOpenRecipe(s.recipeId),
+                  ),
+                // Whatever wasn't put there by a cooking plan: the amounts
+                // members added (or edited in) by hand.
+                for (final m in manualSources)
+                  ListTile(
+                    leading: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: CircleAvatar(
+                        backgroundColor: cs.secondaryContainer,
+                        child: Icon(Icons.person_outline,
+                            color: cs.onSecondaryContainer),
+                      ),
+                    ),
+                    title: Text(sources.isEmpty
+                        ? 'Added by ${m.name}'
+                        : 'Rest added by ${m.name}'),
+                    subtitle:
+                        m.quantity.isEmpty ? null : Text(_amountLabel(m.quantity)),
                   ),
               ],
             );

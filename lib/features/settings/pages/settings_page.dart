@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
@@ -19,7 +20,12 @@ const String _contactEmail = 'equirinya@gmail.com';
 /// General app settings hub: about and links. More settings to be added later.
 /// (Group switching/management lives in the group overview.)
 class SettingsPage extends StatelessWidget {
-  const SettingsPage({super.key});
+  const SettingsPage({super.key, required this.access});
+
+  /// The user's current AI entitlement. Each AI toggle below is only shown
+  /// when the matching feature is actually unlocked for this user — a toggle
+  /// for a feature they can't use anyway is just confusing clutter.
+  final AiAccess access;
 
   Future<void> _open(String url) async {
     try {
@@ -29,6 +35,9 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showMealPlanner = access.canUseMealPlanner;
+    final showSearchIdeas = access.canUseSearchIdeas;
+    final showGeneration = access.canEnhanceText || access.canGenerateImage;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
@@ -54,36 +63,39 @@ class SettingsPage extends StatelessWidget {
           ),
           const Divider(),
           _SectionHeader('AI features'),
-          ValueListenableBuilder<bool>(
-            valueListenable: AiFeatureSettings.mealPlannerEnabled,
-            builder: (context, enabled, _) => SwitchListTile(
-              secondary: Icon(MdiIcons.chefHat),
-              title: const Text('Smart meal planner'),
-              subtitle: const Text('Show the AI meal-planning entry points on the recipe page'),
-              value: enabled,
-              onChanged: AiFeatureSettings.setMealPlannerEnabled,
+          if (showMealPlanner)
+            ValueListenableBuilder<bool>(
+              valueListenable: AiFeatureSettings.mealPlannerEnabled,
+              builder: (context, enabled, _) => SwitchListTile(
+                secondary: Icon(MdiIcons.chefHat),
+                title: const Text('Smart meal planner'),
+                subtitle: const Text('Show the AI meal-planning entry points on the recipe page'),
+                value: enabled,
+                onChanged: AiFeatureSettings.setMealPlannerEnabled,
+              ),
             ),
-          ),
-          ValueListenableBuilder<bool>(
-            valueListenable: AiFeatureSettings.searchIdeasEnabled,
-            builder: (context, enabled, _) => SwitchListTile(
-              secondary: const Icon(Icons.tips_and_updates_outlined),
-              title: const Text('AI suggestions in search'),
-              subtitle: const Text('Show AI-generated recipe ideas while searching'),
-              value: enabled,
-              onChanged: AiFeatureSettings.setSearchIdeasEnabled,
+          if (showSearchIdeas)
+            ValueListenableBuilder<bool>(
+              valueListenable: AiFeatureSettings.searchIdeasEnabled,
+              builder: (context, enabled, _) => SwitchListTile(
+                secondary: const Icon(Icons.tips_and_updates_outlined),
+                title: const Text('AI suggestions in search'),
+                subtitle: const Text('Show AI-generated recipe ideas while searching'),
+                value: enabled,
+                onChanged: AiFeatureSettings.setSearchIdeasEnabled,
+              ),
             ),
-          ),
-          ValueListenableBuilder<bool>(
-            valueListenable: AiFeatureSettings.generationEnabled,
-            builder: (context, enabled, _) => SwitchListTile(
-              secondary: const Icon(Icons.auto_fix_high_outlined),
-              title: const Text('AI generation'),
-              subtitle: const Text('Show buttons that generate or enhance content with AI'),
-              value: enabled,
-              onChanged: AiFeatureSettings.setGenerationEnabled,
+          if (showGeneration)
+            ValueListenableBuilder<bool>(
+              valueListenable: AiFeatureSettings.generationEnabled,
+              builder: (context, enabled, _) => SwitchListTile(
+                secondary: const Icon(Icons.auto_fix_high_outlined),
+                title: const Text('AI generation'),
+                subtitle: const Text('Show buttons that generate or enhance content with AI'),
+                value: enabled,
+                onChanged: AiFeatureSettings.setGenerationEnabled,
+              ),
             ),
-          ),
           const _RecipeSuggestionToggle(),
           const Divider(),
           _SectionHeader('Notifications'),

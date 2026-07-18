@@ -12,6 +12,7 @@ import 'package:couple_planner/features/ingredients/ingredient_parser.dart';
 import 'package:couple_planner/features/ingredients/services/units_cache.dart';
 import 'package:couple_planner/features/ingredients/services/ingredient_index.dart';
 import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
+import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 
 const Duration _kFunctionDebounce = Duration(seconds: 2);
 
@@ -34,11 +35,18 @@ class IngredientSearchSheet extends StatefulWidget {
     required this.targetRef,
     required this.lang,
     this.hintText = 'Add item…',
+    this.trackContributions = false,
   });
 
   final CollectionReference<Map<String, dynamic>> targetRef;
   final String lang;
   final String hintText;
+
+  /// Whether adds should record who made them, in the item's
+  /// `manualQuantities` map (see manual_contributions.dart). On for the
+  /// shopping list, off for recipe ingredient lists, where the recipe — not a
+  /// person — owns the amounts.
+  final bool trackContributions;
 
   /// Convenience: opens the sheet with the standard modal configuration.
   static Future<void> show(
@@ -46,6 +54,7 @@ class IngredientSearchSheet extends StatefulWidget {
         required CollectionReference<Map<String, dynamic>> targetRef,
         required String lang,
         String hintText = 'Add item…',
+        bool trackContributions = false,
       }) =>
       showModalBottomSheet<void>(
         context: context,
@@ -56,6 +65,7 @@ class IngredientSearchSheet extends StatefulWidget {
           targetRef: targetRef,
           lang: lang,
           hintText: hintText,
+          trackContributions: trackContributions,
         ),
       );
 
@@ -313,6 +323,9 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
         'createdAt': FieldValue.serverTimestamp(),
         'quantity': s.quantityMap,
         'category': s.category,
+        if (widget.trackContributions)
+          if (manualQuantitiesSeed(s.unitId, s.quantity) case final seed?)
+            kManualQuantitiesField: seed,
       });
       _clearAndKeepFocus();
       unawaited(_afterUse(ref, s)); // resolve / refresh in the background
@@ -345,9 +358,13 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
       final total = existingQty + newQty;
       try {
-        await widget.targetRef
-            .doc(data['id'] as String)
-            .update({'quantity': {newUnitId: total.toDouble()}});
+        await widget.targetRef.doc(data['id'] as String).update({
+          'quantity': {newUnitId: total.toDouble()},
+          // Only the amount this tap contributed is attributed — whatever was
+          // already on the item keeps its existing owner (a plan, or the other
+          // partner).
+          if (widget.trackContributions) ...manualDelta(newUnitId, newQty),
+        });
         return true;
       } catch (_) {
         return false;

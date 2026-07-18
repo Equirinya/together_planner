@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 import 'package:couple_planner/core/widgets/load_builders.dart';
+import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_settings_page.dart';
 import 'package:couple_planner/features/ingredients/pages/ingredient_admin_page.dart';
@@ -25,6 +26,7 @@ class GroupOverviewPage extends StatefulWidget {
     required this.groupIds,
     required this.selectedGroup,
     required this.onSelect,
+    required this.aiAccess,
     this.canEditIngredients = false,
     this.canEditPublicRecipes = false,
     this.viewAIUsage = false,
@@ -33,6 +35,7 @@ class GroupOverviewPage extends StatefulWidget {
   final List<String> groupIds;
   final String? selectedGroup;
   final void Function(String groupId) onSelect;
+  final AiAccess aiAccess;
   final bool canEditIngredients;
   final bool canEditPublicRecipes;
   final bool viewAIUsage;
@@ -198,7 +201,7 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
             title: const Text('App Settings'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SettingsPage()),
+              MaterialPageRoute(builder: (_) => SettingsPage(access: widget.aiAccess)),
             ),
           ),
         ],
