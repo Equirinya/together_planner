@@ -145,7 +145,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
     final id = item['id'] as String;
     setState(() => _optimisticallyHidden.add(id));
     try {
-      await _listRef.doc(id).update({'doneAt': FieldValue.serverTimestamp()});
+      // Use a concrete client timestamp rather than a server one: a pending
+      // FieldValue.serverTimestamp() reads back as null (and stays null when a
+      // snapshot is served from the offline cache) until the server acks the
+      // write, which makes a just-removed item invisible to the search sheet's
+      // "recently done" restore list. A client timestamp is present in every
+      // snapshot immediately, so recently removed items surface right away.
+      await _listRef.doc(id).update({'doneAt': Timestamp.now()});
     } catch (_) {
       if (mounted) setState(() => _optimisticallyHidden.remove(id));
     }
@@ -239,7 +245,16 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
             children: [
               for (final cat in sortedCats) ...[
                 if (showHeaders)
-                  _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
+                  // The header shrinks away in step with its last item: it
+                  // stays "present" only while the category still holds an
+                  // item that isn't itself shrinking out.
+                  _AnimatedShoppingItem(
+                    key: ValueKey('header_$cat'),
+                    present: groups[cat]!
+                        .any((i) => !_removingItems.containsKey(i['id'])),
+                    onRemoved: () {},
+                    child: _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
+                  ),
                 for (final item in groups[cat]!)
                   _AnimatedShoppingItem(
                     key: ValueKey(item['id']),

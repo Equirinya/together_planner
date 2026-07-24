@@ -201,6 +201,15 @@ class _HomePageState extends State<HomePage> {
   /// currently on screen, awaiting the real [RecipeDetailPage] to replace it.
   bool _shareSkeletonShown = false;
 
+  /// De-dupes the near-simultaneous double delivery that
+  /// [ReceiveSharingIntent] emits on a cold launch — `getInitialMedia()` and
+  /// the media stream both fire for the same shared payload. Holds a signature
+  /// of the last handled item and when it was handled; an identical payload
+  /// seen within [_shareDedupWindow] is treated as that echo and dropped.
+  String? _lastSharedSignature;
+  DateTime? _lastSharedAt;
+  static const Duration _shareDedupWindow = Duration(seconds: 5);
+
   /// An invite tapped while signed-out, held until the account exists so we can
   /// open the join screen right after onboarding.
   ({String groupId, String inviteId})? _pendingInvite;
@@ -431,15 +440,34 @@ class _HomePageState extends State<HomePage> {
     if (shared.isEmpty || !mounted) return;
     for (final file in shared) {
       if (file.type == SharedMediaType.image) {
+        if (_isDuplicateShare('image:${file.path}')) return;
         _openRecipeFromImage(file);
         return;
       }
       final url = _urlRe.firstMatch(file.path)?.group(0);
       if (url != null) {
+        if (_isDuplicateShare('url:$url')) return;
         _openRecipeFromUrl(url);
         return;
       }
     }
+  }
+
+  /// True when [signature] matches the shared payload handled within the last
+  /// [_shareDedupWindow] — the duplicate half of receive_sharing_intent's
+  /// cold-start double delivery. Records the signature/time as a side effect,
+  /// so the first delivery passes and its immediate echo is dropped. Runs
+  /// synchronously before any await, so the two near-simultaneous calls can't
+  /// both slip through. The replay of a pending cold-start share calls
+  /// [_openRecipeFromUrl] directly (not this), so it is never blocked here.
+  bool _isDuplicateShare(String signature) {
+    final now = DateTime.now();
+    final isDup = _lastSharedSignature == signature &&
+        _lastSharedAt != null &&
+        now.difference(_lastSharedAt!) < _shareDedupWindow;
+    _lastSharedSignature = signature;
+    _lastSharedAt = now;
+    return isDup;
   }
 
   /// Creates a recipe in the active group from a shared link and opens it in
@@ -473,6 +501,26 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     final recipes = db.collection('groups').doc(_selectedGroup).collection('recipes');
+    // Already imported this link? Open the existing recipe instead of creating a
+    // duplicate and regenerating. Mirrors the in-app create flow's
+    // `_findRecipeIdByUrl` guard and also collapses a duplicate share delivery
+    // whose first half already created the doc (the server's own attribution
+    // dedup would otherwise delete this fresh doc out from under the live page,
+    // leaving it shimmering forever).
+    final existing =
+        await recipes.where('attribution', isEqualTo: url).limit(1).get();
+    if (!mounted) return;
+    if (existing.docs.isNotEmpty) {
+      _shareSkeletonShown = false;
+      Navigator.of(context).pushReplacement(MaterialPageRoute(
+        builder: (_) => RecipeDetailPage(
+          groupId: _selectedGroup!,
+          recipeId: existing.docs.first.id,
+          access: _aiAccess,
+        ),
+      ));
+      return;
+    }
     final ref = await recipes.add({
       'name': '',
       'description': '',

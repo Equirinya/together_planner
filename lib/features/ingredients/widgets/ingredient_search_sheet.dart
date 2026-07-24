@@ -24,7 +24,9 @@ const Duration _kFunctionDebounce = Duration(seconds: 2);
 /// `{ingredientId, displayName, description, quantity, doneAt, createdAt}`
 /// to [targetRef]. Works for the shopping list, recipe ingredient lists, etc.
 ///
-///  * same display name + same single unit + no description → quantities merge,
+///  * same display name + same description (in a matching unit) → quantities
+///    merge; differently named/described entries for one ingredient stay
+///    distinct and are each offered as their own top-up option,
 ///  * unmatched input is added as `kPendingIngredient` and resolved afterwards
 ///    (the host's snapshot listener should call [resolvePendingItem] so
 ///    pre-existing pending items are covered too),
@@ -236,37 +238,69 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
     final out = <Suggestion>[];
     final seen = <String>{};
 
+    // A suggestion is identified by ingredient + display name + description, so
+    // the typed phrase, the canonical version and each existing shopping-list
+    // variant can all coexist without any one appearing twice.
+    void add(Suggestion s) {
+      final key =
+          '${s.ingredientId}|${s.displayName.trim().toLowerCase()}|${s.description}';
+      if (seen.add(key)) out.add(s);
+    }
+
     for (final c in nameDescCandidates(parsed.remaining)) {
       final matches = await IngredientIndex.instance.match(c.name, _lang);
       for (final m in matches) {
         final unitId = parsed.unitId ?? m.defaultUnit;
         final canonical = m.displayName(_lang);
+        final category = m.category(_lang);
 
         // When the typed text isn't just a prefix of the canonical name — i.e.
         // it matched via a synonym ("grüne Bohnen" → Prinzessbohne) or carries
         // extra words ("veganer Speck" → Speck) — offer the literal typed name
         // first, linked to the matched ingredient and without a description.
-        if (!canonical.toLowerCase().startsWith(fullName.toLowerCase()) &&
-            seen.add('${m.id}|$fullName|$unitId|$qty')) {
-          out.add(Suggestion(
+        if (!canonical.toLowerCase().startsWith(fullName.toLowerCase())) {
+          add(Suggestion(
             ingredientId: m.id,
             displayName: fullName,
             description: '',
             unitId: unitId,
             quantity: qty,
-            category: m.category(_lang),
+            category: category,
           ));
         }
 
-        if (seen.add('${m.id}|${c.description}|$unitId|$qty')) {
-          out.add(Suggestion(
+        // The standard version: canonical name so the user sees "Orange" when
+        // they typed "oran".
+        add(Suggestion(
+          ingredientId: m.id,
+          displayName: canonical,
+          description: c.description,
+          unitId: unitId,
+          quantity: qty,
+          category: category,
+        ));
+
+        // Each active shopping-list entry that already exists for this
+        // ingredient — including ones with a non-standard display name or a
+        // description — is offered as its own top-up option, so the user can
+        // add to a specific existing item instead of always merging into (or
+        // recreating) the canonical one. Its unit follows the existing item so
+        // a bare tap lands in the same unit and combines. The dedupe above
+        // drops any variant that coincides with the typed/standard entries.
+        for (final item in _currentItems) {
+          if (item['doneAt'] != null) continue;
+          if ((item['ingredientId'] ?? '').toString() != m.id) continue;
+          final vName = (item['displayName'] ?? '').toString();
+          if (vName.trim().isEmpty) continue;
+          add(Suggestion(
             ingredientId: m.id,
-            // Canonical ingredient name so the user sees "Orange" when they typed "oran".
-            displayName: canonical,
-            description: c.description,
-            unitId: unitId,
+            displayName: vName,
+            description: (item['description'] ?? '').toString(),
+            unitId: parsed.unitId ??
+                readQuantity(item['quantity'])?.unitId ??
+                unitId,
             quantity: qty,
-            category: m.category(_lang),
+            category: category,
           ));
         }
       }
@@ -307,8 +341,8 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   Future<void> _addSuggestion(Suggestion s) async {
     if (s.displayName.trim().isEmpty) return;
 
-    // Combine in memory (no read round-trip): same ingredient, no description,
-    // single matching unit → sum quantities.
+    // Combine in memory (no read round-trip): an existing active item with the
+    // same display name and description, in a matching unit → sum quantities.
     if (await _combineWithExisting(s)) {
       _clearAndKeepFocus();
       return;
@@ -339,38 +373,30 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   }
 
   Future<bool> _combineWithExisting(Suggestion s) async {
-    if (s.description.isNotEmpty) return false;
+    final target = combineTarget(s, _currentItems);
+    if (target == null) return false;
 
-    // Null quantity counts as 1 piece in the default unit for combining.
-    final newQty = s.quantity ?? 1;
-    final newUnitId = s.quantity == null ? kDefaultUnitId : s.unitId;
-
-    for (final data in _currentItems) {
-      if (data['doneAt'] != null) continue;
-      if ((data['description'] ?? '').toString().isNotEmpty) continue;
-      if ((data['displayName'] ?? '').toString().toLowerCase() !=
-          s.displayName.toLowerCase()) continue;
-
-      final eq = readQuantity(data['quantity']);
-      final existingQty = eq?.qty ?? 1;
-      final existingUnitId = eq?.unitId ?? kDefaultUnitId;
-      if (existingUnitId != newUnitId) continue;
-
-      final total = existingQty + newQty;
-      try {
-        await widget.targetRef.doc(data['id'] as String).update({
-          'quantity': {newUnitId: total.toDouble()},
-          // Only the amount this tap contributed is attributed — whatever was
-          // already on the item keeps its existing owner (a plan, or the other
-          // partner).
-          if (widget.trackContributions) ...manualDelta(newUnitId, newQty),
-        });
-        return true;
-      } catch (_) {
-        return false;
-      }
+    final eq = readQuantity(target['quantity']);
+    final existingQty = eq?.qty ?? 1;
+    final existingUnitId = eq?.unitId ?? kDefaultUnitId;
+    // A bare tap (no typed amount) adds one in whatever unit the item already
+    // uses; a typed amount adds in its own unit, which combineTarget has
+    // already matched against the item.
+    final addUnitId = s.quantity == null ? existingUnitId : s.unitId;
+    final addQty = s.quantity ?? 1;
+    final total = existingQty + addQty;
+    try {
+      await widget.targetRef.doc(target['id'] as String).update({
+        'quantity': {addUnitId: total.toDouble()},
+        // Only the amount this tap contributed is attributed — whatever was
+        // already on the item keeps its existing owner (a plan, or the other
+        // partner).
+        if (widget.trackContributions) ...manualDelta(addUnitId, addQty),
+      });
+      return true;
+    } catch (_) {
+      return false;
     }
-    return false;
   }
 
   /// After an item was added: resolve pending ones, and for matched ones pull
@@ -473,21 +499,32 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 // Suggestions list
 // =============================================================================
 
-bool _wouldCombine(Suggestion s, List<Map<String, dynamic>> currentItems) {
-  if (s.description.isNotEmpty || s.isRestoreDone) return false;
-  final newUnitId = s.quantity == null ? kDefaultUnitId : s.unitId;
+/// Finds the active shopping-list item that tapping [s] would add into, or
+/// null when it should create a fresh item. An item matches when it shares the
+/// suggestion's display name and description (so differently-named or described
+/// entries for the same ingredient stay distinct). A typed amount only merges
+/// into an item already in that unit; a bare "+1" merges into a match in
+/// whatever unit it uses.
+Map<String, dynamic>? combineTarget(
+    Suggestion s, List<Map<String, dynamic>> currentItems) {
+  if (s.isRestoreDone) return null;
   for (final data in currentItems) {
     if (data['doneAt'] != null) continue;
-    if ((data['description'] ?? '').toString().isNotEmpty) continue;
     if ((data['displayName'] ?? '').toString().toLowerCase() !=
         s.displayName.toLowerCase()) continue;
-    final existingUnitId =
-        readQuantity(data['quantity'])?.unitId ?? kDefaultUnitId;
-    if (existingUnitId != newUnitId) continue;
-    return true;
+    if ((data['description'] ?? '').toString() != s.description) continue;
+    if (s.quantity != null) {
+      final existingUnitId =
+          readQuantity(data['quantity'])?.unitId ?? kDefaultUnitId;
+      if (existingUnitId != s.unitId) continue;
+    }
+    return data;
   }
-  return false;
+  return null;
 }
+
+bool _wouldCombine(Suggestion s, List<Map<String, dynamic>> currentItems) =>
+    combineTarget(s, currentItems) != null;
 
 class _SuggestionsList extends StatelessWidget {
   const _SuggestionsList({

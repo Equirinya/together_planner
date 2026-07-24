@@ -350,7 +350,12 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     // snapping back to the 2 default, so a cleared stepper doesn't silently
     // reset its position (and its scale factor) under us.
     servings = ((data['servings'] ?? servings) as num).toDouble();
-    _baseServings ??= servings;
+    // Capture the base only once a real count exists. While generating,
+    // `data['servings']` is null and `servings` falls back to its default, so
+    // locking `_baseServings` here would pin it to that default; ingredients
+    // arriving later (stored for the real count) would then be display-scaled
+    // by the wrong ratio until the page is reopened.
+    if (_baseServings == null && _hasServings) _baseServings = servings;
     // In a plan view the shown count follows the plan, not the recipe default.
     // `_baseServings` above still captures the recipe's own count (the amounts
     // the stored ingredient quantities correspond to), so ingredients scale
@@ -612,12 +617,16 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   void _startIngredientsSubscription() {
     _ingredientsSub = ingredientsRef.snapshots().listen((snap) async {
       if (!mounted) return;
-      // Matched ingredients already have a curated name in every supported
-      // language on their master /ingredients doc (see resolveOrCreateIngredient
-      // in functions/src/ingredients.ts); prefer that over the recipe's own
-      // (AI-translated) displayName, same as the add-to-shopping-list dialog.
-      // Still-pending ingredients have no matching master doc, so this just
-      // resolves to an empty snapshot for those — harmless.
+      // AI-generated recipe ingredients only store an (AI-translated)
+      // displayName in the language the recipe was generated in, so for those
+      // we prefer the master /ingredients doc's curated per-language name (see
+      // resolveOrCreateIngredient in functions/src/ingredients.ts), same as the
+      // add-to-shopping-list dialog. Ingredients the user added by hand through
+      // the search sheet instead carry a deliberately chosen displayName (and
+      // no `translations` map) — that choice must be preserved rather than
+      // replaced by the ingredient's base name. Still-pending ingredients have
+      // no matching master doc, so the fetch resolves to an empty snapshot —
+      // harmless.
       final masterDocs = await Future.wait(snap.docs.map((d) {
         final id = (d.data()['ingredientId'] ?? '').toString();
         return FirebaseFirestore.instance.collection('ingredients').doc(id).get();
@@ -626,12 +635,16 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       final list = <Map<String, dynamic>>[
         for (int i = 0; i < snap.docs.length; i++)
           () {
-            final localized = localizeIngredientData(snap.docs[i].data(), lang);
+            final raw = snap.docs[i].data();
+            final localized = localizeIngredientData(raw, lang);
+            // Only generated ingredients carry a translations map; a
+            // hand-added one keeps its own displayName verbatim.
+            final isGenerated = raw.containsKey('translations');
             final masterName =
                 (masterDocs[i].data()?['name'] as Map?)?[lang]?.toString();
             return <String, dynamic>{
               ...localized,
-              if (masterName != null && masterName.isNotEmpty)
+              if (isGenerated && masterName != null && masterName.isNotEmpty)
                 'displayName': masterName,
               'id': snap.docs[i].id,
             };

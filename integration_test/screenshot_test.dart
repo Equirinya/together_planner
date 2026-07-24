@@ -1,3 +1,6 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,8 +24,13 @@ const _recipeName = String.fromEnvironment('RECIPE_NAME');
 // app is restarted to give the missing ones another try.
 const _maxLaunchAttempts = 3;
 
+/// Held at library level so the wait helpers can capture a diagnostic
+/// screenshot when the app isn't where the test expects it to be.
+late final IntegrationTestWidgetsFlutterBinding _binding;
+
 void main() {
   final binding = IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  _binding = binding;
 
   testWidgets('log in and capture app screenshots', (tester) async {
     // Launch, log in and open the recipe grid, restarting the app if some recipe
@@ -38,7 +46,7 @@ void main() {
       // Wait long enough for the category icons (loaded from Storage) to arrive.
       if (await _tapNav(tester, Icons.shopping_bag, 'shopping list tab')) {
         await _wait(tester, const Duration(seconds: 12));
-        await binding.takeScreenshot('${_label}_shopping_list');
+        await _screenshot('${_label}_shopping_list');
       }
 
       // Recipes tab. Wait long so every recipe image finishes downloading.
@@ -52,7 +60,7 @@ void main() {
       if (_recipeImagesSettled() || attempt == _maxLaunchAttempts) break;
     }
 
-    await binding.takeScreenshot('${_label}_recipe');
+    await _screenshot('${_label}_recipe');
 
     // Open a recipe and capture its detail page. A configured recipe name is
     // searched for and opened; otherwise the first (most recently used) card.
@@ -70,7 +78,7 @@ void main() {
       await tester.tap(find.descendant(of: grid, matching: find.byType(RecipeCard)).first);
     }
     await _wait(tester, const Duration(seconds: 4));
-    await binding.takeScreenshot('${_label}_recipe_detail');
+    await _screenshot('${_label}_recipe_detail');
 
     // Back to the recipe grid.
     await tester.pageBack();
@@ -82,7 +90,7 @@ void main() {
     await _longPressDragTo(tester, firstCard, tester.getCenter(find.byType(CarouselView)));
     await _wait(tester, const Duration(seconds: 3));
     if (find.text('Add to shopping list').evaluate().isNotEmpty) {
-      await binding.takeScreenshot('${_label}_add_to_plan_dialog');
+      await _screenshot('${_label}_add_to_plan_dialog');
       await tester.tap(find.widgetWithText(TextButton, 'Skip'));
       await _wait(tester, const Duration(seconds: 1));
     }
@@ -110,7 +118,7 @@ void main() {
         await _wait(tester, const Duration(seconds: 2));
       }
       await _wait(tester, const Duration(seconds: 12));
-      await binding.takeScreenshot('${_label}_smart_meal_plan');
+      await _screenshot('${_label}_smart_meal_plan');
       await tester.pageBack(); // back to the settings step
       await _wait(tester, const Duration(seconds: 1));
       await tester.pageBack(); // back to the recipe grid
@@ -122,13 +130,13 @@ void main() {
       fail('The "More" tab is missing. Destinations present: ${_navIcons()}.');
     }
     await _wait(tester, const Duration(seconds: 2));
-    await binding.takeScreenshot('${_label}_more');
+    await _screenshot('${_label}_more');
 
     // Group settings for the active group.
     if (find.byIcon(Icons.settings_outlined).evaluate().isNotEmpty) {
       await tester.tap(find.byIcon(Icons.settings_outlined).first);
       await _wait(tester, const Duration(seconds: 3));
-      await binding.takeScreenshot('${_label}_group_settings');
+      await _screenshot('${_label}_group_settings');
       await tester.pageBack();
       await _wait(tester, const Duration(seconds: 2));
     }
@@ -138,7 +146,7 @@ void main() {
     if (dietaryTile.evaluate().isNotEmpty) {
       await tester.tap(dietaryTile);
       await _wait(tester, const Duration(seconds: 3));
-      await binding.takeScreenshot('${_label}_dietary_preferences');
+      await _screenshot('${_label}_dietary_preferences');
       await tester.pageBack();
       await _wait(tester, const Duration(seconds: 2));
     }
@@ -147,8 +155,20 @@ void main() {
     await _tap(tester, find.widgetWithText(FloatingActionButton, 'New group'),
         describe: 'new group button');
     await _wait(tester, const Duration(seconds: 3));
-    await binding.takeScreenshot('${_label}_new_group');
+    await _screenshot('${_label}_new_group');
   });
+}
+
+/// Takes a screenshot, handling the Android-only surface conversion that
+/// [IntegrationTestWidgetsFlutterBinding.takeScreenshot] requires. The
+/// conversion is done once, lazily, and is a no-op on iOS.
+bool _surfaceConverted = false;
+Future<void> _screenshot(String name) async {
+  if (!_surfaceConverted && !kIsWeb && Platform.isAndroid) {
+    await _binding.convertFlutterSurfaceToImage();
+    _surfaceConverted = true;
+  }
+  await _binding.takeScreenshot(name);
 }
 
 /// Launches the app and signs in. On the [first] launch the app starts signed
@@ -193,7 +213,7 @@ Future<void> _launch(
   }
 
   if (ready == 0) {
-    await binding.takeScreenshot('${_label}_welcome');
+    await _screenshot('${_label}_welcome');
 
     await _tap(tester, welcome, describe: 'welcome page login link');
     await _wait(tester, const Duration(seconds: 1));
@@ -229,17 +249,58 @@ Future<void> _waitForStable(
 }) async {
   const step = Duration(milliseconds: 200);
   var stable = Duration.zero;
+  var sawItAtLeastOnce = false;
+  var lastLog = Duration.zero;
   for (var elapsed = Duration.zero; elapsed < timeout; elapsed += step) {
     if (finder.evaluate().isNotEmpty) {
+      sawItAtLeastOnce = true;
       stable += step;
       if (stable >= stableFor) return;
     } else {
+      if (stable > Duration.zero) {
+        debugPrint('$describe disappeared after ${stable.inMilliseconds}ms '
+            '(at ${elapsed.inSeconds}s). Visible text: ${_visibleText()}');
+      }
       stable = Duration.zero;
+    }
+    // Periodic heartbeat so the CI log shows what the app is sitting on.
+    if (elapsed - lastLog >= const Duration(seconds: 10)) {
+      lastLog = elapsed;
+      debugPrint('[${elapsed.inSeconds}s] waiting for $describe; '
+          'visible text: ${_visibleText()}');
     }
     await tester.pump(step);
   }
+  debugPrint('$describe was ${sawItAtLeastOnce ? "seen but never stable" : "never seen at all"}.');
+  // Capture whatever the app is actually showing before giving up — this lands
+  // in the workflow's screenshot artifacts alongside the real ones.
+  try {
+    await _screenshot('${_label}_FAILURE_${describe.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_')}');
+  } catch (e) {
+    debugPrint('Could not capture failure screenshot: $e');
+  }
+
   fail('Timed out after ${timeout.inSeconds}s waiting for $describe to stay '
-      'on screen for ${stableFor.inSeconds}s.');
+      'on screen for ${stableFor.inSeconds}s.\n'
+      'Visible text at timeout: ${_visibleText()}');
+}
+
+/// Every piece of text currently on screen. The single most useful thing to see
+/// when the app isn't where the test expects: the no-group message, an error
+/// banner and the login form all identify themselves here.
+List<String> _visibleText() {
+  final texts = find
+      .byType(Text)
+      .evaluate()
+      .map((e) => (e.widget as Text).data)
+      .whereType<String>()
+      .where((s) => s.trim().isNotEmpty)
+      .toList();
+  // Long bodies (like the no-group explainer) get truncated so the failure
+  // message stays readable in the CI log.
+  return texts
+      .map((s) => s.length > 80 ? '${s.substring(0, 80)}…' : s)
+      .toList();
 }
 
 /// Pumps until [finder] matches at least one widget, or [timeout] elapses.

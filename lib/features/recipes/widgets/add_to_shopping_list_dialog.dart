@@ -250,9 +250,16 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
       final row = pending[i].$1;
       final q = pending[i].$2;
       // Ignore completed entries: merge only into an active one, otherwise
-      // create a fresh item so the ingredient reappears on the list.
-      final active =
-      existing[i].docs.where((d) => d.data()['doneAt'] == null).toList();
+      // create a fresh item so the ingredient reappears on the list. Merge
+      // only when the display name and description match too — same
+      // ingredientId with a different name/description is a distinct item and
+      // must not be lumped together.
+      final active = existing[i].docs.where((d) {
+        final data = d.data();
+        return data['doneAt'] == null &&
+            (data['displayName'] ?? '').toString() == row.name &&
+            (data['description'] ?? '').toString() == row.description;
+      }).toList();
       final DocumentReference<Map<String, dynamic>> itemRef;
       if (active.isNotEmpty) {
         itemRef = active.first.reference;
@@ -264,7 +271,7 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
         batch.set(itemRef, {
           'ingredientId': row.id,
           'displayName': row.name,
-          'description': '',
+          'description': row.description,
           'createdAt': FieldValue.serverTimestamp(),
           'quantity': q.isEmpty ? null : q,
           'doneAt': null,
