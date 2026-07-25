@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -14,7 +13,24 @@ import 'package:couple_planner/features/ingredients/services/ingredient_index.da
 import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
 import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 
-const Duration _kFunctionDebounce = Duration(seconds: 2);
+/// Debounce before the typed text is taken to the server to look through done
+/// items. Much shorter than the cloud-function debounce — it's a plain indexed
+/// read — but long enough that a burst of keystrokes costs one query.
+const Duration _kDoneQueryDebounce = Duration(milliseconds: 400);
+
+/// How far back done items are considered, and how many are held at once.
+const Duration _kDoneWindow = Duration(days: 7);
+const int _kDoneLimit = 50;
+
+/// How many done items the empty-query "Done" list shows, out of the
+/// [_kDoneLimit] held.
+const int _kDoneShown = 20;
+
+/// Identity of a suggestion for dedupe purposes: ingredient + display name +
+/// description, so the typed phrase, the canonical version and each existing
+/// list variant can coexist without any one of them appearing twice.
+String _suggestionKey(Suggestion s) =>
+    '${s.ingredientId}|${s.displayName.trim().toLowerCase()}|${s.description}';
 
 // =============================================================================
 // Search sheet — reusable: pass any collection where items should be created
@@ -30,7 +46,8 @@ const Duration _kFunctionDebounce = Duration(seconds: 2);
 ///  * unmatched input is added as `kPendingIngredient` and resolved afterwards
 ///    (the host's snapshot listener should call [resolvePendingItem] so
 ///    pre-existing pending items are covered too),
-///  * docs with a non-null `doneAt` are offered for restore on empty query.
+///  * docs with a non-null `doneAt` are offered for restore on empty query,
+///    and while typing as a source of names for a new item.
 class IngredientSearchSheet extends StatefulWidget {
   const IngredientSearchSheet({
     super.key,
@@ -38,6 +55,7 @@ class IngredientSearchSheet extends StatefulWidget {
     required this.lang,
     this.hintText = 'Add item…',
     this.trackContributions = false,
+    this.windowDoneItems = false,
   });
 
   final CollectionReference<Map<String, dynamic>> targetRef;
@@ -50,6 +68,17 @@ class IngredientSearchSheet extends StatefulWidget {
   /// person — owns the amounts.
   final bool trackContributions;
 
+  /// Whether done items should be loaded through their own windowed query
+  /// instead of coming along with the rest of the collection.
+  ///
+  /// On for the shopping list, whose done items accumulate without bound —
+  /// there, reading the whole collection would mean paying for the list's
+  /// entire history on every open. Off for small, bounded collections like a
+  /// recipe's ingredient list: splitting the listener there would buy nothing
+  /// and relies on every doc actually carrying a `doneAt` field, since
+  /// Firestore's `isNull: true` does not match docs where the field is absent.
+  final bool windowDoneItems;
+
   /// Convenience: opens the sheet with the standard modal configuration.
   static Future<void> show(
       BuildContext context, {
@@ -57,6 +86,7 @@ class IngredientSearchSheet extends StatefulWidget {
         required String lang,
         String hintText = 'Add item…',
         bool trackContributions = false,
+        bool windowDoneItems = false,
       }) =>
       showModalBottomSheet<void>(
         context: context,
@@ -68,6 +98,7 @@ class IngredientSearchSheet extends StatefulWidget {
           lang: lang,
           hintText: hintText,
           trackContributions: trackContributions,
+          windowDoneItems: windowDoneItems,
         ),
       );
 
@@ -81,13 +112,23 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
   List<Suggestion> _suggestions = [];
   Suggestion? _fallback;
-  bool _functionRunning = false;
 
-  Timer? _functionTimer;
   int _searchSeq = 0;
 
+  /// Active (not done) items — powers instant combining and the per-ingredient
+  /// variant suggestions.
   List<Map<String, dynamic>> _currentItems = [];
   StreamSubscription? _listSub;
+
+  /// The most recent done items, newest first. Source of the restore list on
+  /// an empty query, and of name suggestions while typing.
+  List<Map<String, dynamic>> _doneItems = [];
+  StreamSubscription? _doneSub;
+
+  /// Done items found on the server by display-name prefix — older than the
+  /// window [_doneItems] covers. Rebuilt per search, appended to the results.
+  List<Suggestion> _remoteDone = [];
+  Timer? _doneQueryTimer;
 
   StreamSubscription<bool>? _kbSub;
   bool _keyboardWasVisible = false;
@@ -99,15 +140,7 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
     super.initState();
     UnitsCache.instance.ensureLoaded();
 
-    // Live items: powers the restore-done suggestions and instant combining.
-    _listSub = widget.targetRef.snapshots().listen((snap) {
-      if (!mounted) return;
-      _currentItems =
-          snap.docs.map((d) => <String, dynamic>{...d.data(), 'id': d.id}).toList();
-      if (_searchCtrl.text.trim().isEmpty) {
-        setState(() => _suggestions = _doneItemSuggestions());
-      }
-    }, onError: (Object e) => debugPrint('Ingredient list listener error: $e'));
+    _startItemSubscriptions();
     _onSearchChanged(''); // initial "done" suggestions
 
     // When a debounced server refresh changed the result set, rebuild.
@@ -134,12 +167,65 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   @override
   void dispose() {
     IngredientIndex.instance.removeListener(_onIndexUpdated);
-    _functionTimer?.cancel();
+    _doneQueryTimer?.cancel();
     _listSub?.cancel();
+    _doneSub?.cancel();
     _kbSub?.cancel();
     _searchFocus.dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  /// Fills [_currentItems] (active) and [_doneItems] (recently done).
+  ///
+  /// With [IngredientSearchSheet.windowDoneItems] the two come from separate
+  /// queries so the done half stays bounded; otherwise one listener covers the
+  /// whole collection and the split happens in memory.
+  void _startItemSubscriptions() {
+    List<Map<String, dynamic>> rows(QuerySnapshot<Map<String, dynamic>> s) =>
+        s.docs.map((d) => <String, dynamic>{...d.data(), 'id': d.id}).toList();
+
+    void refreshEmptyQuery() {
+      if (_searchCtrl.text.trim().isEmpty) _suggestions = _doneItemSuggestions();
+    }
+
+    if (!widget.windowDoneItems) {
+      _listSub = widget.targetRef.snapshots().listen((snap) {
+        if (!mounted) return;
+        setState(() {
+          final all = rows(snap);
+          _currentItems = all.where((i) => i['doneAt'] == null).toList();
+          _doneItems = all.where((i) => i['doneAt'] != null).toList()
+            ..sort((a, b) => (b['doneAt'] as Timestamp)
+                .compareTo(a['doneAt'] as Timestamp)); // newest first
+          refreshEmptyQuery();
+        });
+      }, onError: (Object e) => debugPrint('Ingredient list listener error: $e'));
+      return;
+    }
+
+    // Active items: powers instant combining and the variant suggestions.
+    _listSub =
+        widget.targetRef.where('doneAt', isNull: true).snapshots().listen((snap) {
+      if (!mounted) return;
+      setState(() => _currentItems = rows(snap));
+    }, onError: (Object e) => debugPrint('Ingredient list listener error: $e'));
+
+    // Recently done items, newest first and capped, so a long-lived list
+    // doesn't drag its whole history along on every open.
+    _doneSub = widget.targetRef
+        .where('doneAt',
+            isGreaterThan: Timestamp.fromDate(DateTime.now().subtract(_kDoneWindow)))
+        .orderBy('doneAt', descending: true)
+        .limit(_kDoneLimit)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      setState(() {
+        _doneItems = rows(snap);
+        refreshEmptyQuery();
+      });
+    }, onError: (Object e) => debugPrint('Done items listener error: $e'));
   }
 
   void _onIndexUpdated() {
@@ -152,19 +238,26 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 
   /// No debounce here: matching is served from memory / the offline cache, so
   /// every keystroke updates the list immediately. Only the server refresh
-  /// (inside IngredientIndex) and the cloud function are debounced.
+  /// (inside IngredientIndex) and the done-item lookup are debounced.
+  ///
+  /// Unmatched input isn't resolved while typing — it's offered as the "?"
+  /// fallback and only resolved once the user actually picks it, in [_afterUse].
   void _onSearchChanged(String text) {
-    _functionTimer?.cancel();
+    _doneQueryTimer?.cancel();
     final seq = ++_searchSeq;
 
     if (text.trim().isEmpty) {
       setState(() {
-        _functionRunning = false;
         _fallback = null;
+        _remoteDone = const [];
         _suggestions = _doneItemSuggestions();
       });
       return;
     }
+
+    // Results from the previous query are for a different word — drop them
+    // rather than let them linger under the new one.
+    _remoteDone = const [];
 
     () async {
       final local = await _buildLocalSuggestions(text);
@@ -172,64 +265,44 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
       setState(() {
         _suggestions = local;
         _fallback = _buildFallback(text);
-        _functionRunning = false;
       });
 
-      // A prefix match like "Olivenöl" for "olive" isn't good enough — the user
-      // may want a distinct "Olive". Only an exact name match suppresses the
-      // cloud function; anything else hands over. A still-incomplete fragment
-      // ("tomat") is harmless: the function canonicalises it back to the
-      // existing "Tomato" instead of creating junk.
-      final typedName = parseInput(text).remaining.join(' ').trim().toLowerCase();
-      final hasExact =
-      local.any((s) => s.displayName.trim().toLowerCase() == typedName);
-
-      if (typedName.isNotEmpty && !hasExact && text.trim().length >= 3) {
-        _functionTimer = Timer(_kFunctionDebounce, () async {
-          if (!mounted || seq != _searchSeq) return;
-          setState(() => _functionRunning = true);
-          List<Suggestion> fromFn = const [];
-          try {
-            fromFn = await IngredientIndex.instance.resolveViaFunction(text, _lang);
-          } catch (_) {
-            if (mounted && seq == _searchSeq) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Could not resolve "$text".')),
-              );
-            }
-          }
+      // Older done items, looked up on the server by name prefix. Debounced
+      // and folded in by re-running the local build once they land, so they
+      // slot into the normal ordering and dedupe.
+      // Only worthwhile when the done half is windowed — otherwise _doneItems
+      // already holds every done item there is.
+      final typedForDone = parseInput(text).remaining.join(' ').trim();
+      if (widget.windowDoneItems && typedForDone.length >= 2) {
+        _doneQueryTimer = Timer(_kDoneQueryDebounce, () async {
+          final found = await _queryRemoteDone(typedForDone);
+          if (!mounted || seq != _searchSeq || found.isEmpty) return;
+          _remoteDone = found;
+          final rebuilt = await _buildLocalSuggestions(text);
           if (!mounted || seq != _searchSeq) return;
           setState(() {
-            // Keep the local prefix matches and prepend what the function
-            // resolved/created, deduping by ingredient.
-            final ids = fromFn.map((s) => s.ingredientId).toSet();
+            // The cloud function normally lands well after this, but if it
+            // got in first its entries are kept ahead of the rebuild rather
+            // than overwritten.
+            final keys = rebuilt.map(_suggestionKey).toSet();
             _suggestions = [
-              ...fromFn,
-              ..._suggestions.where((s) => !ids.contains(s.ingredientId)),
+              ..._suggestions.where((s) => !keys.contains(_suggestionKey(s))),
+              ...rebuilt,
             ];
-            _functionRunning = false;
           });
         });
       }
+
     }();
   }
 
-  List<Suggestion> _doneItemSuggestions() {
-    final cutoff = DateTime.now().subtract(const Duration(days: 7));
-    final done = _currentItems.where((i) {
-      final t = i['doneAt'] as Timestamp?;
-      return t != null && t.toDate().isAfter(cutoff);
-    }).toList()
-      ..sort((a, b) {
-        final ta = a['doneAt'] as Timestamp;
-        final tb = b['doneAt'] as Timestamp;
-        return tb.compareTo(ta); // newest first
-      });
-    return done
-        .take(20)
-        .map((i) => Suggestion.fromMap(i, isRestoreDone: true))
-        .toList();
-  }
+  /// The restore list shown on an empty query. [_doneItems] already arrives
+  /// windowed and newest-first from the query, so this only trims it to what
+  /// is worth showing.
+  List<Suggestion> _doneItemSuggestions() => _doneItems
+      .take(_kDoneShown)
+      .map((i) => Suggestion.fromMap(i, isRestoreDone: true))
+      .toList();
 
   Future<List<Suggestion>> _buildLocalSuggestions(String input) async {
     final parsed = parseInput(input);
@@ -238,13 +311,8 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
     final out = <Suggestion>[];
     final seen = <String>{};
 
-    // A suggestion is identified by ingredient + display name + description, so
-    // the typed phrase, the canonical version and each existing shopping-list
-    // variant can all coexist without any one appearing twice.
     void add(Suggestion s) {
-      final key =
-          '${s.ingredientId}|${s.displayName.trim().toLowerCase()}|${s.description}';
-      if (seen.add(key)) out.add(s);
+      if (seen.add(_suggestionKey(s))) out.add(s);
     }
 
     for (final c in nameDescCandidates(parsed.remaining)) {
@@ -280,15 +348,18 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
           category: category,
         ));
 
-        // Each active shopping-list entry that already exists for this
-        // ingredient — including ones with a non-standard display name or a
-        // description — is offered as its own top-up option, so the user can
-        // add to a specific existing item instead of always merging into (or
-        // recreating) the canonical one. Its unit follows the existing item so
-        // a bare tap lands in the same unit and combines. The dedupe above
-        // drops any variant that coincides with the typed/standard entries.
-        for (final item in _currentItems) {
-          if (item['doneAt'] != null) continue;
+        // Each shopping-list entry that already exists for this ingredient —
+        // including ones with a non-standard display name or a description —
+        // is offered as its own option, so the user can add to a specific
+        // existing item instead of always merging into (or recreating) the
+        // canonical one. Its unit follows the existing item so a bare tap
+        // lands in the same unit and combines. The dedupe above drops any
+        // variant that coincides with the typed/standard entries.
+        //
+        // Done items count too: they aren't offered for revival here (that's
+        // the empty-query "Done" list) but as a source of names — tapping one
+        // copies its display name and ingredient id into a *new* item.
+        for (final item in [..._currentItems, ..._doneItems]) {
           if ((item['ingredientId'] ?? '').toString() != m.id) continue;
           final vName = (item['displayName'] ?? '').toString();
           if (vName.trim().isEmpty) continue;
@@ -303,6 +374,102 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
             category: category,
           ));
         }
+      }
+    }
+
+    // Done items matched by their own display name. Covers entries the index
+    // can't reach from the typed text — a custom name ("veganer Speck" typed
+    // as "vegan") or an item that never resolved to an ingredient. Again these
+    // are name sources, not revivals: tapping creates a new item carrying the
+    // done item's display name and ingredient id.
+    final needle = fullName.trim().toLowerCase();
+    if (needle.isNotEmpty) {
+      for (final item in _doneItems) {
+        final vName = (item['displayName'] ?? '').toString();
+        if (vName.trim().isEmpty) continue;
+        final lower = vName.toLowerCase();
+        final hit = lower.startsWith(needle) ||
+            lower.split(RegExp(r'\s+')).any((w) => w.startsWith(needle));
+        if (!hit) continue;
+        add(_doneNameSuggestion(item, parsed.unitId, qty));
+      }
+    }
+
+    // Older done items the server turned up by name prefix. Merged in last so
+    // they rank below everything the index and the recent window produced.
+    for (final s in _remoteDone) {
+      add(qty == null && parsed.unitId == null
+          ? s
+          : Suggestion(
+              ingredientId: s.ingredientId,
+              displayName: s.displayName,
+              description: s.description,
+              unitId: parsed.unitId ?? s.unitId,
+              quantity: qty,
+              category: s.category,
+            ));
+    }
+    return out;
+  }
+
+  /// A done item offered as a *name source*: same display name, ingredient id,
+  /// description and category, but no doc id and no restore flag — tapping it
+  /// creates a new item rather than reviving the old one.
+  Suggestion _doneNameSuggestion(
+      Map<String, dynamic> item, String? typedUnitId, num? qty) =>
+      Suggestion(
+        ingredientId: (item['ingredientId'] ?? kPendingIngredient).toString(),
+        displayName: (item['displayName'] ?? '').toString(),
+        description: (item['description'] ?? '').toString(),
+        unitId: typedUnitId ??
+            readQuantity(item['quantity'])?.unitId ??
+            kDefaultUnitId,
+        quantity: qty,
+        category: (item['category'] ?? '').toString(),
+      );
+
+  /// Looks through *all* done items on the server for display names starting
+  /// with the typed text, reaching past the recent window [_doneItems] holds.
+  ///
+  /// Firestore range queries are byte-ordered and case-sensitive, so the typed
+  /// text is tried in a few capitalisations ("speck" also as "Speck") — that
+  /// covers the normal case of a lowercase query against a capitalised name,
+  /// though not a match starting mid-name. The query deliberately doesn't
+  /// filter on `doneAt`, which would force a composite index; active items
+  /// come back too and are dropped here, and would be duplicates anyway.
+  Future<List<Suggestion>> _queryRemoteDone(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.length < 2) return const [];
+
+    final lower = trimmed.toLowerCase();
+    final prefixes = <String>{
+      trimmed,
+      lower,
+      lower[0].toUpperCase() + lower.substring(1),
+    };
+
+    final out = <Suggestion>[];
+    final seenIds = <String>{};
+    final knownIds = {
+      for (final i in [..._currentItems, ..._doneItems]) i['id'] as String,
+    };
+
+    for (final p in prefixes) {
+      try {
+        final snap = await widget.targetRef
+            .where('displayName', isGreaterThanOrEqualTo: p)
+            .where('displayName', isLessThan: '$p\uf8ff')
+            .limit(_kDoneLimit)
+            .get();
+        for (final d in snap.docs) {
+          final data = d.data();
+          if (data['doneAt'] == null) continue; // active — already covered
+          if (knownIds.contains(d.id)) continue; // inside the recent window
+          if (!seenIds.add(d.id)) continue;
+          out.add(_doneNameSuggestion(data, null, null));
+        }
+      } catch (e) {
+        debugPrint('Done name query failed for "$p": $e');
       }
     }
     return out;
@@ -461,17 +628,6 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
                   padding: EdgeInsets.only(left: 8),
                   child: Icon(Icons.search),
                 ),
-                trailing: [
-                  if (_functionRunning)
-                    const Padding(
-                      padding: EdgeInsets.only(right: 12),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CupertinoActivityIndicator(),
-                      ),
-                    ),
-                ],
                 textInputAction: TextInputAction.done,
                 onChanged: _onSearchChanged,
                 onSubmitted: (_) => _submitFirst(),

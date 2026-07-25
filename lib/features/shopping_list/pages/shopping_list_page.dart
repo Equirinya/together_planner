@@ -96,7 +96,13 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
       .toList();
 
   void _startListSubscription() {
-    _listSub = _listRef.snapshots().listen((snap) {
+    // Active items only. Done items accumulate forever and the page never
+    // renders them, so listening to the whole collection meant every cold
+    // start paid a read for the list's entire history. A doc being marked
+    // done now simply leaves the snapshot, which the removal handling below
+    // already treats the same as "fell out of the active set". The search
+    // sheet loads the recent done ones it needs on its own.
+    _listSub = _listRef.where('doneAt', isNull: true).snapshots().listen((snap) {
       if (!mounted) return;
       setState(() {
         final previouslyActive = _activeItems();
@@ -104,9 +110,11 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
         _currentItems = snap.docs
             .map((d) => <String, dynamic>{...d.data(), 'id': d.id})
             .toList();
-        // Once the done state is confirmed (or the item is gone), drop the
-        // optimistic hide — otherwise a later restore (doneAt → null) from the
-        // search sheet would stay hidden.
+        // Once the done state is confirmed the doc leaves this query, so an
+        // id that's no longer present means the mark-done landed (or the item
+        // was deleted) — either way the optimistic hide has done its job and
+        // must be dropped, otherwise a later restore (doneAt → null) from the
+        // search sheet would bring the item back but leave it hidden.
         final byId = {for (final i in _currentItems) i['id'] as String: i};
         _optimisticallyHidden.removeWhere(
               (id) => byId[id] == null || byId[id]!['doneAt'] != null,
@@ -287,6 +295,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                 lang: _lang,
                 hintText: 'Add item to shopping list',
                 trackContributions: true,
+                windowDoneItems: true,
               ),
             ),
           ),

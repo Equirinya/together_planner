@@ -257,6 +257,34 @@ void main() {
   });
 }
 
+/// Full-screen routes the app pushes over the home screen on a fresh install,
+/// identified by their AppBar title.
+///
+/// These are opaque routes, so while one is up the Overlay stops building
+/// everything below it — `find.byType(NavigationBar)` genuinely matches
+/// nothing, which is why the waits below dismiss them instead of just
+/// out-waiting them.
+///
+/// Dismissed with a back navigation, never by tapping their call-to-action:
+/// "Yes, keep me in the loop!" fires a real OS permission dialog, which is a
+/// native window the test framework cannot see or answer.
+const _interstitialTitles = <String>[
+  'Stay in the loop', // NotificationInfoPage — notification priming
+];
+
+/// Pops the first interstitial currently on screen. Returns whether one was
+/// dismissed.
+Future<bool> _dismissInterstitials(WidgetTester tester) async {
+  for (final title in _interstitialTitles) {
+    if (find.text(title).evaluate().isEmpty) continue;
+    debugPrint('dismissing interstitial: "$title".');
+    await tester.pageBack();
+    await _pumpFor(tester, const Duration(seconds: 2));
+    return true;
+  }
+  return false;
+}
+
 /// Sign-in failures rendered by AuthForm. Waiting for the home screen aborts on
 /// any of these rather than burning the whole timeout.
 const _authErrors = [
@@ -299,6 +327,7 @@ Future<void> _waitFor(
 }) async {
   final sw = Stopwatch()..start();
   var lastLog = Duration.zero;
+  var lastSweep = Duration.zero;
   while (sw.elapsed < timeout) {
     if (finder.evaluate().isNotEmpty) return;
     for (final message in abortOnText) {
@@ -306,6 +335,12 @@ Future<void> _waitFor(
         await _screenshotOrLog('${_label}_FAILURE');
         fail('Gave up waiting for $describe: the app is showing "$message".');
       }
+    }
+    // Cheap enough at twice a second; a full-tree text search every frame is
+    // not worth it.
+    if (sw.elapsed - lastSweep >= const Duration(milliseconds: 500)) {
+      lastSweep = sw.elapsed;
+      await _dismissInterstitials(tester);
     }
     if (sw.elapsed - lastLog >= const Duration(seconds: 5)) {
       lastLog = sw.elapsed;
@@ -331,6 +366,7 @@ Future<void> _waitForStable(
 }) async {
   final sw = Stopwatch()..start();
   Stopwatch? stable;
+  var lastSweep = Duration.zero;
   while (sw.elapsed < timeout) {
     if (finder.evaluate().isNotEmpty) {
       stable ??= Stopwatch()..start();
@@ -341,6 +377,11 @@ Future<void> _waitForStable(
             '${stable.elapsedMilliseconds}ms (at ${sw.elapsed.inSeconds}s).');
       }
       stable = null;
+      // The usual reason it vanished: an interstitial was pushed over it.
+      if (sw.elapsed - lastSweep >= const Duration(milliseconds: 500)) {
+        lastSweep = sw.elapsed;
+        await _dismissInterstitials(tester);
+      }
     }
     await tester.pump(const Duration(milliseconds: 16));
   }
