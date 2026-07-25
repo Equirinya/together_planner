@@ -6,6 +6,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
+import 'package:couple_planner/features/recipes/widgets/suggested_row.dart'
+    show kDismissedPrefsKey, kDismissedDayPrefsKey;
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
@@ -188,7 +190,13 @@ class _RecipeSuggestionToggleState extends State<_RecipeSuggestionToggle> {
           title: const Text('Reset dismissed recipe suggestions'),
           onTap: () async {
             final prefs = await SharedPreferences.getInstance();
-            await prefs.remove('dismissed_public_recipes');
+            // Both halves of the dismissal state must go: the cumulative
+            // counts *and* the per-day record. The day map hides anything
+            // dismissed today from the row outright, so clearing only the
+            // counts would leave today's dismissals invisible and let much
+            // deeper pool entries take their place on the row.
+            await prefs.remove(kDismissedPrefsKey);
+            await prefs.remove(kDismissedDayPrefsKey);
             RecipeSuggestionNotifier.notify();
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(

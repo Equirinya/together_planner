@@ -2,7 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'package:couple_planner/features/auth/pages/login_page.dart' show animatedBackground;
+import 'package:couple_planner/core/animated_background.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show onboardingTheme, FeatureBubbleField, kOnboardingFeatures;
 
 /// Onboarding-styled screen for creating an additional group: the animated

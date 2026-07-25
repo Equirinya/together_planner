@@ -15,10 +15,11 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:couple_planner/core/animated_background.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/firebase_options.dart';
-import 'package:couple_planner/features/auth/pages/login_page.dart';
+import 'package:couple_planner/features/auth/widgets/auth_form.dart';
 
 // Hosted on GitHub Pages (see /docs). jekyll-relative-links serves these as .html.
 const String _termsUrl = 'https://equirinya.github.io/together_planner/terms.html';
@@ -146,6 +147,42 @@ class _WelcomePageState extends State<WelcomePage> {
       }
     });
     setState(() => step = _Step.login);
+  }
+
+  /// Signs in an existing account from the login step. Returns `null` on
+  /// success or a user-facing error message; the auth listener installed by
+  /// [_goLogin] takes over from there and finishes onboarding.
+  Future<String?> _signIn(String email, String password) async {
+    if (email.isEmpty || !email.contains('@')) {
+      return 'Please enter a valid email address.';
+    }
+    if (password.isEmpty) {
+      return 'Please enter your password.';
+    }
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(email: email, password: password);
+    } on FirebaseAuthException catch (e) {
+      switch (e.code) {
+        case 'user-not-found':
+          return 'No account found with this email address.';
+        case 'wrong-password':
+        case 'invalid-credential':
+          return 'Wrong email address or password.';
+        case 'invalid-email':
+          return 'Invalid email address.';
+        case 'user-disabled':
+          return 'This account has been disabled.';
+        case 'too-many-requests':
+          return 'Too many attempts. Please try again later.';
+        case 'network-request-failed':
+          return "You're not connected to the internet.";
+        default:
+          return 'Sign-in failed. Please try again.';
+      }
+    } catch (_) {
+      return 'Sign-in failed. Please try again.';
+    }
+    return null;
   }
 
   void _back() {
@@ -442,7 +479,15 @@ class _WelcomePageState extends State<WelcomePage> {
       case _Step.showcase:
         return _ShowcasePage(onLogin: _goLogin, onStart: () => setState(() => step = _Step.details), joinMode: _joinMode);
       case _Step.login:
-        return const SingleChildScrollView(padding: EdgeInsets.symmetric(vertical: 16), child: LoginPage());
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: AuthForm(
+            mode: AuthFormMode.login,
+            submitText: 'Login',
+            reserveErrorSpace: true,
+            onSubmit: _signIn,
+          ),
+        );
       case _Step.details:
         return _detailsPage();
       case _Step.createGroup:
@@ -470,9 +515,10 @@ class _WelcomePageState extends State<WelcomePage> {
               controller: _usernameCtrl,
               enabled: !_loading,
               textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.name],
               decoration: const InputDecoration(
                 prefixIcon: Icon(Icons.person_outline),
-                labelText: 'Your name',
+                hintText: 'Your name',
               ),
             ),
             const SizedBox(height: 20),
@@ -496,7 +542,6 @@ class _WelcomePageState extends State<WelcomePage> {
         },
         decoration: const InputDecoration(
           prefixIcon: Icon(Icons.person_outline),
-          labelText: 'Your name',
           hintText: 'The name others will see',
         ),
       ),
@@ -586,7 +631,7 @@ class _WelcomePageState extends State<WelcomePage> {
           },
           decoration: const InputDecoration(
             prefixIcon: Icon(Icons.group_outlined),
-            labelText: 'Group name',
+            hintText: 'Group name',
           ),
         ),
       ),
@@ -648,7 +693,7 @@ class _WelcomePageState extends State<WelcomePage> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Icon(Icons.celebration_outlined, size: 56, color: Colors.black),
+                  const Icon(Icons.celebration_rounded, size: 56, color: Colors.black),
                   const SizedBox(height: 16),
                   Text(
                     '"$groupName" is ready!',

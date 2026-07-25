@@ -13,6 +13,13 @@ import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart
 import 'package:couple_planner/features/recipes/widgets/recipe_suggestion.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
+/// SharedPreferences keys backing the per-user dismissal state of the
+/// "suggested for you" row. Public so the settings page's "reset dismissed
+/// suggestions" action clears exactly the same keys this file writes —
+/// clearing only one of the two leaves the row filtered by the other.
+const String kDismissedPrefsKey = 'dismissed_public_recipes';
+const String kDismissedDayPrefsKey = 'dismissed_public_recipes_day';
+
 /// The "suggested for you" row shown above the recipe grid when not
 /// searching: loading, dismissal-tracking and the row widget itself, mixed
 /// into [RecipePage]'s state alongside [RecipeSuggestionsMixin].
@@ -24,8 +31,8 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   // today can be hidden from the row until the next daily reshuffle while the
   // cumulative count in [_dismissed] still deprioritizes it on later days.
   Map<String, String> _dismissedDay = {};
-  static const String _kDismissedKey = 'dismissed_public_recipes';
-  static const String _kDismissedDayKey = 'dismissed_public_recipes_day';
+  static const String _kDismissedKey = kDismissedPrefsKey;
+  static const String _kDismissedDayKey = kDismissedDayPrefsKey;
   // Calendar day the suggested row was last loaded for (see loadSuggestedRow's
   // date-seeded pool). Lets refreshSuggestedRowIfStale detect a session left
   // open across midnight, when the row would otherwise keep showing
@@ -41,20 +48,33 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   String? _suggestedDocsDayKey;
   bool _suggestedDocsEmptyGroup = false;
 
+  /// (Re)reads the dismissal state from disk, replacing whatever is currently
+  /// in memory. This runs on every suggestion reload, including the one the
+  /// settings page's "reset dismissed suggestions" triggers — so a missing key
+  /// must clear its map rather than leave the previous value in place, or the
+  /// reset would only take effect on the next app start (the reload would
+  /// re-rank against the stale in-memory dismissals).
   Future<void> loadDismissed() async {
+    final dismissed = <String, int>{};
+    final dismissedDay = <String, String>{};
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_kDismissedKey);
       if (raw != null) {
         final map = jsonDecode(raw) as Map<String, dynamic>;
-        _dismissed = map.map((k, v) => MapEntry(k, (v as num).toInt()));
+        dismissed.addAll(map.map((k, v) => MapEntry(k, (v as num).toInt())));
       }
       final rawDay = prefs.getString(_kDismissedDayKey);
       if (rawDay != null) {
         final map = jsonDecode(rawDay) as Map<String, dynamic>;
-        _dismissedDay = map.map((k, v) => MapEntry(k, v.toString()));
+        dismissedDay.addAll(map.map((k, v) => MapEntry(k, v.toString())));
       }
-    } catch (_) {}
+    } catch (_) {
+      // Malformed stored state: fall through and keep whatever parsed, rather
+      // than holding on to a stale in-memory map.
+    }
+    _dismissed = dismissed;
+    _dismissedDay = dismissedDay;
   }
 
   Future<void> _saveDismissed() async {

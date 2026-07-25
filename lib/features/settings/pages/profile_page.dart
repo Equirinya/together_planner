@@ -2,10 +2,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/ai/pages/ai_plan_page.dart';
+import 'package:couple_planner/features/auth/widgets/auth_form.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as account;
 
 /// Profile & account management. Lets the user change the name others see and —
@@ -394,65 +394,13 @@ class _UpgradeSheet extends StatefulWidget {
 }
 
 class _UpgradeSheetState extends State<_UpgradeSheet> {
-  final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
-  final _pass2Ctrl = TextEditingController();
-  final _passNode = FocusNode();
-  final _pass2Node = FocusNode();
-  bool _passVisible = false;
-  bool _loading = false;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    for (final c in [_emailCtrl, _passCtrl, _pass2Ctrl]) {
-      c.addListener(() {
-        if (mounted) setState(() {});
-      });
-    }
-  }
-
-  @override
-  void dispose() {
-    _emailCtrl.dispose();
-    _passCtrl.dispose();
-    _pass2Ctrl.dispose();
-    _passNode.dispose();
-    _pass2Node.dispose();
-    super.dispose();
-  }
-
-  List<(String, bool)> get _passwordChecks {
-    final p = _passCtrl.text;
-    return [
-      ('At least 8 characters', p.length >= 8),
-      ('An uppercase letter', p.contains(RegExp(r'[A-Z]'))),
-      ('A lowercase letter', p.contains(RegExp(r'[a-z]'))),
-      ('A number', p.contains(RegExp(r'[0-9]'))),
-    ];
-  }
-
-  bool get _valid {
-    final email = _emailCtrl.text.trim();
-    return email.contains('@') &&
-        email.contains('.') &&
-        _passwordChecks.every((c) => c.$2) &&
-        _passCtrl.text == _pass2Ctrl.text;
-  }
-
-  Future<void> _submit() async {
+  /// Links the entered credential onto the current anonymous user, keeping the
+  /// same uid. Returns `null` on success or a user-facing error message.
+  Future<String?> _link(String email, String password) async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null || !_valid) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    if (user == null) return 'Please restart the app and try again.';
     try {
-      final cred = EmailAuthProvider.credential(
-        email: _emailCtrl.text.trim(),
-        password: _passCtrl.text,
-      );
+      final cred = EmailAuthProvider.credential(email: email, password: password);
       await user.linkWithCredential(cred);
       // The credential is now linked, so the account is no longer anonymous.
       // Ask the backend to clear the guest flag and raise the AI tier to the
@@ -460,137 +408,42 @@ class _UpgradeSheetState extends State<_UpgradeSheet> {
       try {
         await account.upgradeAnonymousAccount();
       } catch (_) {}
-      TextInput.finishAutofillContext();
-      if (mounted) Navigator.of(context).pop(true);
+      return null;
     } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        switch (e.code) {
-          case 'email-already-in-use':
-          case 'credential-already-in-use':
-            _error = 'An account with this email already exists.';
-            break;
-          case 'weak-password':
-            _error = 'That password is too weak.';
-            break;
-          case 'invalid-email':
-            _error = 'Please enter a valid email address.';
-            break;
-          case 'requires-recent-login':
-            _error = 'Please restart the app and try again.';
-            break;
-          case 'network-request-failed':
-            _error = "You're not connected to the internet.";
-            break;
-          default:
-            _error = 'Could not add your email. Please try again.';
-        }
-      });
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _error = 'An unknown error occurred.';
-        });
+      switch (e.code) {
+        case 'email-already-in-use':
+        case 'credential-already-in-use':
+          return 'An account with this email already exists.';
+        case 'weak-password':
+          return 'That password is too weak.';
+        case 'invalid-email':
+          return 'Please enter a valid email address.';
+        case 'requires-recent-login':
+          return 'Please restart the app and try again.';
+        case 'network-request-failed':
+          return "You're not connected to the internet.";
+        default:
+          return 'Could not add your email. Please try again.';
       }
+    } catch (_) {
+      return 'An unknown error occurred.';
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(24, 8, 24, 24 + bottomInset),
-      child: AutofillGroup(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Add email & password', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text(
-              'Keep your same account and data — just add a way to sign back in.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _emailCtrl,
-              enabled: !_loading,
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.username, AutofillHints.email],
-              onSubmitted: (_) => _passNode.requestFocus(),
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.email_outlined), labelText: 'Email'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _passCtrl,
-              focusNode: _passNode,
-              enabled: !_loading,
-              obscureText: !_passVisible,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.newPassword],
-              onSubmitted: (_) => _pass2Node.requestFocus(),
-              decoration: InputDecoration(
-                prefixIcon: const Icon(Icons.lock_outline),
-                labelText: 'Password',
-                suffixIcon: ExcludeFocus(
-                  child: IconButton(
-                    icon: Icon(_passVisible ? Icons.visibility : Icons.visibility_off),
-                    onPressed: () => setState(() => _passVisible = !_passVisible),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            ..._passwordChecks.map((c) => _criterionRow(c.$1, c.$2)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _pass2Ctrl,
-              focusNode: _pass2Node,
-              enabled: !_loading,
-              obscureText: true,
-              textInputAction: TextInputAction.done,
-              autofillHints: const [AutofillHints.newPassword],
-              onSubmitted: (_) {
-                if (_valid) _submit();
-              },
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.lock_outline), labelText: 'Confirm password'),
-            ),
-            if (_pass2Ctrl.text.isNotEmpty && _pass2Ctrl.text != _passCtrl.text)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: Text("Passwords don't match.", style: TextStyle(color: Colors.red, fontSize: 13)),
-              ),
-            if (_error != null && _error!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
-              ),
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: (_valid && !_loading) ? _submit : null,
-              child: _loading
-                  ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Save'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _criterionRow(String label, bool met) {
-    final color = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        children: [
-          Icon(met ? Icons.check_circle : Icons.circle_outlined, size: 18, color: met ? const Color(0xFF1B9E3E) : color.outline),
-          const SizedBox(width: 8),
-          Text(label, style: TextStyle(color: met ? const Color(0xFF1B9E3E) : color.onSurfaceVariant, fontSize: 13)),
-        ],
+    return SingleChildScrollView(
+      child: AuthForm(
+        mode: AuthFormMode.register,
+        title: 'Add email & password',
+        subtitle: 'Keep your same account and data:\nJust add a way to sign back in.',
+        submitText: 'Save',
+        padding: EdgeInsets.fromLTRB(24, 8, 24, 24 + bottomInset),
+        onSubmit: _link,
+        onSuccess: () {
+          if (mounted) Navigator.of(context).pop(true);
+        },
       ),
     );
   }
