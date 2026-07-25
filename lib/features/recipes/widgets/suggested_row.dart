@@ -334,7 +334,7 @@ class SuggestedRowWidget extends StatefulWidget {
 }
 
 class _SuggestedRowWidgetState extends State<SuggestedRowWidget> {
-  final GlobalKey<AnimatedListState> _listKey = GlobalKey();
+  GlobalKey<AnimatedListState> _listKey = GlobalKey();
   late List<RecipeSuggestion> _visible;
   late List<RecipeSuggestion> _remaining;
   bool _appeared = false;
@@ -342,11 +342,32 @@ class _SuggestedRowWidgetState extends State<SuggestedRowWidget> {
   @override
   void initState() {
     super.initState();
-    _visible = widget.pool.take(3).toList();
-    _remaining = widget.pool.skip(3).toList();
+    _fill(widget.crossAxisCount);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) setState(() => _appeared = true);
     });
+  }
+
+  // Show as many suggestions as the recipe grid fits across, so the row lines
+  // up with the columns below instead of always being three tiles wide.
+  void _fill(int count) {
+    _visible = widget.pool.take(count).toList();
+    _remaining = widget.pool.skip(count).toList();
+  }
+
+  @override
+  void didUpdateWidget(covariant SuggestedRowWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.crossAxisCount != widget.crossAxisCount) {
+      // Rebuild the list from scratch (fresh key) so AnimatedList picks up the
+      // new item count without needing per-item insert/remove animations.
+      setState(() {
+        final shown = [..._visible, ..._remaining];
+        _visible = shown.take(widget.crossAxisCount).toList();
+        _remaining = shown.skip(widget.crossAxisCount).toList();
+        _listKey = GlobalKey();
+      });
+    }
   }
 
   void _dismiss(int index) {

@@ -80,6 +80,11 @@ void main() {
     _section('onboarding showcase');
     final loginLink = find.text('I already have an account');
     await _waitFor(tester, loginLink, describe: 'onboarding showcase');
+    // The link exists a frame or two before the page is worth looking at: the
+    // native splash may still be over it, and the animated background and the
+    // blurred feature pills need a moment to paint. Capturing on the first
+    // match yields a loading screen.
+    await _pumpFor(tester, const Duration(seconds: 5));
     await _screenshot('${_label}_welcome');
 
     // ── 3. Login ────────────────────────────────────────────────────────────
@@ -92,7 +97,6 @@ void main() {
     await tester.enterText(find.byType(TextField).at(0), _email);
     await tester.enterText(find.byType(TextField).at(1), _password);
     await _pumpFor(tester, const Duration(milliseconds: 500));
-    await _screenshot('${_label}_login');
 
     // AuthForm renders sign-in failures as plain text, so abort on those
     // instead of burning the full timeout on a login that already failed.
