@@ -182,7 +182,6 @@ class _GroupOverviewPageState extends State<GroupOverviewPage> {
           ListTile(
             leading: const Icon(Icons.person_outline),
             title: const Text('Profile'),
-            subtitle: const Text('Your name and account'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const ProfilePage()),
