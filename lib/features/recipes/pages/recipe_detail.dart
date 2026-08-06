@@ -182,6 +182,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   double? _clearedServings;
   double? _baseServings;
   bool _autoScale = false;
+  // True once the user has changed the recipe's own count on this page. Until
+  // then [_baseServings] keeps following the document (see [_applyData]); after
+  // it, the base is frozen so the stepper display-scales against it.
+  bool _userSetServings = false;
 
   // When opened from a cooking plan, the plan's own serving count. It overrides
   // the recipe's default as the displayed [servings] and is what the stepper
@@ -350,12 +354,19 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     // snapping back to the 2 default, so a cleared stepper doesn't silently
     // reset its position (and its scale factor) under us.
     servings = ((data['servings'] ?? servings) as num).toDouble();
-    // Capture the base only once a real count exists. While generating,
-    // `data['servings']` is null and `servings` falls back to its default, so
-    // locking `_baseServings` here would pin it to that default; ingredients
-    // arriving later (stored for the real count) would then be display-scaled
-    // by the wrong ratio until the page is reopened.
-    if (_baseServings == null && _hasServings) _baseServings = servings;
+    // The stored ingredient quantities always correspond to the document's own
+    // count, so the base follows the document until the user changes the count
+    // here (or is editing) — from then on it stays put, which is what makes the
+    // stepper display-scale the amounts.
+    //
+    // It must not be locked on the first snapshot alone: a shared/generated
+    // recipe is seeded with a placeholder count (2) and only receives its real
+    // count (e.g. 4) part-way through generation. Pinning the base to the
+    // placeholder made every amount show as realCount/2 — doubled — until the
+    // page was closed and reopened.
+    if (_hasServings && (_baseServings == null || (!_userSetServings && !edit))) {
+      _baseServings = servings;
+    }
     // In a plan view the shown count follows the plan, not the recipe default.
     // `_baseServings` above still captures the recipe's own count (the amounts
     // the stored ingredient quantities correspond to), so ingredients scale
@@ -746,6 +757,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       setState(() {
         _clearedServings = servings;
         _hasServings = false;
+        _userSetServings = true;
       });
       docRef.update({'servings': null});
       return;
@@ -756,6 +768,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
       servings = v;
       _hasServings = true;
       _clearedServings = null;
+      _userSetServings = true;
     });
     docRef.update({'servings': _servingsForStore(v)});
     if (_autoScale &&
@@ -1699,11 +1712,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                 if (_loadingIngredients || _pending.contains('ingredients'))
                   _skeletonInCard(3)
                 else if (ingredients.isNotEmpty) ...[
-                  Divider(
-                      height: 1,
-                      indent: 16,
-                      endIndent: 16,
-                      color: cs.outlineVariant),
+                  // Only draw the divider if a servings row was actually
+                  // rendered above it (view mode hides that row when there's
+                  // no known serving count).
+                  if (edit ||
+                      _isPlanView ||
+                      (_hasServings && !_pending.contains('title')))
+                    Divider(
+                        height: 1,
+                        indent: 16,
+                        endIndent: 16,
+                        color: cs.outlineVariant),
                   for (int i = 0; i < ingredients.length; i++)
                     _RecipeIngredientTile(
                       key: ValueKey(ingredients[i]['id']),

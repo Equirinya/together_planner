@@ -38,6 +38,8 @@ import 'package:couple_planner/core/restart_widget.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/core/animated_background.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
+import 'package:couple_planner/features/siri/siri_service.dart';
+import 'package:couple_planner/features/shopping_list/services/add_item_by_name.dart';
 
 // ---------------------------------------------------------------------------
 // Feature registry
@@ -70,6 +72,10 @@ void main() async {
   await LanguageService.instance.load();
   await AiFeatureSettings.load();
   await NotificationFeatureSettings.load();
+  // Subscribed before the first frame: a Siri phrase or Shortcuts action can be
+  // what launched the app, and its payload is delivered as soon as the plugin
+  // registers. The service buffers it until HomePage installs a handler.
+  SiriService.instance.start();
   runApp(const RestartWidget(child: MyApp()));
 }
 
@@ -277,6 +283,14 @@ class _HomePageState extends State<HomePage> {
   /// Feature to jump to once a shortcut's target group finishes loading.
   String? _pendingShortcutFeature;
 
+  // ── Siri / Shortcuts ───────────────────────────────────────────────────────
+
+  /// An intent payload that arrived before a group was ready (the usual case
+  /// for "Hey Siri, add milk" on a cold start), held in memory and replayed
+  /// once the group document loads — same pattern as the shared-link fields
+  /// above. Only the latest is kept.
+  String? _pendingSiriPayload;
+
   /// Signature of the shortcut list last pushed to the OS, so unchanged
   /// lists aren't re-registered and don't disturb the launcher's ordering.
   List<String>? _lastShortcutSignature;
@@ -294,6 +308,11 @@ class _HomePageState extends State<HomePage> {
     _watchSession();
     _listenForTokenRefresh();
     _quickActions.initialize(_handleQuickAction);
+    // start() is idempotent and already ran in main(); repeated here because
+    // RestartWidget tears this state down and rebuilds it, which disposes the
+    // subscription without main() running again.
+    SiriService.instance.start();
+    SiriService.instance.setHandler(_handleSiriPayload);
     LanguageService.instance.code.addListener(_persistLanguage);
   }
 
@@ -781,12 +800,118 @@ class _HomePageState extends State<HomePage> {
     if (groupId.isEmpty || featureKey.isEmpty) return;
 
     if (_selectedGroup == groupId && _groupDocReady) {
-      final i = _enabledFeatures.indexOf(featureKey);
-      if (i != -1 && mounted) setState(() => _selectedIndex = i);
+      _jumpToFeature(featureKey);
     } else {
       _pendingShortcutFeature = featureKey;
       _selectGroup(groupId);
     }
+  }
+
+  /// Switches the visible tab to [featureKey], if the current group has it
+  /// enabled. No-op otherwise, so a voice command naming a disabled feature
+  /// leaves the user where they were rather than on a blank tab.
+  void _jumpToFeature(String featureKey) {
+    final i = _enabledFeatures.indexOf(featureKey);
+    if (i != -1 && mounted) setState(() => _selectedIndex = i);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Siri / Shortcuts
+  // ---------------------------------------------------------------------------
+
+  /// Acts on a payload pushed by one of the Swift AppIntents (see
+  /// `ios/Runner/AppDelegate.swift` and [SiriService] for the encoding).
+  ///
+  /// Every branch needs a loaded group, so anything arriving before one is
+  /// ready is parked in [_pendingSiriPayload] and replayed by the group-document
+  /// listener. That is the normal path, not the edge case: an intent generally
+  /// *is* the cold start.
+  Future<void> _handleSiriPayload(String payload) async {
+    if (!mounted) return;
+    if (_selectedGroup == null || !_groupDocReady) {
+      _pendingSiriPayload = payload;
+      return;
+    }
+
+    if (payload.startsWith(kShoppingPayloadPrefix)) {
+      await _addShoppingItemFromSiri(
+          payload.substring(kShoppingPayloadPrefix.length));
+      return;
+    }
+    if (payload.startsWith(kPlanPayloadPrefix)) {
+      await _openPlannedRecipe(payload.substring(kPlanPayloadPrefix.length));
+      return;
+    }
+    if (payload == kOpenRecipesPayload) {
+      _jumpToFeature('recipes');
+      return;
+    }
+    if (payload == kOpenShoppingPayload) {
+      _jumpToFeature('shopping_list');
+    }
+  }
+
+  /// Writes a spoken item onto the active group's shopping list, then shows the
+  /// list so the user can see it landed. The intent already brought the app to
+  /// the foreground, so a snackbar is the confirmation — Siri itself only
+  /// acknowledges that the action ran.
+  Future<void> _addShoppingItemFromSiri(String text) async {
+    final groupId = _selectedGroup;
+    if (groupId == null) return;
+    if (!_enabledFeatures.contains('shopping_list')) return;
+
+    final result = await addShoppingItemByName(
+      text,
+      groupId: groupId,
+      lang: LanguageService.instance.code.value,
+    );
+    if (!mounted) return;
+
+    _jumpToFeature('shopping_list');
+
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(switch (result.outcome) {
+        AddItemOutcome.added => 'Added ${result.displayName}',
+        AddItemOutcome.combined => 'Added another ${result.displayName}',
+        AddItemOutcome.failed => "Couldn't add “$text” to the list",
+      }),
+    ));
+  }
+
+  /// Opens the recipe behind a `cooking_plan` document — the entity Siri
+  /// resolved from a phrase like "open the lasagne". The plan may have been
+  /// moved or deleted between the entity store being published and the phrase
+  /// being spoken, in which case this falls back to the recipes tab.
+  Future<void> _openPlannedRecipe(String planId) async {
+    final groupId = _selectedGroup;
+    if (groupId == null || planId.isEmpty) return;
+
+    String? recipeId;
+    try {
+      final plan = await db
+          .collection('groups')
+          .doc(groupId)
+          .collection('cooking_plan')
+          .doc(planId)
+          .get();
+      final id = plan.data()?['recipe'];
+      if (id is String && id.isNotEmpty) recipeId = id;
+    } catch (_) {}
+
+    if (!mounted) return;
+    if (recipeId == null) {
+      _jumpToFeature('recipes');
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => RecipeDetailPage(
+        groupId: groupId,
+        recipeId: recipeId!,
+        access: _aiAccess,
+      ),
+    ));
   }
 
   /// Parses the {name, enabledFeatures} shortcut-relevant fields out of a
@@ -916,6 +1041,10 @@ class _HomePageState extends State<HomePage> {
     _groupDocListener = null;
     _groupInfoCache.clear();
     _pendingShortcutFeature = null;
+    _pendingSiriPayload = null;
+    // Drop the previous account's meals from the OS entity store, so an intent
+    // can't read them back after sign-out.
+    SiriService.instance.clear();
     acceptedGroups = null;
     _selectedGroup = null;
     _cachedGroupId = null;
@@ -940,6 +1069,7 @@ class _HomePageState extends State<HomePage> {
     _shareSub?.cancel();
     _authStateSub?.cancel();
     _fcmTokenSub?.cancel();
+    SiriService.instance.dispose();
     LanguageService.instance.code.removeListener(_persistLanguage);
     super.dispose();
   }
@@ -1176,6 +1306,18 @@ class _HomePageState extends State<HomePage> {
       _groupInfoCache[groupId] = _groupInfoFromDoc(data);
       _refreshShortcuts();
 
+      // Publish this group's upcoming meals as Siri entities, so "what are we
+      // cooking?" can be answered without launching the app.
+      SiriService.instance.syncPlannedRecipes(groupId);
+
+      // Replay an intent that fired before the group was ready — the usual
+      // case, since a Siri phrase is typically what launched the app.
+      if (_pendingSiriPayload != null) {
+        final payload = _pendingSiriPayload!;
+        _pendingSiriPayload = null;
+        _handleSiriPayload(payload);
+      }
+
       // Replay a recipe link that was shared before the group was ready.
       if (_aiAccess.canGenerateRecipes && _pendingSharedUrl != null) {
         final url = _pendingSharedUrl!;
@@ -1249,6 +1391,24 @@ class _HomePageState extends State<HomePage> {
   // Widget helpers
   // ---------------------------------------------------------------------------
 
+  /// On iPhones with a home indicator, [NavigationBar]'s internal [SafeArea]
+  /// adds the full ~34pt bottom inset below the bar, which looks like a large
+  /// empty gap. Trim it to a fraction of the inset on iOS so the bar sits
+  /// closer to the edge while still clearing the gesture area.
+  Widget _withTrimmedBottomInset(BuildContext context, Widget bar) {
+    if (!Platform.isIOS) return bar;
+    final double inset = MediaQuery.of(context).viewPadding.bottom;
+    if (inset <= 0) return bar; // home-button iPhones, nothing to trim
+    return MediaQuery.removePadding(
+      context: context,
+      removeBottom: true,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: inset * 0.5),
+        child: bar,
+      ),
+    );
+  }
+
   List<NavigationDestination> _buildDestinations() {
     final dests = _enabledFeatures.map((key) {
       final meta = _featureMeta[key]!;
@@ -1314,18 +1474,21 @@ class _HomePageState extends State<HomePage> {
       },
       child: Scaffold(
       bottomNavigationBar: groupReady
-          ? NavigationBar(
-              height: 60,
-              destinations: _buildDestinations(),
-              labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (int index) {
-                if (index < _enabledFeatures.length) {
-                  setState(() => _selectedIndex = index);
-                } else {
-                  _openOverview(); // trailing "More" entry → groups + settings
-                }
-              },
+          ? _withTrimmedBottomInset(
+              context,
+              NavigationBar(
+                height: 60,
+                destinations: _buildDestinations(),
+                labelBehavior: NavigationDestinationLabelBehavior.alwaysHide,
+                selectedIndex: _selectedIndex,
+                onDestinationSelected: (int index) {
+                  if (index < _enabledFeatures.length) {
+                    setState(() => _selectedIndex = index);
+                  } else {
+                    _openOverview(); // trailing "More" entry → groups + settings
+                  }
+                },
+              ),
             )
           : null,
       body: SafeArea(

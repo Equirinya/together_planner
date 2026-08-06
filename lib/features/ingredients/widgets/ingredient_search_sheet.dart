@@ -10,8 +10,8 @@ import 'package:couple_planner/features/ingredients/models/ingredients.dart';
 import 'package:couple_planner/features/ingredients/ingredient_parser.dart';
 import 'package:couple_planner/features/ingredients/services/units_cache.dart';
 import 'package:couple_planner/features/ingredients/services/ingredient_index.dart';
+import 'package:couple_planner/features/ingredients/services/item_writer.dart';
 import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
-import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 
 /// Debounce before the typed text is taken to the server to look through done
 /// items. Much shorter than the cloud-function debounce — it's a plain indexed
@@ -499,95 +499,41 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
   }
 
   Future<void> _restore(String id) async {
+    _clearAndKeepFocus();
     try {
       await widget.targetRef.doc(id).update({'doneAt': null});
     } catch (_) {}
-    _clearAndKeepFocus();
   }
 
   Future<void> _addSuggestion(Suggestion s) async {
     if (s.displayName.trim().isEmpty) return;
 
-    // Combine in memory (no read round-trip): an existing active item with the
-    // same display name and description, in a matching unit → sum quantities.
-    if (await _combineWithExisting(s)) {
-      _clearAndKeepFocus();
-      return;
-    }
+    // Snapshot the list *before* clearing, so the merge is resolved against
+    // exactly what the user was looking at when they tapped.
+    final items = List<Map<String, dynamic>>.of(_currentItems);
 
-    try {
-      final ref = await widget.targetRef.add({
-        'ingredientId': s.ingredientId,
-        'displayName': s.displayName,
-        'description': s.description,
-        'doneAt': null,
-        'createdAt': FieldValue.serverTimestamp(),
-        'quantity': s.quantityMap,
-        'category': s.category,
-        if (widget.trackContributions)
-          if (manualQuantitiesSeed(s.unitId, s.quantity) case final seed?)
-            kManualQuantitiesField: seed,
-      });
-      _clearAndKeepFocus();
-      unawaited(_afterUse(ref, s)); // resolve / refresh in the background
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error adding item: $e')),
-        );
-      }
-    }
-  }
+    // Clear first, synchronously: Firestore applies writes to the local cache
+    // immediately, so the list listener fires before any await here resumes. If
+    // the tapped tile were still on screen it would flip to its "+1" additive
+    // badge for a frame before the list reset.
+    _clearAndKeepFocus();
 
-  Future<bool> _combineWithExisting(Suggestion s) async {
-    final target = combineTarget(s, _currentItems);
-    if (target == null) return false;
+    final result = await addSuggestionToList(
+      s,
+      listRef: widget.targetRef,
+      lang: _lang,
+      currentItems: items,
+      trackContributions: widget.trackContributions,
+      // Detached, so the field is usable again immediately rather than waiting
+      // on an ingredient lookup.
+      resolveInBackground: true,
+    );
 
-    final eq = readQuantity(target['quantity']);
-    final existingQty = eq?.qty ?? 1;
-    final existingUnitId = eq?.unitId ?? kDefaultUnitId;
-    // A bare tap (no typed amount) adds one in whatever unit the item already
-    // uses; a typed amount adds in its own unit, which combineTarget has
-    // already matched against the item.
-    final addUnitId = s.quantity == null ? existingUnitId : s.unitId;
-    final addQty = s.quantity ?? 1;
-    final total = existingQty + addQty;
-    try {
-      await widget.targetRef.doc(target['id'] as String).update({
-        'quantity': {addUnitId: total.toDouble()},
-        // Only the amount this tap contributed is attributed — whatever was
-        // already on the item keeps its existing owner (a plan, or the other
-        // partner).
-        if (widget.trackContributions) ...manualDelta(addUnitId, addQty),
-      });
-      return true;
-    } catch (_) {
-      return false;
+    if (!result.ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Error adding item')),
+      );
     }
-  }
-
-  /// After an item was added: resolve pending ones, and for matched ones pull
-  /// the ingredient doc from the server (new synonyms land in the cache); if
-  /// the doc was deleted meanwhile, re-resolve and fix the item in place.
-  Future<void> _afterUse(
-      DocumentReference<Map<String, dynamic>> ref, Suggestion s) async {
-    if (s.ingredientId == kPendingIngredient) {
-      await resolvePendingItem(ref, s.displayName, _lang);
-      return;
-    }
-    final id = await IngredientIndex.instance
-        .refreshAfterUse(s.ingredientId, s.displayName, _lang);
-    if (id == s.ingredientId) return;
-    // ingredientId changed (doc was deleted + re-resolved) — also update category.
-    final updates = <String, dynamic>{'ingredientId': id};
-    if (id != kPendingIngredient && id != kUnknownIngredient) {
-      final candidates = await IngredientIndex.instance.match(s.displayName, _lang);
-      final matched = candidates.where((m) => m.id == id).firstOrNull;
-      if (matched != null) updates['category'] = matched.category(_lang);
-    }
-    try {
-      await ref.update(updates);
-    } catch (_) {}
   }
 
   void _clearAndKeepFocus() {
@@ -638,7 +584,9 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
                 suggestions: _suggestions,
                 fallback: isEmptyQuery ? null : _fallback,
                 headerLabel:
-                isEmptyQuery && _suggestions.isNotEmpty ? 'Done' : null,
+                isEmptyQuery && _suggestions.isNotEmpty
+                    ? 'Last marked done'
+                    : null,
                 lang: _lang,
                 onTap: _tapSuggestion,
                 currentItems: _currentItems,
@@ -654,30 +602,6 @@ class _IngredientSearchSheetState extends State<IngredientSearchSheet> {
 // =============================================================================
 // Suggestions list
 // =============================================================================
-
-/// Finds the active shopping-list item that tapping [s] would add into, or
-/// null when it should create a fresh item. An item matches when it shares the
-/// suggestion's display name and description (so differently-named or described
-/// entries for the same ingredient stay distinct). A typed amount only merges
-/// into an item already in that unit; a bare "+1" merges into a match in
-/// whatever unit it uses.
-Map<String, dynamic>? combineTarget(
-    Suggestion s, List<Map<String, dynamic>> currentItems) {
-  if (s.isRestoreDone) return null;
-  for (final data in currentItems) {
-    if (data['doneAt'] != null) continue;
-    if ((data['displayName'] ?? '').toString().toLowerCase() !=
-        s.displayName.toLowerCase()) continue;
-    if ((data['description'] ?? '').toString() != s.description) continue;
-    if (s.quantity != null) {
-      final existingUnitId =
-          readQuantity(data['quantity'])?.unitId ?? kDefaultUnitId;
-      if (existingUnitId != s.unitId) continue;
-    }
-    return data;
-  }
-  return null;
-}
 
 bool _wouldCombine(Suggestion s, List<Map<String, dynamic>> currentItems) =>
     combineTarget(s, currentItems) != null;

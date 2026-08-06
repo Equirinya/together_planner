@@ -1,5 +1,8 @@
 import Flutter
 import UIKit
+import AppIntents
+import CoreSpotlight
+import intelligence
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
@@ -8,6 +11,290 @@ import UIKit
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
+
+    if #available(iOS 16.4, *) {
+      // Dart republishes the entity store whenever the cooking plan changes
+      // (SiriService.syncPlannedRecipes). Telling the App Intents framework to
+      // re-read its shortcut parameters is what makes a newly planned meal
+      // show up in Siri's suggestions without a reinstall.
+      IntelligencePlugin.storage.attachListener {
+        PlannerShortcuts.updateAppShortcutParameters()
+      }
+    }
+    if #available(iOS 18.0, *) {
+      // Also index the planned meals in Spotlight, so they're findable from
+      // search rather than only through Siri.
+      IntelligencePlugin.spotlightCore.attachEntityMapper { item in
+        PlannedMealEntity(id: item.id, representation: item.representation)
+      }
+    }
+
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+}
+
+// =============================================================================
+// App Intents
+// =============================================================================
+//
+// Apple discovers AppIntents by scanning the *compiled* main app target, so
+// these types have to be concrete Swift declared at build time — they can't be
+// registered from Dart. They therefore stay deliberately dumb: each one pushes
+// a payload string to the Flutter side (see lib/features/siri/siri_service.dart,
+// which owns the matching prefixes) and lets Dart do the actual work against
+// Firestore.
+//
+// The one exception is NextPlannedMealsIntent, which answers out of the entity
+// store the plugin persists to disk. That store is readable with no Flutter
+// engine running, so "what are we cooking?" is answered without launching the
+// app — the difference between a spoken reply and a cold start.
+//
+// These live in AppDelegate.swift rather than their own file only because a new
+// file has to be added to the Xcode target by hand; splitting them out is safe
+// to do from Xcode whenever you like.
+
+/// Payload prefixes. Must stay in sync with the `k*Payload` constants in
+/// lib/features/siri/siri_service.dart.
+enum SiriPayload {
+  static let shopping = "shopping:"
+  static let plan = "plan:"
+  static let openRecipes = "open:recipes"
+  static let openShopping = "open:shopping"
+}
+
+// MARK: - Add to shopping list
+
+@available(iOS 16.0, *)
+struct AddShoppingItemIntent: AppIntent {
+  static var title: LocalizedStringResource = "Add to shopping list"
+  static var description = IntentDescription(
+    "Puts an item on your group's shopping list. An amount and a unit are picked up too, e.g. \"2 litres of milk\"."
+  )
+
+  // The write happens in Dart against Firestore, which needs the Flutter
+  // engine, so this one does open the app. The snackbar shown on arrival is
+  // the user-visible confirmation.
+  static var openAppWhenRun: Bool = true
+  static var isDiscoverable: Bool = true
+
+  @Parameter(
+    title: "Item",
+    description: "What to add, optionally with an amount.",
+    requestValueDialog: "What should I add to the list?"
+  )
+  var item: String
+
+  static var parameterSummary: some ParameterSummary {
+    Summary("Add \(\.$item) to the shopping list")
+  }
+
+  @MainActor
+  func perform() async throws -> some IntentResult {
+    let text = item.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return .result() }
+    IntelligencePlugin.notifier.push(SiriPayload.shopping + text)
+    return .result()
+  }
+}
+
+// MARK: - What's planned
+
+@available(iOS 16.0, *)
+struct NextPlannedMealsIntent: AppIntent {
+  static var title: LocalizedStringResource = "Next planned meals"
+  static var description = IntentDescription(
+    "Reads out the meals planned for the coming days."
+  )
+
+  // Answered entirely from the persisted entity store — no app launch.
+  static var openAppWhenRun: Bool = false
+  static var isDiscoverable: Bool = true
+
+  func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
+    let items = IntelligencePlugin.storage.get()
+    guard !items.isEmpty else {
+      let empty = "Nothing is planned for the next few days."
+      return .result(value: empty, dialog: IntentDialog(stringLiteral: empty))
+    }
+
+    // Dart publishes these already ordered by date and capped, each formatted
+    // as "Lasagne · tomorrow". Read out the first few; the rest are in the app.
+    let spoken = items.prefix(5)
+      .map { $0.representation }
+      .joined(separator: ", ")
+    let sentence = "Coming up: \(spoken)."
+    return .result(value: sentence, dialog: IntentDialog(stringLiteral: sentence))
+  }
+}
+
+// MARK: - Planned meal as an entity
+
+/// One upcoming meal, mirrored from Firestore by Dart. `id` is already the full
+/// routing payload (`plan:<cookingPlanDocId>`), so an intent can push it
+/// straight across without reassembling anything.
+@available(iOS 16.0, *)
+struct PlannedMealEntity: AppEntity {
+  static var defaultQuery = PlannedMealQuery()
+  static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Planned meal")
+
+  let id: String
+  let representation: String
+
+  var displayRepresentation: DisplayRepresentation {
+    DisplayRepresentation(stringLiteral: representation)
+  }
+}
+
+@available(iOS 18.0, *)
+extension PlannedMealEntity: IndexedEntity {
+  var attributeSet: CSSearchableItemAttributeSet {
+    let attributes = CSSearchableItemAttributeSet()
+    attributes.displayName = representation
+    return attributes
+  }
+}
+
+@available(iOS 16.0, *)
+struct PlannedMealQuery: EntityQuery {
+  func entities(for identifiers: [String]) async throws -> [PlannedMealEntity] {
+    IntelligencePlugin.storage.get(for: identifiers).map {
+      PlannedMealEntity(id: $0.id, representation: $0.representation)
+    }
+  }
+
+  func suggestedEntities() async throws -> [PlannedMealEntity] {
+    try await allEntities()
+  }
+}
+
+@available(iOS 16.0, *)
+extension PlannedMealQuery: EnumerableEntityQuery {
+  func allEntities() async throws -> [PlannedMealEntity] {
+    IntelligencePlugin.storage.get().map {
+      PlannedMealEntity(id: $0.id, representation: $0.representation)
+    }
+  }
+}
+
+@available(iOS 16.0, *)
+struct OpenPlannedMealIntent: AppIntent {
+  static var title: LocalizedStringResource = "Open a planned meal"
+  static var description = IntentDescription("Opens the recipe for a planned meal.")
+  static var openAppWhenRun: Bool = true
+  static var isDiscoverable: Bool = true
+
+  @Parameter(title: "Meal")
+  var meal: PlannedMealEntity
+
+  static var parameterSummary: some ParameterSummary {
+    Summary("Open \(\.$meal)")
+  }
+
+  @MainActor
+  func perform() async throws -> some IntentResult {
+    IntelligencePlugin.notifier.push(meal.id)
+    return .result()
+  }
+}
+
+// MARK: - Plain navigation
+
+@available(iOS 16.0, *)
+struct OpenShoppingListIntent: AppIntent {
+  static var title: LocalizedStringResource = "Open shopping list"
+  static var description = IntentDescription("Shows your group's shopping list.")
+  static var openAppWhenRun: Bool = true
+  static var isDiscoverable: Bool = true
+
+  @MainActor
+  func perform() async throws -> some IntentResult {
+    IntelligencePlugin.notifier.push(SiriPayload.openShopping)
+    return .result()
+  }
+}
+
+@available(iOS 16.0, *)
+struct OpenMealPlanIntent: AppIntent {
+  static var title: LocalizedStringResource = "Open meal plan"
+  static var description = IntentDescription("Shows your recipes and the days ahead.")
+  static var openAppWhenRun: Bool = true
+  static var isDiscoverable: Bool = true
+
+  @MainActor
+  func perform() async throws -> some IntentResult {
+    IntelligencePlugin.notifier.push(SiriPayload.openRecipes)
+    return .result()
+  }
+}
+
+// MARK: - Spoken phrases
+
+/// Phrases are compiled into the binary and cannot be built at runtime, so this
+/// list is the complete set of things Siri will recognise.
+///
+/// Note what's deliberately absent: `AddShoppingItemIntent`'s `item` parameter
+/// is not interpolated into any phrase. Apple only allows AppEnum or AppEntity
+/// parameters inside App Shortcut phrases — a free-form String can't be part of
+/// the spoken trigger. So "add to my shopping list" makes Siri ask "What should
+/// I add to the list?" (the parameter's requestValueDialog) and take the answer
+/// as free text, which is the behaviour we want regardless.
+///
+/// `PlannedMealEntity` *is* an entity, so "open the lasagne" resolves directly.
+///
+/// Gated to 16.4 rather than 16.0 because `shortTitle` and `systemImageName`
+/// were added to the `AppShortcut` initialiser in 16.4 (and made mandatory in
+/// 17). Below 16.4 the intents are still fully usable from the Shortcuts app
+/// and Spotlight — only the pre-built spoken phrases are absent, which affects
+/// a version share that has since rounded to nothing.
+@available(iOS 16.4, *)
+struct PlannerShortcuts: AppShortcutsProvider {
+  static var appShortcuts: [AppShortcut] {
+    AppShortcut(
+      intent: AddShoppingItemIntent(),
+      phrases: [
+        "Add to my shopping list in \(.applicationName)",
+        "Add something to \(.applicationName)",
+        "Put it on the \(.applicationName) list"
+      ],
+      shortTitle: "Add to list",
+      systemImageName: "cart.badge.plus"
+    )
+    AppShortcut(
+      intent: NextPlannedMealsIntent(),
+      phrases: [
+        "What's planned in \(.applicationName)",
+        "What are we cooking with \(.applicationName)",
+        "Next meals from \(.applicationName)"
+      ],
+      shortTitle: "Next meals",
+      systemImageName: "fork.knife"
+    )
+    AppShortcut(
+      intent: OpenPlannedMealIntent(),
+      phrases: [
+        "Open \(\.$meal) in \(.applicationName)",
+        "Show \(\.$meal) with \(.applicationName)"
+      ],
+      shortTitle: "Open meal",
+      systemImageName: "book"
+    )
+    AppShortcut(
+      intent: OpenShoppingListIntent(),
+      phrases: [
+        "Open my shopping list in \(.applicationName)",
+        "Show the \(.applicationName) shopping list"
+      ],
+      shortTitle: "Shopping list",
+      systemImageName: "cart"
+    )
+    AppShortcut(
+      intent: OpenMealPlanIntent(),
+      phrases: [
+        "Open the meal plan in \(.applicationName)",
+        "Show my \(.applicationName) recipes"
+      ],
+      shortTitle: "Meal plan",
+      systemImageName: "calendar"
+    )
   }
 }

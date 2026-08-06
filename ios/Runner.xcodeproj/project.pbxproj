@@ -407,7 +407,7 @@
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Share Extension/Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -440,7 +440,7 @@
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Share Extension/Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -473,7 +473,7 @@
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Share Extension/Info.plist";
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -535,7 +535,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -563,7 +563,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner26";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -670,7 +670,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -721,7 +721,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 12.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = iphoneos;
@@ -751,7 +751,7 @@
                 PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
                 DEVELOPMENT_TEAM = "";
                 "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-                IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+                IPHONEOS_DEPLOYMENT_TARGET = 16.0;
                 PROVISIONING_PROFILE_SPECIFIER = "";
                 "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner26";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -782,7 +782,7 @@
                 PRODUCT_BUNDLE_IDENTIFIER = de.equirinya.coupleplanner;
                 DEVELOPMENT_TEAM = "";
                 "DEVELOPMENT_TEAM[sdk=iphoneos*]" = H2Q3WBMS3N;
-                IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+                IPHONEOS_DEPLOYMENT_TARGET = 16.0;
                 PROVISIONING_PROFILE_SPECIFIER = "";
                 "PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "CouplePlanner26";
 				PRODUCT_NAME = "$(TARGET_NAME)";

@@ -354,9 +354,12 @@ class _RecipePageState extends State<RecipePage>
     _suggestionsEnabled = prefs.getBool('recipe_suggestions_enabled') ?? true;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     // Fetch dietary prefs and the suggested row concurrently rather than
-    // sequentially: loadSuggestedRow only reads `dietary` once it starts
-    // scoring, well after its own network round trips are already underway.
+    // sequentially, so the row's own network round trips overlap the
+    // preference read. `dietaryReady` hands the row that read, which it awaits
+    // before ranking — the two requests race, and whichever order they land in
+    // the row is still ordered against the real preferences.
     final dietaryFuture = uid == null ? null : _loadDietaryPreferences(uid);
+    dietaryReady = dietaryFuture;
     final rowFuture = _suggestionsEnabled ? loadSuggestedRow() : null;
     if (dietaryFuture != null) await dietaryFuture;
     if (mounted) setState(() {});

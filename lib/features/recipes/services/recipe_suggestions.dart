@@ -24,6 +24,13 @@ mixin RecipeSuggestionsMixin on State<RecipePage> {
   // ── shared with SuggestedRowMixin ───────────────────────────────────────
   List<String> dietary = [];
 
+  /// The in-flight read of the user's dietary preferences into [dietary], set
+  /// by [RecipePage._initSuggestions] before it kicks off the concurrent
+  /// suggested-row load. Anything that ranks by dietary fit must await this
+  /// first, or it may rank against a still-empty [dietary] — see
+  /// [SuggestedRowMixin.loadSuggestedRow].
+  Future<void>? dietaryReady;
+
   final functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
 
   // ── AI recipe suggestions (shown as tiles, only when search ideas allowed) ──

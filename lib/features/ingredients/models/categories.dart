@@ -16,6 +16,7 @@ const List<String> kCategories = [
   'condiments_and_sauces',
   'spices_and_herbs',
   'hygiene',
+  'clothing',
   'other',
 ];
 

@@ -30,7 +30,8 @@ class ShoppingListPage extends StatefulWidget {
   State<ShoppingListPage> createState() => _ShoppingListPageState();
 }
 
-class _ShoppingListPageState extends State<ShoppingListPage> {
+class _ShoppingListPageState extends State<ShoppingListPage>
+    with WidgetsBindingObserver {
   final _db = FirebaseFirestore.instance;
 
   late final String _lang;
@@ -46,9 +47,36 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
   /// dropped once the shrink animation finishes (see _AnimatedShoppingItem).
   final Map<String, Map<String, dynamic>> _removingItems = {};
 
-  /// Items created before this session opened are not "new".
-  /// Null until loaded — during the async gap nothing shows as new.
+  /// False until the first snapshot has been rendered. Rows mounted after that
+  /// are genuine arrivals and expand in (see _AnimatedShoppingItem); the ones
+  /// from the initial load just appear.
+  bool _seenFirstSnapshot = false;
+
+  /// Badge cutoff for this session: an item counts as new when its createdAt
+  /// is after this. Held fixed for the whole session so a badge doesn't vanish
+  /// from under the user while they're looking at it.
+  ///
+  /// This lives in the *server* clock's domain, because that is what createdAt
+  /// is (FieldValue.serverTimestamp()). It must never be set from
+  /// DateTime.now(): the device clock is typically a few seconds off from the
+  /// server's, and when it runs behind, a "now" written at the end of a session
+  /// is still older than the createdAt of an item seen during it — so the badge
+  /// survived the next start too, and only disappeared on the one after that.
   DateTime? _lastSeen;
+
+  /// The highest createdAt that has actually been on screen with the app in the
+  /// foreground. This — not "now" — is what gets persisted as the next
+  /// session's [_lastSeen]. Items that arrive while the app is backgrounded or
+  /// closed never reach it, so they are still badged on the next launch.
+  DateTime? _seenWatermark;
+
+  /// Prefs aren't written before the stored value has been read back, so a
+  /// snapshot landing during the initial load can't clobber the cutoff.
+  bool _lastSeenLoaded = false;
+
+  bool _foreground = true;
+
+  String get _seenKey => 'shopping_seen_upto_${widget.groupId}';
 
   CollectionReference<Map<String, dynamic>> get _listRef =>
       _db.collection('groups').doc(widget.groupId).collection('shopping_list');
@@ -59,6 +87,9 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
   void initState() {
     super.initState();
     _lang = LanguageService.instance.code.value;
+    _foreground = WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    WidgetsBinding.instance.addObserver(this);
     UnitsCache.instance.ensureLoaded();
     _initLastSeen();
     _startListSubscription(); // also resolves any pre-existing pending items
@@ -66,27 +97,65 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
 
   Future<void> _initLastSeen() async {
     final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getInt('shopping_last_seen_${widget.groupId}');
-    if (mounted && stored != null) {
-      setState(() => _lastSeen = DateTime.fromMillisecondsSinceEpoch(stored));
-    }
+    final stored = prefs.getInt(_seenKey);
+    if (!mounted) return;
+    setState(() {
+      if (stored != null) {
+        _lastSeen = DateTime.fromMillisecondsSinceEpoch(stored);
+      }
+      _lastSeenLoaded = true;
+    });
+    // A snapshot may already have arrived while this read was in flight.
+    _flushSeenWatermark();
   }
 
-  /// Called after every Firestore snapshot so the saved timestamp is always
-  /// >= any createdAt we've actually seen. Even if the app is killed, the next
-  /// session won't treat already-visible items as new.
-  Future<void> _persistSeenNow() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(
-      'shopping_last_seen_${widget.groupId}',
-      DateTime.now().millisecondsSinceEpoch,
-    );
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final foreground = state == AppLifecycleState.resumed;
+    if (foreground == _foreground) return;
+    _foreground = foreground;
+    // Coming back to the app: whatever is on the list now is being looked at,
+    // so it stops counting as new for *future* sessions. Snapshots that landed
+    // while we were away didn't advance the watermark themselves, and this is
+    // the only chance to record them — no further snapshot is guaranteed.
+    // _lastSeen is deliberately left alone, so items the partner added while
+    // the app was in the background keep their badge for this session.
+    if (foreground) _recordSeen();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _listSub?.cancel();
     super.dispose();
+  }
+
+  /// Advances the watermark to the newest createdAt currently on the list.
+  /// Only counts while the app is in the foreground — items delivered to a
+  /// backgrounded listener have not been seen by anyone.
+  void _recordSeen() {
+    if (!_foreground) return;
+    DateTime? max = _seenWatermark;
+    for (final item in _currentItems) {
+      final created = (item['createdAt'] as Timestamp?)?.toDate();
+      if (created == null) continue; // pending server timestamp, not yet real
+      if (max == null || created.isAfter(max)) max = created;
+    }
+    if (max == null || (_seenWatermark != null && !max.isAfter(_seenWatermark!))) {
+      return;
+    }
+    _seenWatermark = max;
+    _flushSeenWatermark();
+  }
+
+  Future<void> _flushSeenWatermark() async {
+    final watermark = _seenWatermark;
+    if (!_lastSeenLoaded || watermark == null) return;
+    final stored = _lastSeen;
+    if (stored != null && !watermark.isAfter(stored)) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_seenKey, watermark.millisecondsSinceEpoch);
+    await prefs.remove('shopping_last_seen_${widget.groupId}'); // legacy key
   }
 
   /// Items that should currently be counted as "on the list": not done and
@@ -130,9 +199,15 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
         }
         _removingItems.removeWhere((id, _) => newActiveIds.contains(id));
       });
-      // Persist "now" after each confirmed snapshot so the saved timestamp is
-      // always >= any createdAt the user has actually seen on screen.
-      _persistSeenNow();
+      // Flipped only after the first snapshot has actually been laid out, so
+      // the rows it mounts don't count as arrivals.
+      if (!_seenFirstSnapshot) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _seenFirstSnapshot = true);
+      }
+      // Record what is now on screen as seen — but only if the app is actually
+      // in front of the user (see _recordSeen).
+      _recordSeen();
       // Resolve any pending items (new arrivals and pre-existing ones).
       // De-duplication is handled inside resolvePendingItem.
       for (final item in _currentItems) {
@@ -260,6 +335,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                     key: ValueKey('header_$cat'),
                     present: groups[cat]!
                         .any((i) => !_removingItems.containsKey(i['id'])),
+                    animateIn: _seenFirstSnapshot,
                     onRemoved: () {},
                     child: _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
                   ),
@@ -267,6 +343,7 @@ class _ShoppingListPageState extends State<ShoppingListPage> {
                   _AnimatedShoppingItem(
                     key: ValueKey(item['id']),
                     present: !_removingItems.containsKey(item['id']),
+                    animateIn: _seenFirstSnapshot,
                     onRemoved: () =>
                         setState(() => _removingItems.remove(item['id'])),
                     child: _ShoppingItem(
@@ -406,19 +483,24 @@ class _AddItemBarState extends State<_AddItemBar> {
   }
 }
 
-/// Wraps a shopping-list row so that when it leaves the list remotely (marked
-/// done or deleted by someone else) it shrinks away and fades out instead of
-/// vanishing. Built entirely from Flutter's implicit animation widgets.
-class _AnimatedShoppingItem extends StatelessWidget {
+/// Wraps a shopping-list row so that it grows in when it joins the list and
+/// shrinks away when it leaves (marked done or deleted, by anyone) instead of
+/// popping in and out. Built entirely from Flutter's implicit animations.
+class _AnimatedShoppingItem extends StatefulWidget {
   const _AnimatedShoppingItem({
     super.key,
     required this.present,
+    required this.animateIn,
     required this.onRemoved,
     required this.child,
   });
 
   /// Whether the item is still on the (active) list.
   final bool present;
+
+  /// Whether this row should expand on first mount. False for the rows of the
+  /// initial load, which are simply there from the start.
+  final bool animateIn;
 
   /// Called once the shrink-away animation finishes, so the caller can drop
   /// the item from its bookkeeping.
@@ -427,17 +509,37 @@ class _AnimatedShoppingItem extends StatelessWidget {
   final Widget child;
 
   @override
+  State<_AnimatedShoppingItem> createState() => _AnimatedShoppingItemState();
+}
+
+class _AnimatedShoppingItemState extends State<_AnimatedShoppingItem> {
+  /// Starts false for an arrival so the first layout is collapsed; flipped on
+  /// the next frame, which is what AnimatedSize/AnimatedOpacity animate from.
+  late bool _shown = !widget.animateIn;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_shown) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _shown = true);
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final visible = widget.present && _shown;
     return AnimatedSize(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeInOut,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 220),
-        opacity: present ? 1 : 0,
+        opacity: visible ? 1 : 0,
         onEnd: () {
-          if (!present) onRemoved();
+          if (!widget.present) widget.onRemoved();
         },
-        child: present ? child : const SizedBox(width: double.infinity),
+        child: visible ? widget.child : const SizedBox(width: double.infinity),
       ),
     );
   }

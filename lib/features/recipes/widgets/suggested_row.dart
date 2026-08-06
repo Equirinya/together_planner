@@ -48,6 +48,11 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
   String? _suggestedDocsDayKey;
   bool _suggestedDocsEmptyGroup = false;
 
+  /// How long [loadSuggestedRow] will wait on [dietaryReady] before ranking
+  /// anyway. Only a backstop against a hung preference read: the row is worth
+  /// showing slightly mis-ranked rather than not at all.
+  static const Duration _dietaryWait = Duration(seconds: 5);
+
   /// (Re)reads the dismissal state from disk, replacing whatever is currently
   /// in memory. This runs on every suggestion reload, including the one the
   /// settings page's "reset dismissed suggestions" triggers — so a missing key
@@ -125,10 +130,24 @@ mixin SuggestedRowMixin on RecipeSuggestionsMixin {
         _suggestedDocsEmptyGroup = groupEmpty;
       }
 
+      // Both rankings order by dietary fit first, so they must not run until
+      // the user's preferences are actually loaded. The fetch above runs
+      // concurrently with that read (see [RecipePage._initSuggestions]) and can
+      // easily finish first — on a cold iOS start the pool often comes from
+      // Firestore's local cache while `users/{uid}` still goes to the network.
+      // Ranking then sees an empty [dietary], scores every recipe's fit as 0
+      // and falls back to the pure weighted-random draw, which is how a meat
+      // recipe ends up leading the row for an all-vegetarian group. Awaiting
+      // here (rather than ranking now and re-ranking later) also keeps the row
+      // from visibly reshuffling once the preferences land.
+      try {
+        await dietaryReady?.timeout(_dietaryWait);
+      } catch (_) {}
+      if (!mounted) return;
+
       final ordered = groupEmpty
           ? _rankEmptyGroup(_suggestedDocs)
           : _rankSuggested(_suggestedDocs, seed, now);
-      if (!mounted) return;
       setState(() => suggestedPool = ordered);
     } catch (_) {}
   }

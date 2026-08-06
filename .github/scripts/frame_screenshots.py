@@ -39,9 +39,16 @@ LOGO_PATH = REPO_ROOT / "assets" / "icon" / "icon_transparent_big.png"
 
 # How much of the raw screenshot height to trim (status bar / bottom padding),
 # as (top, bottom) fractions per device. Tune each device independently.
+#
+# The bottom fraction is sized to remove exactly the empty gap the app leaves
+# below the NavigationBar, without eating into the bar itself. Since the app
+# now trims that gap to half the home-indicator inset (see
+# _withTrimmedBottomInset in lib/main.dart), these fractions are halved too:
+#   iphone  1206x2622 @3x -> 17pt gap =  51px -> 51/2622  ~ 0.020
+#   ipad    2064x2752 @2x -> 10pt gap =  21px -> 21/2752  ~ 0.0075
 CROPS = {
-    "iphone": (0.07, 0.04),
-    "ipad": (0.02, 0.015),
+    "iphone": (0.07, 0.020),
+    "ipad": (0.02, 0.0075),
 }
 DEFAULT_CROP = (0.03, 0.03)
 
