@@ -47,10 +47,31 @@ class _ShoppingListPageState extends State<ShoppingListPage>
   /// dropped once the shrink animation finishes (see _AnimatedShoppingItem).
   final Map<String, Map<String, dynamic>> _removingItems = {};
 
-  /// False until the first snapshot has been rendered. Rows mounted after that
+  /// How often a mark-done on an item has failed and put it back. It is part
+  /// of the row's key, so a restored row is a *new* row: its Dismissible would
+  /// otherwise still be sitting in its dismissed state, off-screen, leaving
+  /// nothing but the green background behind.
+  final Map<String, int> _restoreCount = {};
+
+  /// False until the first snapshot has been rendered. Rows built after that
   /// are genuine arrivals and expand in (see _AnimatedShoppingItem); the ones
   /// from the initial load just appear.
   bool _seenFirstSnapshot = false;
+
+  /// Every row this page has built so far, by row id. Membership — not the
+  /// mere fact of being mounted — is what makes a row old news: the list sliver
+  /// drops rows that scroll out of view and rebuilds them on the way back, and
+  /// those must not expand in a second time.
+  final Set<String> _knownRows = {};
+
+  /// True only the first time a row is built, and never for the initial load.
+  /// Rows that appear off-screen are recorded here too, so scrolling down to
+  /// them finds them already in place — which is right, nobody watched them
+  /// arrive.
+  bool _isArrival(String rowId) {
+    final firstBuild = _knownRows.add(rowId);
+    return firstBuild && _seenFirstSnapshot;
+  }
 
   /// Badge cutoff for this session: an item counts as new when its createdAt
   /// is after this. Held fixed for the whole session so a badge doesn't vanish
@@ -241,12 +262,12 @@ class _ShoppingListPageState extends State<ShoppingListPage>
       // snapshot immediately, so recently removed items surface right away.
       await _listRef.doc(id).update({'doneAt': Timestamp.now()});
     } catch (_) {
-      // Write failed: put it back. Dropping it from _removingItems as well
-      // makes it grow straight back in rather than reappear mid-shrink.
+      // Write failed: put it back, as a fresh row that grows in again.
       if (mounted) {
         setState(() {
           _optimisticallyHidden.remove(id);
           _removingItems.remove(id);
+          _restoreCount.update(id, (n) => n + 1, ifAbsent: () => 1);
         });
       }
     }
@@ -323,13 +344,6 @@ class _ShoppingListPageState extends State<ShoppingListPage>
 
     const showHeaders = true;
 
-    bool isNew(Map<String, dynamic> item) {
-      final created = item['createdAt'] as Timestamp?;
-      return _lastSeen != null &&
-          created != null &&
-          created.toDate().isAfter(_lastSeen!);
-    }
-
     return Stack(
       children: [
         Positioned.fill(
@@ -339,34 +353,8 @@ class _ShoppingListPageState extends State<ShoppingListPage>
             padding: const EdgeInsets.only(bottom: 88),
             children: [
               for (final cat in sortedCats) ...[
-                if (showHeaders)
-                  // The header shrinks away in step with its last item: it
-                  // stays "present" only while the category still holds an
-                  // item that isn't itself shrinking out.
-                  _AnimatedShoppingItem(
-                    key: ValueKey('header_$cat'),
-                    present: groups[cat]!
-                        .any((i) => !_removingItems.containsKey(i['id'])),
-                    animateIn: _seenFirstSnapshot,
-                    onRemoved: () {},
-                    child: _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
-                  ),
-                for (final item in groups[cat]!)
-                  _AnimatedShoppingItem(
-                    key: ValueKey(item['id']),
-                    present: !_removingItems.containsKey(item['id']),
-                    animateIn: _seenFirstSnapshot,
-                    onRemoved: () =>
-                        setState(() => _removingItems.remove(item['id'])),
-                    child: _ShoppingItem(
-                      item: item,
-                      groupId: widget.groupId,
-                      lang: _lang,
-                      isNew: isNew(item),
-                      onMarkDone: () => _markDone(item),
-                      onQuantityChanged: (u, q) => _updateQuantity(item, u, q),
-                    ),
-                  ),
+                if (showHeaders) _headerRow(cat, groups[cat]!),
+                for (final item in groups[cat]!) _itemRow(item),
               ],
             ],
           ),
@@ -391,6 +379,52 @@ class _ShoppingListPageState extends State<ShoppingListPage>
         ),
       ],
     );
+  }
+
+  /// A category header, which shrinks away in step with its last item: it
+  /// stays "present" only while the category still holds an item that isn't
+  /// itself shrinking out.
+  Widget _headerRow(String cat, List<Map<String, dynamic>> items) {
+    final rowId = 'header_$cat';
+    return _AnimatedShoppingItem(
+      key: ValueKey(rowId),
+      present: items.any((i) => !_removingItems.containsKey(i['id'])),
+      animateIn: _isArrival(rowId),
+      // Forgotten once gone, so the header expands back in if the category
+      // is later repopulated.
+      onRemoved: () => _knownRows.remove(rowId),
+      child: _CategoryHeader(category: cat.isEmpty ? 'other' : cat),
+    );
+  }
+
+  Widget _itemRow(Map<String, dynamic> item) {
+    final id = item['id'] as String;
+    // A row restored after a failed mark-done is deliberately a different row
+    // (see _restoreCount), so it gets a fresh Dismissible and expands in again.
+    final rowId = '$id#${_restoreCount[id] ?? 0}';
+    return _AnimatedShoppingItem(
+      key: ValueKey(rowId),
+      present: !_removingItems.containsKey(id),
+      animateIn: _isArrival(rowId),
+      onRemoved: () => setState(() {
+        _removingItems.remove(id);
+        _knownRows.remove(rowId);
+      }),
+      child: _ShoppingItem(
+        item: item,
+        groupId: widget.groupId,
+        lang: _lang,
+        isNew: _isNew(item),
+        onMarkDone: () => _markDone(item),
+        onQuantityChanged: (u, q) => _updateQuantity(item, u, q),
+      ),
+    );
+  }
+
+  /// Whether the item was put on the list after this session's badge cutoff.
+  bool _isNew(Map<String, dynamic> item) {
+    final created = (item['createdAt'] as Timestamp?)?.toDate();
+    return _lastSeen != null && created != null && created.isAfter(_lastSeen!);
   }
 }
 
@@ -604,10 +638,14 @@ class _ShoppingItem extends StatelessWidget {
       direction: DismissDirection.horizontal,
       background: _doneBg(Alignment.centerLeft),
       secondaryBackground: _doneBg(Alignment.centerRight),
-      confirmDismiss: (_) async {
-        onMarkDone();
-        return false;
-      },
+      // Let the swipe run to completion and leave it there. A dismissed
+      // Dismissible that isn't taken out of the tree stays slid off-screen
+      // with its background filling the row, which is exactly the state we
+      // want to hold while the row collapses. resizeDuration is null because
+      // the collapsing is _AnimatedShoppingItem's job, not Dismissible's —
+      // otherwise both would animate the height and fight each other.
+      resizeDuration: null,
+      onDismissed: (_) => onMarkDone(),
       child: Container(
         decoration: isNew
             ? BoxDecoration(
