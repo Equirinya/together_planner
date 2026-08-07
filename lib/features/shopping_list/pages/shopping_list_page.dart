@@ -158,10 +158,11 @@ class _ShoppingListPageState extends State<ShoppingListPage>
     await prefs.remove('shopping_last_seen_${widget.groupId}'); // legacy key
   }
 
-  /// Items that should currently be counted as "on the list": not done and
-  /// not optimistically hidden by a local mark-done that hasn't confirmed yet.
+  /// Items that should currently be counted as "on the list". The query only
+  /// ever returns undone items, so the only thing left to filter out is a
+  /// local mark-done that hasn't confirmed yet.
   List<Map<String, dynamic>> _activeItems() => _currentItems
-      .where((i) => i['doneAt'] == null && !_optimisticallyHidden.contains(i['id']))
+      .where((i) => !_optimisticallyHidden.contains(i['id']))
       .toList();
 
   void _startListSubscription() {
@@ -184,10 +185,8 @@ class _ShoppingListPageState extends State<ShoppingListPage>
         // was deleted) — either way the optimistic hide has done its job and
         // must be dropped, otherwise a later restore (doneAt → null) from the
         // search sheet would bring the item back but leave it hidden.
-        final byId = {for (final i in _currentItems) i['id'] as String: i};
-        _optimisticallyHidden.removeWhere(
-              (id) => byId[id] == null || byId[id]!['doneAt'] != null,
-        );
+        final currentIds = {for (final i in _currentItems) i['id'] as String};
+        _optimisticallyHidden.removeWhere((id) => !currentIds.contains(id));
 
         // Items that fell out of the active set on this snapshot (and
         // weren't already hidden locally) start shrinking away; items that
@@ -226,7 +225,13 @@ class _ShoppingListPageState extends State<ShoppingListPage>
 
   Future<void> _markDone(Map<String, dynamic> item) async {
     final id = item['id'] as String;
-    setState(() => _optimisticallyHidden.add(id));
+    // Hiding it locally takes it straight out of _activeItems(), so it has to
+    // be handed to _removingItems in the same breath — otherwise our own
+    // mark-done pops instead of shrinking away like a partner's does.
+    setState(() {
+      _optimisticallyHidden.add(id);
+      _removingItems[id] = item;
+    });
     try {
       // Use a concrete client timestamp rather than a server one: a pending
       // FieldValue.serverTimestamp() reads back as null (and stays null when a
@@ -236,7 +241,14 @@ class _ShoppingListPageState extends State<ShoppingListPage>
       // snapshot immediately, so recently removed items surface right away.
       await _listRef.doc(id).update({'doneAt': Timestamp.now()});
     } catch (_) {
-      if (mounted) setState(() => _optimisticallyHidden.remove(id));
+      // Write failed: put it back. Dropping it from _removingItems as well
+      // makes it grow straight back in rather than reappear mid-shrink.
+      if (mounted) {
+        setState(() {
+          _optimisticallyHidden.remove(id);
+          _removingItems.remove(id);
+        });
+      }
     }
   }
 
@@ -512,35 +524,50 @@ class _AnimatedShoppingItem extends StatefulWidget {
   State<_AnimatedShoppingItem> createState() => _AnimatedShoppingItemState();
 }
 
-class _AnimatedShoppingItemState extends State<_AnimatedShoppingItem> {
-  /// Starts false for an arrival so the first layout is collapsed; flipped on
-  /// the next frame, which is what AnimatedSize/AnimatedOpacity animate from.
-  late bool _shown = !widget.animateIn;
+class _AnimatedShoppingItemState extends State<_AnimatedShoppingItem>
+    with SingleTickerProviderStateMixin {
+  /// One controller drives both the height and the fade, in both directions:
+  /// 0 = collapsed and invisible, 1 = fully open. Rows from the initial load
+  /// start at 1, so they are simply there rather than animating in.
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+    value: widget.animateIn ? 0 : 1,
+  )..addStatusListener((status) {
+      if (status == AnimationStatus.dismissed) widget.onRemoved();
+    });
+
+  late final Animation<double> _progress =
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut);
 
   @override
   void initState() {
     super.initState();
-    if (!_shown) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() => _shown = true);
-      });
+    // A row is always mounted while it is still on the list; leaving only ever
+    // happens later, via didUpdateWidget.
+    _controller.forward();
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedShoppingItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.present != oldWidget.present) {
+      widget.present ? _controller.forward() : _controller.reverse();
     }
   }
 
   @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final visible = widget.present && _shown;
-    return AnimatedSize(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeInOut,
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 220),
-        opacity: visible ? 1 : 0,
-        onEnd: () {
-          if (!widget.present) widget.onRemoved();
-        },
-        child: visible ? widget.child : const SizedBox(width: double.infinity),
-      ),
+    return SizeTransition(
+      sizeFactor: _progress,
+      axisAlignment: -1, // collapse towards the top, like a list row should
+      child: FadeTransition(opacity: _progress, child: widget.child),
     );
   }
 }

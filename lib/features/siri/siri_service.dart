@@ -28,6 +28,8 @@ import 'package:flutter/foundation.dart';
 import 'package:intelligence/intelligence.dart';
 import 'package:intelligence/model/representable.dart';
 
+import 'package:couple_planner/core/language.dart';
+
 /// Add free text to the shopping list. Suffix is the spoken item, so the whole
 /// payload reads `shopping:2 litres milk`.
 const String kShoppingPayloadPrefix = 'shopping:';
@@ -158,6 +160,7 @@ class SiriService {
     List<QueryDocumentSnapshot<Map<String, dynamic>>> plans,
   ) async {
     final items = <Representable>[];
+    final lang = LanguageService.instance.code.value;
 
     for (final plan in plans) {
       final recipeId = plan.data()['recipe'];
@@ -175,7 +178,7 @@ class SiriService {
 
       items.add(Representable(
         id: '$kPlanPayloadPrefix${plan.id}',
-        representation: '$name · ${_dayLabel(when)}',
+        representation: '$name · ${_dayLabel(when, lang)}',
       ));
     }
 
@@ -190,27 +193,58 @@ class SiriService {
     }
   }
 
-  /// A short, spoken-friendly day label. Deliberately English-only for now:
-  /// the App Shortcut phrases Apple compiles into the binary are English too,
-  /// so a German label here would read oddly beside them.
-  static String _dayLabel(DateTime date) {
+  /// Weekday names and the two relative labels, for the languages the Siri
+  /// integration is localised into. Anything else falls back to English.
+  ///
+  /// These live here rather than in Localizable.xcstrings because they are
+  /// baked into the entity `representation` at publish time, in Dart — by the
+  /// time Swift reads the store, the string is already formed.
+  static const Map<String, ({String today, String tomorrow, List<String> weekdays})>
+      _dayNames = {
+    'en': (
+      today: 'today',
+      tomorrow: 'tomorrow',
+      weekdays: [
+        'Monday', 'Tuesday', 'Wednesday', 'Thursday',
+        'Friday', 'Saturday', 'Sunday',
+      ],
+    ),
+    'de': (
+      today: 'heute',
+      tomorrow: 'morgen',
+      weekdays: [
+        'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag',
+        'Freitag', 'Samstag', 'Sonntag',
+      ],
+    ),
+    'es': (
+      today: 'hoy',
+      tomorrow: 'mañana',
+      weekdays: [
+        'lunes', 'martes', 'miércoles', 'jueves',
+        'viernes', 'sábado', 'domingo',
+      ],
+    ),
+  };
+
+  /// A short, spoken-friendly day label in [lang].
+  ///
+  /// Note this follows the *app's* language, not Siri's. It has to: the label
+  /// is written into the entity store whenever the plan changes, long before
+  /// anyone speaks, so Siri's language isn't knowable yet. A user with German
+  /// Siri and the app in English will hear an English day word inside an
+  /// otherwise German sentence. The alternative — publishing every language and
+  /// picking in Swift — costs three entity stores to spare a single word, and
+  /// the two settings agree for almost everyone.
+  static String _dayLabel(DateTime date, String lang) {
+    final names = _dayNames[lang] ?? _dayNames['en']!;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final days = DateTime(date.year, date.month, date.day).difference(today).inDays;
-    if (days == 0) return 'today';
-    if (days == 1) return 'tomorrow';
-    if (days < 7) {
-      const weekdays = [
-        'Monday',
-        'Tuesday',
-        'Wednesday',
-        'Thursday',
-        'Friday',
-        'Saturday',
-        'Sunday',
-      ];
-      return weekdays[date.weekday - 1];
-    }
+    final days =
+        DateTime(date.year, date.month, date.day).difference(today).inDays;
+    if (days == 0) return names.today;
+    if (days == 1) return names.tomorrow;
+    if (days < 7) return names.weekdays[date.weekday - 1];
     return '${date.day}/${date.month}';
   }
 

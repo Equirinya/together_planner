@@ -1393,19 +1393,29 @@ class _HomePageState extends State<HomePage> {
 
   /// On iPhones with a home indicator, [NavigationBar]'s internal [SafeArea]
   /// adds the full ~34pt bottom inset below the bar, which looks like a large
-  /// empty gap. Trim it to a fraction of the inset on iOS so the bar sits
-  /// closer to the edge while still clearing the gesture area.
-  Widget _withTrimmedBottomInset(BuildContext context, Widget bar) {
+  /// empty gap. Halve that inset on iOS so the bar sits closer to the edge
+  /// while still clearing the gesture area.
+  ///
+  /// The [Builder] matters: [Scaffold] hands its `bottomNavigationBar` a
+  /// MediaQuery with `padding.top` already zeroed. Reading MediaQuery from the
+  /// enclosing State's context instead would pull in the full status-bar inset
+  /// and NavigationBar's SafeArea would then pad the *top* of the bar with it.
+  Widget _withTrimmedBottomInset(Widget bar) {
     if (!Platform.isIOS) return bar;
-    final double inset = MediaQuery.of(context).viewPadding.bottom;
-    if (inset <= 0) return bar; // home-button iPhones, nothing to trim
-    return MediaQuery.removePadding(
-      context: context,
-      removeBottom: true,
-      child: Padding(
-        padding: EdgeInsets.only(bottom: inset * 0.5),
-        child: bar,
-      ),
+    return Builder(
+      builder: (BuildContext context) {
+        final MediaQueryData mq = MediaQuery.of(context);
+        // Use padding (not viewPadding) so the inset still collapses to 0 when
+        // the keyboard is up, exactly as an untouched NavigationBar would.
+        final double inset = mq.padding.bottom;
+        if (inset <= 0) return bar; // home-button iPhones, nothing to trim
+        return MediaQuery(
+          data: mq.copyWith(
+            padding: mq.padding.copyWith(bottom: inset * 0.5),
+          ),
+          child: bar,
+        );
+      },
     );
   }
 
@@ -1475,7 +1485,6 @@ class _HomePageState extends State<HomePage> {
       child: Scaffold(
       bottomNavigationBar: groupReady
           ? _withTrimmedBottomInset(
-              context,
               NavigationBar(
                 height: 60,
                 destinations: _buildDestinations(),

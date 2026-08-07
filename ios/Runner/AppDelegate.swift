@@ -113,16 +113,21 @@ struct NextPlannedMealsIntent: AppIntent {
   func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
     let items = IntelligencePlugin.storage.get()
     guard !items.isEmpty else {
-      let empty = "Nothing is planned for the next few days."
+      // Both replies resolve against Localizable.xcstrings, so they come back
+      // in Siri's language rather than the app's — the user just spoke, and
+      // being answered in the language they spoke is what they expect. The meal
+      // names inside are whatever the group stored them as, untranslated.
+      let empty = String(localized: "Nothing is planned for the next few days.")
       return .result(value: empty, dialog: IntentDialog(stringLiteral: empty))
     }
 
     // Dart publishes these already ordered by date and capped, each formatted
-    // as "Lasagne · tomorrow". Read out the first few; the rest are in the app.
+    // as "Lasagne · tomorrow" (the day word localised by SiriService._dayLabel).
+    // Read out the first few; the rest are in the app.
     let spoken = items.prefix(5)
       .map { $0.representation }
       .joined(separator: ", ")
-    let sentence = "Coming up: \(spoken)."
+    let sentence = String(format: String(localized: "Coming up: %@."), spoken)
     return .result(value: sentence, dialog: IntentDialog(stringLiteral: sentence))
   }
 }
@@ -232,12 +237,28 @@ struct OpenMealPlanIntent: AppIntent {
 /// Phrases are compiled into the binary and cannot be built at runtime, so this
 /// list is the complete set of things Siri will recognise.
 ///
-/// Note what's deliberately absent: `AddShoppingItemIntent`'s `item` parameter
-/// is not interpolated into any phrase. Apple only allows AppEnum or AppEntity
+/// **Every phrase must contain `\(.applicationName)`.** Apple enforces this so
+/// app phrases can't collide with system commands; a phrase without it compiles
+/// fine and then silently never matches.
+///
+/// That token expands to the display name *and* to each `INAlternativeAppNames`
+/// entry in Info.plist — currently just "Shopping List". So
+/// `"Add something to my \(.applicationName)"` is what makes the natural
+/// "Hey Siri, add something to my shopping list" work without breaking the rule.
+///
+/// The catch is that synonyms are app-wide, not per-intent: every phrase below
+/// is expanded against every name, which is why the list is kept to one. The
+/// phrases still carry their own domain word ("cooking", "shopping list",
+/// "meal plan") wherever the "Shopping List" expansion would otherwise send a
+/// request to the wrong tab. Adding a second synonym means re-checking every
+/// phrase in this file against it.
+///
+/// Also deliberately absent: `AddShoppingItemIntent`'s `item` parameter is not
+/// interpolated into any phrase. Apple only allows AppEnum or AppEntity
 /// parameters inside App Shortcut phrases — a free-form String can't be part of
-/// the spoken trigger. So "add to my shopping list" makes Siri ask "What should
-/// I add to the list?" (the parameter's requestValueDialog) and take the answer
-/// as free text, which is the behaviour we want regardless.
+/// the spoken trigger. So the phrase makes Siri ask "What should I add to the
+/// list?" (the parameter's requestValueDialog) and take the answer as free
+/// text, which is the behaviour we want regardless.
 ///
 /// `PlannedMealEntity` *is* an entity, so "open the lasagne" resolves directly.
 ///
@@ -249,21 +270,29 @@ struct OpenMealPlanIntent: AppIntent {
 @available(iOS 16.4, *)
 struct PlannerShortcuts: AppShortcutsProvider {
   static var appShortcuts: [AppShortcut] {
+    // "…my \(.applicationName)" is the whole point of the synonym: with
+    // "Shopping List" registered, these read as "add something to my shopping
+    // list" / "add to my shopping list" / "put something on my shopping list".
     AppShortcut(
       intent: AddShoppingItemIntent(),
       phrases: [
-        "Add to my shopping list in \(.applicationName)",
-        "Add something to \(.applicationName)",
-        "Put it on the \(.applicationName) list"
+        "Add something to my \(.applicationName)",
+        "Add to my \(.applicationName)",
+        "Put something on my \(.applicationName)"
       ],
       shortTitle: "Add to list",
       systemImageName: "cart.badge.plus"
     )
+    // Each of these keeps a cooking word of its own, so the "Shopping List"
+    // expansion is merely unnatural rather than wrong — nobody says "what are
+    // we cooking in shopping list", but if they did, answering with meals is
+    // still the right answer.
     AppShortcut(
       intent: NextPlannedMealsIntent(),
       phrases: [
+        "What's for dinner in \(.applicationName)",
+        "What are we cooking in \(.applicationName)",
         "What's planned in \(.applicationName)",
-        "What are we cooking with \(.applicationName)",
         "Next meals from \(.applicationName)"
       ],
       shortTitle: "Next meals",
@@ -278,11 +307,14 @@ struct PlannerShortcuts: AppShortcutsProvider {
       shortTitle: "Open meal",
       systemImageName: "book"
     )
+    // The two "open" intents name their destination explicitly rather than
+    // leaning on the synonym. "Open my \(.applicationName)" would have read
+    // nicely for one name and sent the user to the wrong tab for the other.
     AppShortcut(
       intent: OpenShoppingListIntent(),
       phrases: [
         "Open my shopping list in \(.applicationName)",
-        "Show the \(.applicationName) shopping list"
+        "Show the shopping list in \(.applicationName)"
       ],
       shortTitle: "Shopping list",
       systemImageName: "cart"
@@ -290,8 +322,8 @@ struct PlannerShortcuts: AppShortcutsProvider {
     AppShortcut(
       intent: OpenMealPlanIntent(),
       phrases: [
-        "Open the meal plan in \(.applicationName)",
-        "Show my \(.applicationName) recipes"
+        "Open my meal plan in \(.applicationName)",
+        "Show my recipes in \(.applicationName)"
       ],
       shortTitle: "Meal plan",
       systemImageName: "calendar"
