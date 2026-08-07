@@ -12,14 +12,12 @@ import intelligence
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
 
-    if #available(iOS 16.4, *) {
-      // Dart republishes the entity store whenever the cooking plan changes
-      // (SiriService.syncPlannedRecipes). Telling the App Intents framework to
-      // re-read its shortcut parameters is what makes a newly planned meal
-      // show up in Siri's suggestions without a reinstall.
-      IntelligencePlugin.storage.attachListener {
-        PlannerShortcuts.updateAppShortcutParameters()
-      }
+    // Dart republishes the entity store whenever the cooking plan changes
+    // (SiriService.syncPlannedRecipes). Telling the App Intents framework to
+    // re-read its shortcut parameters is what makes a newly planned meal show
+    // up in Siri's suggestions without a reinstall.
+    IntelligencePlugin.storage.attachListener {
+      PlannerShortcuts.updateAppShortcutParameters()
     }
     if #available(iOS 18.0, *) {
       // Also index the planned meals in Spotlight, so they're findable from
@@ -64,7 +62,6 @@ enum SiriPayload {
 
 // MARK: - Add to shopping list
 
-@available(iOS 16.0, *)
 struct AddShoppingItemIntent: AppIntent {
   static var title: LocalizedStringResource = "Add to shopping list"
   static var description = IntentDescription(
@@ -99,7 +96,6 @@ struct AddShoppingItemIntent: AppIntent {
 
 // MARK: - What's planned
 
-@available(iOS 16.0, *)
 struct NextPlannedMealsIntent: AppIntent {
   static var title: LocalizedStringResource = "Next planned meals"
   static var description = IntentDescription(
@@ -137,7 +133,6 @@ struct NextPlannedMealsIntent: AppIntent {
 /// One upcoming meal, mirrored from Firestore by Dart. `id` is already the full
 /// routing payload (`plan:<cookingPlanDocId>`), so an intent can push it
 /// straight across without reassembling anything.
-@available(iOS 16.0, *)
 struct PlannedMealEntity: AppEntity {
   static var defaultQuery = PlannedMealQuery()
   static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Planned meal")
@@ -159,7 +154,6 @@ extension PlannedMealEntity: IndexedEntity {
   }
 }
 
-@available(iOS 16.0, *)
 struct PlannedMealQuery: EntityQuery {
   func entities(for identifiers: [String]) async throws -> [PlannedMealEntity] {
     IntelligencePlugin.storage.get(for: identifiers).map {
@@ -172,7 +166,6 @@ struct PlannedMealQuery: EntityQuery {
   }
 }
 
-@available(iOS 16.0, *)
 extension PlannedMealQuery: EnumerableEntityQuery {
   func allEntities() async throws -> [PlannedMealEntity] {
     IntelligencePlugin.storage.get().map {
@@ -181,7 +174,6 @@ extension PlannedMealQuery: EnumerableEntityQuery {
   }
 }
 
-@available(iOS 16.0, *)
 struct OpenPlannedMealIntent: AppIntent {
   static var title: LocalizedStringResource = "Open a planned meal"
   static var description = IntentDescription("Opens the recipe for a planned meal.")
@@ -204,7 +196,6 @@ struct OpenPlannedMealIntent: AppIntent {
 
 // MARK: - Plain navigation
 
-@available(iOS 16.0, *)
 struct OpenShoppingListIntent: AppIntent {
   static var title: LocalizedStringResource = "Open shopping list"
   static var description = IntentDescription("Shows your group's shopping list.")
@@ -218,7 +209,6 @@ struct OpenShoppingListIntent: AppIntent {
   }
 }
 
-@available(iOS 16.0, *)
 struct OpenMealPlanIntent: AppIntent {
   static var title: LocalizedStringResource = "Open meal plan"
   static var description = IntentDescription("Shows your recipes and the days ahead.")
@@ -262,12 +252,12 @@ struct OpenMealPlanIntent: AppIntent {
 ///
 /// `PlannedMealEntity` *is* an entity, so "open the lasagne" resolves directly.
 ///
-/// Gated to 16.4 rather than 16.0 because `shortTitle` and `systemImageName`
-/// were added to the `AppShortcut` initialiser in 16.4 (and made mandatory in
-/// 17). Below 16.4 the intents are still fully usable from the Shortcuts app
-/// and Spotlight — only the pre-built spoken phrases are absent, which affects
-/// a version share that has since rounded to nothing.
-@available(iOS 16.4, *)
+/// The German and Spanish versions of every phrase below live in
+/// AppShortcuts.xcstrings, keyed by the English string exactly as written here
+/// — edit one and the other must follow, or the translation silently falls back
+/// to English. That catalog is also what forced the iOS 17 deployment target:
+/// String Catalogs are 17+, and the only alternative is three
+/// `<lang>.lproj/AppShortcuts.strings` files.
 struct PlannerShortcuts: AppShortcutsProvider {
   static var appShortcuts: [AppShortcut] {
     // "…my \(.applicationName)" is the whole point of the synonym: with
