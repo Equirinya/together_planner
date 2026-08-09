@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -23,6 +22,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:quick_actions/quick_actions.dart';
 
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/recipes/pages/swipe_to_plan_flow.dart';
+import 'package:couple_planner/features/recipes/services/recipe_photos.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
 import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
@@ -36,6 +37,7 @@ import 'package:couple_planner/features/settings/notification_feature_settings.d
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/restart_widget.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
+import 'package:couple_planner/features/settings/recipe_feature_settings.dart';
 import 'package:couple_planner/core/animated_background.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/siri/siri_service.dart';
@@ -71,6 +73,7 @@ void main() async {
   FirebaseFirestore.instance.settings = const Settings(persistenceEnabled: true, cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED);
   await LanguageService.instance.load();
   await AiFeatureSettings.load();
+  await RecipeFeatureSettings.load();
   await NotificationFeatureSettings.load();
   // Subscribed before the first frame: a Siri phrase or Shortcuts action can be
   // what launched the app, and its payload is delivered as soon as the plugin
@@ -191,9 +194,10 @@ class _HomePageState extends State<HomePage> {
   /// in memory and replayed once the group document loads.
   String? _pendingSharedUrl;
 
-  /// A recipe image shared before the group/AI were ready (e.g. cold start),
-  /// held in memory and replayed once the group document loads.
-  ({List<int> bytes, String mimeType})? _pendingSharedImage;
+  /// Recipe images shared before the group/AI were ready (e.g. cold start),
+  /// held in memory (already encoded) and replayed once the group document
+  /// loads. All of them belong to one recipe.
+  List<Map<String, String>>? _pendingSharedImages;
 
   /// A single-recipe share link tapped before a group was ready (e.g. cold
   /// start), held in memory and replayed once the group document loads.
@@ -305,6 +309,7 @@ class _HomePageState extends State<HomePage> {
     _restoreCachedGroup();
     _testUserLoggedIn();
     _initDeepLinks();
+    _initNotificationTaps();
     _watchSession();
     _listenForTokenRefresh();
     _quickActions.initialize(_handleQuickAction);
@@ -350,8 +355,23 @@ class _HomePageState extends State<HomePage> {
     try {
       final token = await FirebaseMessaging.instance.getToken();
       if (token == null) return;
-      await db.collection('users').doc(uid).update({'fcmToken': token}).catchError((_) {});
+      await _registerFcmToken(uid, token);
     } catch (_) {}
+  }
+
+  /// Adds [token] to `users/{uid}.fcmTokens`.
+  ///
+  /// An array rather than the single `fcmToken` field this used to write: that
+  /// field silently dropped notifications for every device except the most
+  /// recently registered one, so a user with a phone and a tablet only ever
+  /// heard from the one they'd opened last.
+  ///
+  /// Dead tokens are pruned server-side on send (see functions/src/lib/push.ts),
+  /// so nothing needs to expire them here.
+  Future<void> _registerFcmToken(String uid, String token) async {
+    await db.collection('users').doc(uid).update({
+      'fcmTokens': FieldValue.arrayUnion([token]),
+    }).catchError((_) {});
   }
 
   /// Decides whether to show the notification priming/info screen on this
@@ -413,7 +433,53 @@ class _HomePageState extends State<HomePage> {
     _fcmTokenSub = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) return;
-      db.collection('users').doc(uid).update({'fcmToken': token}).catchError((_) {});
+      _registerFcmToken(uid, token);
+    });
+  }
+
+  /// Opens the screen a tapped notification points at.
+  ///
+  /// Covers both entry points: a tap that launched the app cold
+  /// ([FirebaseMessaging.getInitialMessage]) and one that resumed it from the
+  /// background ([FirebaseMessaging.onMessageOpenedApp]). A notification that
+  /// arrives while the app is already in the foreground is deliberately not
+  /// handled — yanking someone out of what they're doing is worse than letting
+  /// them find it themselves.
+  Future<void> _initNotificationTaps() async {
+    FirebaseMessaging.onMessageOpenedApp.listen(_handleNotificationTap);
+    try {
+      final initial = await FirebaseMessaging.instance.getInitialMessage();
+      if (initial != null) _handleNotificationTap(initial);
+    } catch (_) {}
+  }
+
+  void _handleNotificationTap(RemoteMessage message) {
+    final data = message.data;
+    final type = data['type']?.toString() ?? '';
+    if (!type.startsWith('swipe_')) return;
+    final groupId = data['groupId']?.toString();
+    final sessionId = data['sessionId']?.toString();
+    if (groupId == null || sessionId == null || groupId.isEmpty || sessionId.isEmpty) {
+      return;
+    }
+
+    // Make sure the notification's group is the active one before opening its
+    // session — otherwise the plan would land in whichever group happened to be
+    // selected.
+    if (_selectedGroup != groupId) _selectGroup(groupId);
+
+    // Deferred to after the frame so this works identically whether it came
+    // from a cold start (still building the first frame) or a resume.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => SwipeToPlanFlow(
+            groupDoc: db.collection('groups').doc(groupId),
+            sessionId: sessionId,
+          ),
+        ),
+      );
     });
   }
 
@@ -457,12 +523,21 @@ class _HomePageState extends State<HomePage> {
   /// from it.
   void _handleSharedMedia(List<SharedMediaFile> shared) {
     if (shared.isEmpty || !mounted) return;
-    for (final file in shared) {
-      if (file.type == SharedMediaType.image) {
-        if (_isDuplicateShare('image:${file.path}')) return;
-        _openRecipeFromImage(file);
+    // Several images shared at once are pages/views of ONE recipe, so they all
+    // go into a single generation (capped, like the in-app picker).
+    final imageFiles = shared
+        .where((f) => f.type == SharedMediaType.image)
+        .take(maxRecipePhotos)
+        .toList();
+    if (imageFiles.isNotEmpty) {
+      if (_isDuplicateShare(
+          'image:${imageFiles.map((f) => f.path).join('|')}')) {
         return;
       }
+      _openRecipeFromImages(imageFiles);
+      return;
+    }
+    for (final file in shared) {
       final url = _urlRe.firstMatch(file.path)?.group(0);
       if (url != null) {
         if (_isDuplicateShare('url:$url')) return;
@@ -586,24 +661,32 @@ class _HomePageState extends State<HomePage> {
     }).ignore();
   }
 
-  /// Reads a shared image file and starts a recipe from it.
-  Future<void> _openRecipeFromImage(SharedMediaFile file) async {
+  /// Reads the shared image files (all pages/views of one recipe) and starts a
+  /// single recipe from them. Files that can't be read are skipped.
+  Future<void> _openRecipeFromImages(List<SharedMediaFile> files) async {
     if (!mounted) return;
-    final List<int> bytes;
-    try {
-      bytes = await File(file.path).readAsBytes();
-    } catch (_) {
-      return;
+    final images = <Map<String, String>>[];
+    for (final file in files) {
+      try {
+        images.add(await encodeSharedRecipePhoto(
+          await File(file.path).readAsBytes(),
+          file.mimeType,
+        ));
+      } catch (_) {
+        // Unreadable file: keep whatever else was shared.
+      }
     }
-    await _openRecipeFromImageBytes(bytes, file.mimeType ?? 'image/jpeg');
+    if (images.isEmpty) return;
+    await _openRecipeFromImagePayloads(images);
   }
 
-  /// Creates a recipe in the active group from a shared image and opens it in
+  /// Creates a recipe in the active group from shared images and opens it in
   /// generating mode while the backend fills it in, via the same
-  /// `generateRecipeStaged` photo flow used when picking a photo from the
+  /// `generateRecipeStaged` photo flow used when picking photos from the
   /// create menu. Requires a signed-in user, a selected group, and a plan that
   /// allows recipe generation.
-  Future<void> _openRecipeFromImageBytes(List<int> bytes, String mimeType) async {
+  Future<void> _openRecipeFromImagePayloads(
+      List<Map<String, String>> images) async {
     if (!mounted) return;
     // Show the shimmering placeholder immediately so something appears on
     // screen the moment the image arrives, even before we know the doc id.
@@ -616,7 +699,7 @@ class _HomePageState extends State<HomePage> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (_selectedGroup == null || !_aiAccess.canGenerateRecipes || uid == null) {
       // Not ready yet (cold start): remember it and replay once the group loads.
-      _pendingSharedImage = (bytes: bytes, mimeType: mimeType);
+      _pendingSharedImages = images;
       return;
     }
     final recipes = db.collection('groups').doc(_selectedGroup).collection('recipes');
@@ -659,8 +742,7 @@ class _HomePageState extends State<HomePage> {
       'groupId': _selectedGroup,
       'recipeId': ref.id,
       'source': 'photo',
-      'imageBase64': base64Encode(bytes),
-      'imageMimeType': mimeType,
+      'images': images,
       'lang': LanguageService.instance.code.value,
     }).ignore();
   }
@@ -1180,7 +1262,7 @@ class _HomePageState extends State<HomePage> {
           'os': Platform.operatingSystem,
           'osVersion': osVersion,
           'language': LanguageService.instance.code.value,
-          if (fcmToken != null) 'fcmToken': fcmToken,
+          if (fcmToken != null) 'fcmTokens': FieldValue.arrayUnion([fcmToken]),
         }).catchError((
           error,
         ) {
@@ -1324,11 +1406,11 @@ class _HomePageState extends State<HomePage> {
         _pendingSharedUrl = null;
         _openRecipeFromUrl(url);
       }
-      // Replay a recipe image that was shared before the group was ready.
-      if (_aiAccess.canGenerateRecipes && _pendingSharedImage != null) {
-        final pending = _pendingSharedImage!;
-        _pendingSharedImage = null;
-        _openRecipeFromImageBytes(pending.bytes, pending.mimeType);
+      // Replay recipe images that were shared before the group was ready.
+      if (_aiAccess.canGenerateRecipes && _pendingSharedImages != null) {
+        final pending = _pendingSharedImages!;
+        _pendingSharedImages = null;
+        _openRecipeFromImagePayloads(pending);
       }
       // Replay a shared recipe link tapped before a group was ready.
       if (_pendingSharedRecipe != null) {
@@ -1409,9 +1491,11 @@ class _HomePageState extends State<HomePage> {
         // the keyboard is up, exactly as an untouched NavigationBar would.
         final double inset = mq.padding.bottom;
         if (inset <= 0) return bar; // home-button iPhones, nothing to trim
+        // Half the inset, then 4dp closer to the edge still.
+        final double trimmed = clampDouble(inset * 0.5 - 4, 0, inset);
         return MediaQuery(
           data: mq.copyWith(
-            padding: mq.padding.copyWith(bottom: inset * 0.5),
+            padding: mq.padding.copyWith(bottom: trimmed),
           ),
           child: bar,
         );

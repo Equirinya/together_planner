@@ -24,52 +24,15 @@
 		<string>????</string>
 		<key>CFBundleVersion</key>
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
-		<!-- Spoken synonyms for the app name. Apple requires every App Shortcut
-		     phrase to contain the \(.applicationName) token, and that token
-		     expands to any name listed here as well as to CFBundleDisplayName.
-		     So the phrase template "Add something to my \(.applicationName)"
-		     matches "add something to my shopping list" — the natural phrasing —
-		     without breaking the rule. See PlannerShortcuts in AppDelegate.swift
-		     for the templates these pair with, and AppShortcuts.xcstrings for
-		     the German and Spanish versions of those templates.
-
-		     All three are the same synonym in the three supported languages,
-		     rather than three different concepts. That is deliberate: synonyms
-		     are app-wide and every phrase template is expanded against every
-		     name, so a second *concept* (e.g. "Meal Plan") would let
-		     "add something to my meal plan" reach the shopping-list intent.
-		     Same word in another language can't misroute, because the German
-		     and Spanish phrase templates that pair with it mean the same thing.
-
-		     NOTE: Apple caps this array at three entries — it is now full. A
-		     fourth language needs one of these dropped, or the synonym approach
-		     abandoned in favour of app-name-only phrases for that language.
-
-		     Localizing via InfoPlist.strings placeholders is the documented
-		     alternative and would free slots, but it fails open: a missing key
-		     registers the literal placeholder as a synonym rather than nothing.
-		     Listing the real words is blunter and cannot silently break. -->
-		<key>INAlternativeAppNames</key>
-		<array>
-			<dict>
-				<key>INAlternativeAppName</key>
-				<string>Shopping List</string>
-				<key>INAlternativeAppNamePronunciationHint</key>
-				<string>shopping list</string>
-			</dict>
-			<dict>
-				<key>INAlternativeAppName</key>
-				<string>Einkaufsliste</string>
-				<key>INAlternativeAppNamePronunciationHint</key>
-				<string>ein kaufs liste</string>
-			</dict>
-			<dict>
-				<key>INAlternativeAppName</key>
-				<string>Lista de la compra</string>
-				<key>INAlternativeAppNamePronunciationHint</key>
-				<string>lista de la compra</string>
-			</dict>
-		</array>
+		<!-- No INAlternativeAppNames here, on purpose. Registering "Shopping List"
+		     as a spoken synonym made "add something to my shopping list" expand
+		     from the \(.applicationName) token, which read beautifully — and then
+		     collided with Siri's built-in shopping-list handling for Notes and
+		     Reminders, so every attempt produced an app picker. An App Intent
+		     cannot outrank a system intent, so the phrases in PlannerShortcuts
+		     (AppDelegate.swift) now say both "shopping list" and the app name
+		     instead. Re-adding a synonym here means re-testing every phrase in
+		     that file against Siri's built-ins. -->
 		<key>NSPhotoLibraryUsageDescription</key>
 		<string>Together Planner uses your photos to generate a recipe from them.</string>
 		<key>LSRequiresIPhoneOS</key>

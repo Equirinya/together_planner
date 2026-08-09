@@ -132,6 +132,7 @@ class DietaryPreferencesSelector extends StatefulWidget {
     required this.value,
     required this.onChanged,
     this.showCustomEntriesInfo = true,
+    this.allowCustomEntries = true,
   });
 
   final List<String> value;
@@ -142,6 +143,16 @@ class DietaryPreferencesSelector extends StatefulWidget {
   /// contexts (the normal dietary settings page) — not relevant where custom
   /// entries ARE fully considered, e.g. the meal-plan flow.
   final bool showCustomEntriesInfo;
+
+  /// Whether free-text entries are offered at all.
+  ///
+  /// False where they genuinely cannot be honoured: Swipe to Plan filters an
+  /// existing recipe corpus by the canonical `dietary` tags in
+  /// [kDietaryOptions], and there is nothing to match "no shellfish" against.
+  /// Rather than accept an entry and quietly ignore it, the chips, the note and
+  /// the input are all hidden — the user's stored custom entries are untouched,
+  /// they just aren't part of this decision.
+  final bool allowCustomEntries;
 
   @override
   State<DietaryPreferencesSelector> createState() => _DietaryPreferencesSelectorState();
@@ -254,70 +265,72 @@ class _DietaryPreferencesSelectorState extends State<DietaryPreferencesSelector>
           onTap: _toggle,
           small: true,
         ),
-        const SizedBox(height: 24),
-        // Custom entries
-        if (custom.isNotEmpty) ...[
-          Wrap(
-            spacing: 8,
-            runSpacing: 6,
-            children: [
-              for (final entry in custom)
-                InputChip(
-                  avatar: Icon(Icons.restaurant_outlined,
-                      size: 16, color: Theme.of(context).colorScheme.onPrimary),
-                  label: Text(entry),
-                  showCheckmark: false,
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  labelStyle: TextStyle(
-                      color: Theme.of(context).colorScheme.onPrimary),
-                  deleteIconColor: Theme.of(context).colorScheme.onPrimary,
-                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
-                  onDeleted: () => _remove(entry),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-        ],
-        // Info text
-        if (widget.showCustomEntriesInfo) ...[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(Icons.info_outline, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  'Custom entries aren\'t considered for suggestions, but are used when generating recipes.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+        if (widget.allowCustomEntries) ...[
+          const SizedBox(height: 24),
+          // Custom entries
+          if (custom.isNotEmpty) ...[
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final entry in custom)
+                  InputChip(
+                    avatar: Icon(Icons.restaurant_outlined,
+                        size: 16, color: Theme.of(context).colorScheme.onPrimary),
+                    label: Text(entry),
+                    showCheckmark: false,
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    labelStyle: TextStyle(
+                        color: Theme.of(context).colorScheme.onPrimary),
+                    deleteIconColor: Theme.of(context).colorScheme.onPrimary,
+                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                    onDeleted: () => _remove(entry),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+          // Info text
+          if (widget.showCustomEntriesInfo) ...[
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 15, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Custom entries aren\'t considered for suggestions, but are used when generating recipes.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          // Custom entry input
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _customCtrl,
+                  textInputAction: TextInputAction.done,
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. "no shellfish", "avoids cilantro"…',
+                  ),
+                  onSubmitted: (_) => _addCustom(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                icon: const Icon(Icons.add),
+                tooltip: 'Add',
+                onPressed: _addCustom,
               ),
             ],
           ),
-          const SizedBox(height: 10),
         ],
-        // Custom entry input
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _customCtrl,
-                textInputAction: TextInputAction.done,
-                decoration: const InputDecoration(
-                  hintText: 'e.g. "no shellfish", "avoids cilantro"…',
-                ),
-                onSubmitted: (_) => _addCustom(),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              icon: const Icon(Icons.add),
-              tooltip: 'Add',
-              onPressed: _addCustom,
-            ),
-          ],
-        ),
       ],
     );
   }

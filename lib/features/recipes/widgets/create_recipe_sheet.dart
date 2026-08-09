@@ -123,7 +123,7 @@ class _CreateRecipeSheetState extends State<CreateRecipeSheet> {
                         ? () => _createWithAi(CreateRecipeType.photo)
                         : null,
                     icon: const Icon(Icons.photo_camera_outlined),
-                    label: const Text('From photo'),
+                    label: const Text('From photos'),
                   ),
                 ),
                 const SizedBox(width: 12),

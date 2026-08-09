@@ -287,7 +287,10 @@ class ShareTip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final style = Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.outline);
+    final style = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.copyWith(color: colorScheme.outline, fontSize: 11);
     return Padding(
       padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
       child: Row(

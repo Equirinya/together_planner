@@ -194,7 +194,9 @@ void main() {
     // Generates a proposal and captures the finished plan. Deliberately does
     // NOT tap "Looks good", so nothing is committed to the group.
     _section('smart meal planner');
-    final smartPlanner = find.text('Smart Meal\nPlanner');
+    // The label lost its hard line break when the trigger became one of two
+    // stacked halves in PlannerTiles — it now wraps on its own.
+    final smartPlanner = find.text('Smart Meal Planner');
     if (smartPlanner.evaluate().isEmpty) {
       debugPrint('skipping: Smart Meal Planner entry point not shown '
           '(AI features may be off for this group).');

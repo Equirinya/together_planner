@@ -11,6 +11,7 @@ import 'package:couple_planner/features/recipes/widgets/suggested_row.dart'
 import 'package:couple_planner/features/settings/pages/language_page.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
+import 'package:couple_planner/features/settings/recipe_feature_settings.dart';
 import 'package:couple_planner/features/settings/notification_feature_settings.dart';
 
 // GitHub Pages (see /docs).
@@ -62,6 +63,22 @@ class SettingsPage extends StatelessWidget {
                 ),
               );
             },
+          ),
+          // Not under "AI features": Swipe to Plan draws its deck from recipes
+          // that already exist, costs no generations, and is available on every
+          // tier — so it's a plain preference, not an AI switch.
+          ValueListenableBuilder<bool>(
+            valueListenable: RecipeFeatureSettings.swipeToPlanEnabled,
+            builder: (context, enabled, _) => SwitchListTile(
+              secondary: Icon(MdiIcons.gestureSwipeHorizontal),
+              title: const Text('Swipe to Plan'),
+              subtitle: const Text(
+                'Offer group recipe votes on the recipe page. A vote you\'re '
+                'already part of stays visible either way.',
+              ),
+              value: enabled,
+              onChanged: RecipeFeatureSettings.setSwipeToPlanEnabled,
+            ),
           ),
           const Divider(),
           _SectionHeader('AI features'),

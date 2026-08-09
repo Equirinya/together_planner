@@ -310,16 +310,18 @@ class _ProfilePageState extends State<ProfilePage> {
           const Divider(height: 32),
 
           // ── AI ──────────────────────────────────────────────────────────
-          ListTile(
-            leading: const Icon(Icons.auto_awesome),
-            title: const Text('AI plan'),
-            subtitle: _isAnonymous && _shouldPromptAiUpgrade
-                ? const Text('Add an email & password to use AI')
-                : null,
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _openAiPlan,
-          ),
-          const Divider(height: 32),
+          if (_aiTier != 0) ...[
+            ListTile(
+              leading: const Icon(Icons.auto_awesome),
+              title: const Text('AI plan'),
+              subtitle: _isAnonymous && _shouldPromptAiUpgrade
+                  ? const Text('Add an email & password to use AI')
+                  : null,
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _openAiPlan,
+            ),
+            const Divider(height: 32),
+          ],
 
           // ── Account type ────────────────────────────────────────────────
           const _SectionHeader('Account'),

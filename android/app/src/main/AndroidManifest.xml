@@ -46,9 +46,12 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="text/plain"/>
             </intent-filter>
-            <!-- Receive a shared recipe photo from another app's share sheet -->
+            <!-- Receive shared recipe photos from another app's share sheet.
+                 SEND_MULTIPLE lets several photos of the SAME recipe (e.g. both
+                 sides of a card, consecutive cookbook pages) arrive together. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND"/>
+                <action android:name="android.intent.action.SEND_MULTIPLE"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="image/*"/>
             </intent-filter>

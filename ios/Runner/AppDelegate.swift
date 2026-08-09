@@ -231,17 +231,20 @@ struct OpenMealPlanIntent: AppIntent {
 /// app phrases can't collide with system commands; a phrase without it compiles
 /// fine and then silently never matches.
 ///
-/// That token expands to the display name *and* to each `INAlternativeAppNames`
-/// entry in Info.plist — currently just "Shopping List". So
-/// `"Add something to my \(.applicationName)"` is what makes the natural
-/// "Hey Siri, add something to my shopping list" work without breaking the rule.
+/// There are no `INAlternativeAppNames` synonyms, and there deliberately won't
+/// be. Registering "Shopping List" as an app-name synonym did make
+/// `"Add something to my \(.applicationName)"` expand into the natural
+/// "add something to my shopping list" — but that utterance is *also* a
+/// built-in Siri phrase for Notes and Reminders, so every attempt produced an
+/// app picker instead of an action. Nothing in App Intents outranks a system
+/// intent; the only fix is to not compete for the phrase.
 ///
-/// The catch is that synonyms are app-wide, not per-intent: every phrase below
-/// is expanded against every name, which is why the list is kept to one. The
-/// phrases still carry their own domain word ("cooking", "shopping list",
-/// "meal plan") wherever the "Shopping List" expansion would otherwise send a
-/// request to the wrong tab. Adding a second synonym means re-checking every
-/// phrase in this file against it.
+/// So every phrase below names its own domain ("shopping list", "meal plan",
+/// "cooking") *and* the app. Slightly wordier to say, unambiguous to Siri, and
+/// with no synonym in play the phrases no longer have to survive being expanded
+/// against several different nouns — which also removes the German
+/// article-agreement problem the synonym created ("meiner Einkaufsliste" is now
+/// fixed text rather than something that had to agree with four app names).
 ///
 /// Also deliberately absent: `AddShoppingItemIntent`'s `item` parameter is not
 /// interpolated into any phrase. Apple only allows AppEnum or AppEntity
@@ -260,29 +263,32 @@ struct OpenMealPlanIntent: AppIntent {
 /// `<lang>.lproj/AppShortcuts.strings` files.
 struct PlannerShortcuts: AppShortcutsProvider {
   static var appShortcuts: [AppShortcut] {
-    // "…my \(.applicationName)" is the whole point of the synonym: with
-    // "Shopping List" registered, these read as "add something to my shopping
-    // list" / "add to my shopping list" / "put something on my shopping list".
+    // "shopping list" *and* the app name in every phrase. Dropping either one
+    // hands the utterance back to Notes and Reminders.
     AppShortcut(
       intent: AddShoppingItemIntent(),
       phrases: [
-        "Add something to my \(.applicationName)",
-        "Add to my \(.applicationName)",
-        "Put something on my \(.applicationName)"
+        "Add something to my shopping list in \(.applicationName)",
+        "Add to my shopping list in \(.applicationName)",
+        "Put something on my shopping list in \(.applicationName)"
       ],
       shortTitle: "Add to list",
       systemImageName: "cart.badge.plus"
     )
-    // Each of these keeps a cooking word of its own, so the "Shopping List"
-    // expansion is merely unnatural rather than wrong — nobody says "what are
-    // we cooking in shopping list", but if they did, answering with meals is
-    // still the right answer.
+    // The widest phrase set of the five, because this is the one people reach
+    // for spontaneously and phrase differently every time. Seven is near the
+    // practical ceiling — Apple's guidance is 3-5 ideal, ~8 maximum, past which
+    // recognition accuracy starts working against you. Add an eighth only by
+    // replacing one, not by appending.
     AppShortcut(
       intent: NextPlannedMealsIntent(),
       phrases: [
         "What's for dinner in \(.applicationName)",
         "What are we cooking in \(.applicationName)",
         "What's planned in \(.applicationName)",
+        "What's on my meal plan in \(.applicationName)",
+        "Which recipes are planned in \(.applicationName)",
+        "What are we eating this week in \(.applicationName)",
         "Next meals from \(.applicationName)"
       ],
       shortTitle: "Next meals",
@@ -297,9 +303,8 @@ struct PlannerShortcuts: AppShortcutsProvider {
       shortTitle: "Open meal",
       systemImageName: "book"
     )
-    // The two "open" intents name their destination explicitly rather than
-    // leaning on the synonym. "Open my \(.applicationName)" would have read
-    // nicely for one name and sent the user to the wrong tab for the other.
+    // Distinguished from AddShoppingItemIntent by the verb alone — "open"/"show"
+    // versus "add"/"put" — so keep those verbs distinct if you edit either set.
     AppShortcut(
       intent: OpenShoppingListIntent(),
       phrases: [

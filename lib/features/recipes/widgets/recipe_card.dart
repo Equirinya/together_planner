@@ -58,15 +58,164 @@ class RecipeOpenContainer extends StatelessWidget {
         borderRadius: BorderRadius.all(Radius.circular(16)),
       ),
       closedBuilder: (_, open) => GestureDetector(onTap: open, child: child),
-      openBuilder: (_, __) => RecipeDetailPage(
-        groupId: groupId,
-        recipeId: recipeId,
-        access: access,
-        initialData: initialData,
-        onTagTap: onTagTap,
-        planRef: planRef,
-        planServings: planServings,
+      openBuilder: (context, __) => _EdgeSwipeToPop(
+        child: RecipeDetailPage(
+          groupId: groupId,
+          recipeId: recipeId,
+          access: access,
+          initialData: initialData,
+          onTagTap: onTagTap,
+          planRef: planRef,
+          planServings: planServings,
+        ),
       ),
+    );
+  }
+}
+
+// ─── _EdgeSwipeToPop ──────────────────────────────────────────────────────────
+
+/// Restores the iOS "swipe from the left edge to go back" gesture for pages
+/// opened via [OpenContainer].
+///
+/// A normal [MaterialPageRoute] gets this gesture for free from Cupertino's
+/// page transition (see the plain `Navigator.push` calls in
+/// recipe_actions.dart, and the route the Siri shortcut pushes). [OpenContainer]
+/// instead pushes its own private route for the container-transform effect,
+/// which overrides `buildPage` but never `buildTransitions` — so it has no
+/// gesture layer at all and can only be closed with the app-bar button. That
+/// gap is a long-standing limitation of the animations package
+/// (flutter/flutter#71839, still an open proposal).
+///
+/// Rather than approximating the gesture with a plain `Navigator.pop`, this
+/// drives the route itself through [PredictiveBackRoute] — the public interface
+/// [TransitionRoute] implements for Android's predictive back, and which any
+/// [ModalRoute] therefore supports, [OpenContainer]'s included. Those methods
+/// are exactly what the framework's own back-gesture detectors call: they move
+/// the route's animation controller, bracket the drag in
+/// `didStartUserGesture`/`didStopUserGesture` so the navigator knows a user
+/// gesture owns the transition, and commit by popping through the navigator.
+///
+/// The result is a real interactive dismissal: the container transform plays in
+/// reverse under the finger (the page shrinking back toward the card it grew
+/// out of), a short drag springs it back open instead of closing, and a flick
+/// completes it — the same shape as iOS's own zoom-transition dismissal.
+///
+/// [ModalRoute.popGestureEnabled] gates all of this, so the gesture
+/// automatically stands down when the route isn't the top one, when a
+/// transition is already running, or when a pop would be vetoed — including the
+/// `PopScope(canPop: !edit)` in [RecipeDetailPage], so an unsaved edit can't be
+/// swiped away.
+class _EdgeSwipeToPop extends StatefulWidget {
+  const _EdgeSwipeToPop({required this.child});
+
+  final Widget child;
+
+  /// Width of the strip along the left edge that starts the gesture. Matches
+  /// the width Cupertino reserves for its own back gesture, so the touch target
+  /// feels the same as everywhere else in the app.
+  static const double edgeWidth = 20;
+
+  /// Fraction of the page that must be dragged for a slow release to close it.
+  static const double _commitFraction = 0.5;
+
+  /// Horizontal fling speed (px/s) that closes the page regardless of distance.
+  static const double _commitVelocity = 700;
+
+  @override
+  State<_EdgeSwipeToPop> createState() => _EdgeSwipeToPopState();
+}
+
+class _EdgeSwipeToPopState extends State<_EdgeSwipeToPop> {
+  /// The route being dragged. Held for the duration of one gesture so every
+  /// update and the end land on the same route even if the stack changes.
+  ModalRoute<dynamic>? _route;
+
+  /// Progress of the current drag, 0 (untouched) → 1 (dragged a full width).
+  double _progress = 0;
+
+  double get _width => MediaQuery.of(context).size.width;
+
+  void _onDragStart(DragStartDetails _) {
+    final route = ModalRoute.of(context);
+    // popGestureEnabled is documented as "between frames, not during build" —
+    // a gesture callback is exactly that. It covers the veto/first-route/
+    // mid-transition cases but not the two that handleStartBackGesture asserts
+    // on, so those are checked here: the route must still be the top one, and
+    // no other back gesture may already own the transition.
+    if (route == null ||
+        !route.popGestureEnabled ||
+        !route.isCurrent ||
+        route.popGestureInProgress) {
+      return;
+    }
+    _route = route;
+    _progress = 0;
+    // The parameter is the route's animation value (1 = fully open), not the
+    // Android-style gesture progress: the framework's own detector passes
+    // `1 - event.progress` here.
+    route.handleStartBackGesture(progress: 1.0);
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    final route = _route;
+    if (route == null) return;
+    _progress = (_progress + details.delta.dx / _width).clamp(0.0, 1.0);
+    route.handleUpdateBackGestureProgress(progress: 1.0 - _progress);
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final route = _route;
+    if (route == null) return;
+    _route = null;
+    final velocity = details.primaryVelocity ?? 0;
+    // A fast flick closes even from a short drag; otherwise the page has to be
+    // more than half dismissed. A leftward flick always cancels, so flicking
+    // back re-opens even from past the distance threshold.
+    final close = velocity > _EdgeSwipeToPop._commitVelocity ||
+        (velocity >= 0 && _progress > _EdgeSwipeToPop._commitFraction);
+    if (close) {
+      route.handleCommitBackGesture();
+    } else {
+      route.handleCancelBackGesture();
+    }
+    _progress = 0;
+  }
+
+  void _onDragCancel() {
+    final route = _route;
+    if (route == null) return;
+    _route = null;
+    _progress = 0;
+    route.handleCancelBackGesture();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Android drives this natively through predictive back; the gesture is only
+    // missing on iOS. Read from the theme rather than dart:io so this matches
+    // whatever platform the app is emulating (and keeps the web build valid).
+    if (Theme.of(context).platform != TargetPlatform.iOS) return widget.child;
+    return Stack(
+      children: [
+        widget.child,
+        PositionedDirectional(
+          start: 0,
+          top: 0,
+          bottom: 0,
+          width: _EdgeSwipeToPop.edgeWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            // Drags are claimed eagerly so the edge strip wins the arena over
+            // anything scrollable underneath it (the image carousel reaches the
+            // edge on this page), matching how Cupertino's own detector works.
+            onHorizontalDragStart: _onDragStart,
+            onHorizontalDragUpdate: _onDragUpdate,
+            onHorizontalDragEnd: _onDragEnd,
+            onHorizontalDragCancel: _onDragCancel,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -195,7 +344,7 @@ class RecipeCard extends StatelessWidget {
             final String title = (recipeData['name'] ?? 'Unnamed Recipe').toString();
             final TextStyle? titleStyle = Theme.of(context)
                 .textTheme
-                .titleMedium
+                .titleSmall
                 ?.copyWith(color: titleColor, height: 1.2);
             // A light scrim sized to the title itself (not the tile): the text
             // block sits on solid white with a soft fade above it, and the fade

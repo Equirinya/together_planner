@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 
@@ -70,8 +72,14 @@ class AddToShoppingListDialog extends StatefulWidget {
 
 class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
   bool saving = false;
-  late int servings = widget.recipeServings < 1 ? 1 : widget.recipeServings;
+  late final int _initialServings =
+      widget.recipeServings < 1 ? 1 : widget.recipeServings;
+  late int servings = _initialServings;
   final List<_IngRow> rows = [];
+
+  /// True once the selector's serving count has been written to the plan (by
+  /// [_submit]'s batch), so [dispose] doesn't write it a second time.
+  bool _servingsPersisted = false;
 
   @override
   void initState() {
@@ -81,6 +89,21 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
           p.id, p.name, p.description, p.base, p.added, p.category, p.unit));
     }
     _rescale();
+  }
+
+  /// The cooking plan was created with the recipe's own default serving count,
+  /// so a change made in this dialog has to be written back — otherwise the
+  /// plan would keep showing the default while its ingredient quantities were
+  /// scaled to something else. Done in [dispose] (fire-and-forget, no context
+  /// needed) so every way of leaving the dialog is covered: "Skip", the
+  /// barrier, and the system back gesture alike. The "Add" path writes it in
+  /// [_submit]'s batch instead and sets [_servingsPersisted] to skip this.
+  @override
+  void dispose() {
+    if (!_servingsPersisted && servings != _initialServings) {
+      widget.planRef.update({'servings': servings}).ignore();
+    }
+    super.dispose();
   }
 
   /// Loads the shopping-list rows for [recipeId]: each recipe ingredient with
@@ -281,8 +304,15 @@ class AddToShoppingListDialogState extends State<AddToShoppingListDialog> {
       itemIds.add(itemRef.id);
       quantities.add(q);
     }
-    batch.update(widget.planRef, {'itemIds': itemIds, 'quantities': quantities});
+    // `servings` goes in the same batch: the quantities just computed are
+    // scaled to the selector's count, so the plan must show that same count.
+    batch.update(widget.planRef, {
+      'itemIds': itemIds,
+      'quantities': quantities,
+      'servings': servings,
+    });
     await batch.commit();
+    _servingsPersisted = true;
     if (mounted) Navigator.pop(context);
   }
 

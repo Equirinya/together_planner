@@ -1,53 +1,53 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "Add something to my ${applicationName}": {
+    "Add something to my shopping list in ${applicationName}": {
       "extractionState": "manual",
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Füge etwas zu meiner ${applicationName} hinzu"
+            "value": "Füge etwas zu meiner Einkaufsliste in ${applicationName} hinzu"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Añade algo a mi ${applicationName}"
+            "value": "Añade algo a mi lista de la compra en ${applicationName}"
           }
         }
       }
     },
-    "Add to my ${applicationName}": {
+    "Add to my shopping list in ${applicationName}": {
       "extractionState": "manual",
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Auf meine ${applicationName} setzen"
+            "value": "Etwas zur Einkaufsliste in ${applicationName} hinzufügen"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Añadir a mi ${applicationName}"
+            "value": "Añadir a mi lista de la compra en ${applicationName}"
           }
         }
       }
     },
-    "Put something on my ${applicationName}": {
+    "Put something on my shopping list in ${applicationName}": {
       "extractionState": "manual",
       "localizations": {
         "de": {
           "stringUnit": {
             "state": "translated",
-            "value": "Schreib etwas auf meine ${applicationName}"
+            "value": "Schreib etwas auf meine Einkaufsliste in ${applicationName}"
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Apunta algo en mi ${applicationName}"
+            "value": "Apunta algo en mi lista de la compra de ${applicationName}"
           }
         }
       }
@@ -99,6 +99,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "Qué hay planeado en ${applicationName}"
+          }
+        }
+      }
+    },
+    "What's on my meal plan in ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was steht auf meinem Essensplan in ${applicationName}"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué hay en mi plan de comidas en ${applicationName}"
+          }
+        }
+      }
+    },
+    "Which recipes are planned in ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Welche Rezepte sind in ${applicationName} geplant"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué recetas están planeadas en ${applicationName}"
+          }
+        }
+      }
+    },
+    "What are we eating this week in ${applicationName}": {
+      "extractionState": "manual",
+      "localizations": {
+        "de": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Was essen wir diese Woche in ${applicationName}"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué vamos a comer esta semana en ${applicationName}"
           }
         }
       }

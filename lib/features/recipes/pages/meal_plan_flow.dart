@@ -7,16 +7,22 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:mesh_gradient/mesh_gradient.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 import 'package:couple_planner/core/date_utils.dart';
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/recipes/pages/meal_plan_shopping_list_page.dart';
+import 'package:couple_planner/features/recipes/pages/swipe_to_plan_flow.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
 import 'package:couple_planner/features/recipes/services/meal_plan_service.dart';
-import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
+import 'package:couple_planner/features/recipes/services/swipe_session_service.dart';
+import 'package:couple_planner/features/recipes/widgets/meal_plan_mesh.dart';
+import 'package:couple_planner/features/recipes/widgets/meal_plan_widgets.dart';
+import 'package:couple_planner/features/recipes/widgets/recipe_preview_sheet.dart';
 import 'package:couple_planner/features/settings/dietary_preferences.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
@@ -86,9 +92,23 @@ MealPlanSlot? _slotFromJson(Map<String, dynamic> json) {
 
 // ─── Settings step ──────────────────────────────────────────────────────────
 
-/// First step of the auto meal-plan flow: lets the user set how many days/
-/// people to plan for, plus dietary and style preferences, then generates a
-/// proposal on [MealPlanOverviewPage].
+/// Which flow [MealPlanSettingsPage] is configuring.
+///
+/// The two share this page rather than forking it, because days/people/dietary
+/// mean exactly the same thing in both. What differs is what the answers are
+/// used for, and that changes which controls make sense — see
+/// [_MealPlanSettingsPageState.build].
+enum MealPlanMode {
+  /// Smart Meal Planner: the answers steer an AI prompt.
+  ai,
+
+  /// Swipe to Plan: the answers filter and size a deck the group votes on.
+  swipe,
+}
+
+/// First step of both planning flows: lets the user set how many days/people to
+/// plan for plus dietary preferences, then either generates an AI proposal on
+/// [MealPlanOverviewPage] or opens a [SwipeToPlanFlow] session.
 class MealPlanSettingsPage extends StatefulWidget {
   const MealPlanSettingsPage({
     super.key,
@@ -97,6 +117,7 @@ class MealPlanSettingsPage extends StatefulWidget {
     required this.startDate,
     required this.maxDays,
     required this.access,
+    this.mode = MealPlanMode.ai,
   });
 
   final String groupId;
@@ -104,6 +125,7 @@ class MealPlanSettingsPage extends StatefulWidget {
   final DateTime startDate;
   final int maxDays;
   final AiAccess access;
+  final MealPlanMode mode;
 
   @override
   State<MealPlanSettingsPage> createState() => _MealPlanSettingsPageState();
@@ -116,6 +138,15 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
   List<String> _dietary = [];
   final Set<String> _styles = {};
   final TextEditingController _notesCtrl = TextEditingController();
+
+  bool get _isSwipe => widget.mode == MealPlanMode.swipe;
+
+  /// Swipe mode only: every member who could take part, and who currently is.
+  /// Loaded in [_load]; the picker itself is hidden for groups of two or fewer,
+  /// where "everyone" is the only sensible answer anyway.
+  List<String> _memberUids = [];
+  final Set<String> _participants = {};
+  bool _starting = false;
 
   /// Proposals from previous, uncommitted visits to [MealPlanOverviewPage],
   /// keyed by [_signature] (dietary + styles + notes — not days/people, so a
@@ -216,18 +247,101 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
             .then((d) => List<String>.from(d.data()?['dietaryPreferences'] ?? const []))
             .catchError((_) => <String>[]);
 
+    // Only the swipe flow needs to know who else is in the group; the AI flow
+    // plans for a headcount, not for named people.
+    final membersFuture = _isSwipe
+        ? widget.groupDoc
+            .collection('members')
+            .get()
+            .then((s) => [
+                  for (final d in s.docs)
+                    if (d.data()['status'] != 'left' &&
+                        (d.data()['role'] == 'admin' || d.data()['role'] == 'member'))
+                      d.id,
+                ])
+            .catchError((_) => <String>[])
+        : Future.value(<String>[]);
+
     final prefs = await prefsFuture;
     final dietary = await dietaryFuture;
+    final members = await membersFuture;
     _loadPlanCache(prefs);
     if (!mounted) return;
     setState(() {
       _days = (prefs.getInt(_kPrefDays) ?? _days).clamp(1, widget.maxDays);
       _people = (prefs.getInt(_kPrefPeople) ?? 2).clamp(1, 12);
       _styles.addAll((prefs.getStringList(_kPrefStyles) ?? const []).where(kMealPlanStyles.contains));
-      _dietary = dietary;
+      // Swipe mode drops the user's free-text dietary entries on the way in,
+      // not just out of the picker: they can't filter a recipe corpus (see the
+      // selector's allowCustomEntries note), so showing them preselected would
+      // promise something the deck can't deliver.
+      _dietary = _isSwipe ? dietary.where(kDietaryOptions.contains).toList() : dietary;
       _notesCtrl.text = prefs.getString(_kPrefNotes) ?? '';
+      _memberUids = members;
+      // Everyone is in by default — unchecking is the exception, not the setup.
+      _participants
+        ..clear()
+        ..addAll(members);
+      if (uid != null && members.contains(uid)) _participants.add(uid);
       _loading = false;
     });
+  }
+
+  /// Opens a swipe session for the chosen window and drops the user straight
+  /// into the deck. Style and notes are deliberately not sent: they exist to
+  /// steer generation, and there is nothing to steer here.
+  Future<void> _startSwiping() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || _starting) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kPrefDays, _days);
+    await prefs.setInt(_kPrefPeople, _people);
+
+    setState(() => _starting = true);
+    final dates = [
+      for (var i = 0; i < _days; i++) widget.startDate.add(Duration(days: i)),
+    ];
+    // A group of two (or one) never sees the picker, so fall back to everyone.
+    final participants = _memberUids.length > 2
+        ? (_participants.toList()..remove(uid))
+        : List<String>.from(_memberUids);
+    if (!participants.contains(uid)) participants.add(uid);
+
+    try {
+      final sessionId = await createSwipeSession(
+        groupId: widget.groupId,
+        dates: dates,
+        people: _people,
+        dietary: _dietary,
+        participants: participants,
+      );
+      if (!mounted) return;
+      await Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => SwipeToPlanFlow(
+            groupDoc: widget.groupDoc,
+            sessionId: sessionId,
+          ),
+        ),
+      );
+    } on FirebaseFunctionsException catch (e) {
+      if (!mounted) return;
+      setState(() => _starting = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(switch (e.code) {
+          'already-exists' => 'A swipe session is already running for this group.',
+          'failed-precondition' => 'There aren\'t enough recipes to swipe on yet.',
+          _ => 'Could not start the session. Please try again.',
+        }),
+      ));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _starting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not start the session. Please try again.')),
+      );
+    }
   }
 
   Future<void> _generate() async {
@@ -276,15 +390,19 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    // Only worth asking who takes part once there's an actual choice to make:
+    // in a couple it is always "both of us", so the picker would be noise.
+    final showParticipants = _isSwipe && _memberUids.length > 2;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Plan the next days')),
+      appBar: AppBar(title: Text(_isSwipe ? 'Swipe to Plan' : 'Plan the next days')),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
               children: [
-                const _SectionLabel('How many days?'),
-                _StepperRow(
+                const SectionLabel('How many days?'),
+                StepperRow(
                   icon: Icons.calendar_month,
                   value: _days,
                   min: 1,
@@ -292,52 +410,80 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
                   onChanged: (v) => setState(() => _days = v),
                 ),
                 const SizedBox(height: 20),
-                const _SectionLabel('For how many people?'),
-                _StepperRow(
+                const SectionLabel('For how many people?'),
+                StepperRow(
                   icon: Icons.people_outline,
                   value: _people,
                   min: 1,
                   max: 12,
                   onChanged: (v) => setState(() => _people = v),
                 ),
-                const SizedBox(height: 24),
-                const _SectionLabel('Style'),
-                GridView.count(
-                  crossAxisCount: 3,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 10,
-                  crossAxisSpacing: 10,
-                  childAspectRatio: 1.05,
-                  children: [
-                    for (final style in kMealPlanStyles)
-                      DietaryOptionButton(
-                        label: style,
-                        icon: _kStyleIcons[style] ?? Icons.restaurant,
-                        checked: _styles.contains(style),
-                        disabled: false,
-                        onTap: () => setState(() {
-                          _styles.contains(style) ? _styles.remove(style) : _styles.add(style);
-                        }),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _notesCtrl,
-                  textInputAction: TextInputAction.done,
-                  minLines: 1,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    hintText: 'Anything else? e.g. "use up the zucchini"…',
+                // Style and notes steer *generation*: they tell the model what
+                // kind of week to invent. The swipe deck is drawn from recipes
+                // that already exist, and neither a style preset nor free text
+                // like "use up the zucchini" is something an existing corpus
+                // can be filtered by — so rather than offer controls that
+                // silently do nothing, the swipe flow omits them.
+                if (!_isSwipe) ...[
+                  const SizedBox(height: 24),
+                  const SectionLabel('Style'),
+                  GridView.count(
+                    crossAxisCount: 3,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    childAspectRatio: 1.05,
+                    children: [
+                      for (final style in kMealPlanStyles)
+                        DietaryOptionButton(
+                          label: style,
+                          icon: _kStyleIcons[style] ?? Icons.restaurant,
+                          checked: _styles.contains(style),
+                          disabled: false,
+                          onTap: () => setState(() {
+                            _styles.contains(style) ? _styles.remove(style) : _styles.add(style);
+                          }),
+                        ),
+                    ],
                   ),
-                ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _notesCtrl,
+                    textInputAction: TextInputAction.done,
+                    minLines: 1,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      hintText: 'Anything else? e.g. "use up the zucchini"…',
+                    ),
+                  ),
+                ],
+                if (showParticipants) ...[
+                  const SizedBox(height: 24),
+                  const SectionLabel('Who\'s swiping?'),
+                  for (final uid in _memberUids)
+                    _ParticipantTile(
+                      uid: uid,
+                      checked: _participants.contains(uid),
+                      // The person setting this up is always in it.
+                      locked: uid == FirebaseAuth.instance.currentUser?.uid,
+                      onChanged: (v) => setState(() {
+                        v ? _participants.add(uid) : _participants.remove(uid);
+                      }),
+                    ),
+                ],
                 const SizedBox(height: 24),
-                const _SectionLabel('Dietary preferences'),
+                const SectionLabel('Dietary preferences'),
                 DietaryPreferencesSelector(
                   value: _dietary,
                   onChanged: (v) => setState(() => _dietary = v),
                   showCustomEntriesInfo: false,
+                  // The AI can read "no shellfish" and act on it. A deck filter
+                  // can't — it matches the canonical dietary tags recipes are
+                  // stored with, and there is nothing for free text to match
+                  // against. So swipe mode doesn't offer custom entries at all
+                  // rather than accepting one and silently dropping it.
+                  allowCustomEntries: !_isSwipe,
                 ),
                 const SizedBox(height: 88),
               ],
@@ -345,65 +491,52 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.all(16),
         child: FilledButton.icon(
-          onPressed: _loading ? null : _generate,
-          icon: const Icon(Icons.auto_awesome),
-          label: const Text('Generate plan'),
+          onPressed: _loading || _starting ? null : (_isSwipe ? _startSwiping : _generate),
+          icon: _starting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(_isSwipe ? MdiIcons.gestureSwipeHorizontal : Icons.auto_awesome),
+          label: Text(_isSwipe ? 'Start swiping' : 'Generate plan'),
         ),
       ),
     );
   }
 }
 
-class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.text);
-  final String text;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(text, style: Theme.of(context).textTheme.titleMedium),
-      );
-}
-
-class _StepperRow extends StatelessWidget {
-  const _StepperRow({
-    required this.icon,
-    required this.value,
-    required this.min,
-    required this.max,
+/// One row of the swipe-session participant picker: a member's username with a
+/// checkbox. The starter's own row is shown but locked — leaving yourself out
+/// of a vote you're starting isn't a thing anyone means to do.
+class _ParticipantTile extends StatelessWidget {
+  const _ParticipantTile({
+    required this.uid,
+    required this.checked,
+    required this.locked,
     required this.onChanged,
   });
 
-  final IconData icon;
-  final int value;
-  final int min;
-  final int max;
-  final ValueChanged<int> onChanged;
+  final String uid;
+  final bool checked;
+  final bool locked;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: colorScheme.onSurfaceVariant),
-          const SizedBox(width: 12),
-          Expanded(child: Text('$value', style: Theme.of(context).textTheme.titleLarge)),
-          IconButton.filledTonal(
-            onPressed: value > min ? () => onChanged(value - 1) : null,
-            icon: const Icon(Icons.remove),
-          ),
-          const SizedBox(width: 8),
-          IconButton.filled(
-            onPressed: value < max ? () => onChanged(value + 1) : null,
-            icon: const Icon(Icons.add),
-          ),
-        ],
+    return CheckboxListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      controlAffinity: ListTileControlAffinity.leading,
+      value: checked,
+      onChanged: locked ? null : (v) => onChanged(v ?? false),
+      title: LoadDocumentBuilder(
+        docRef: FirebaseFirestore.instance.collection('users_public').doc(uid),
+        builder: (data) => Text(
+          locked
+              ? '${(data['username'] ?? 'Member')} (you)'
+              : (data['username'] ?? 'Member').toString(),
+        ),
       ),
     );
   }
@@ -744,7 +877,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const _MealPlanBlockingDialog(text: 'Adding your plan…'),
+      builder: (_) => const MealPlanBlockingDialog(text: 'Adding your plan…'),
     );
     try {
       final committed = await commitMealPlan(
@@ -787,7 +920,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
       child: Scaffold(
         appBar: AppBar(title: const Text('Your meal plan')),
         body: _error != null
-            ? _ErrorState(message: _error!, onRetry: _generateInitial)
+            ? MealPlanErrorState(message: _error!, onRetry: _generateInitial)
             : _slots == null
                 ? const _LoadingState()
                 : ListView(
@@ -876,28 +1009,14 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    // Same gentle, on-brand mesh used by the recipe page's Smart Meal Planner
-    // tap area, so the flow it opens into feels continuous.
-    final bool isDark = colorScheme.brightness == Brightness.dark;
-    // The pale light-mode mesh can't carry white text, so foreground follows
-    // the brightness: white on the deep dark-mode mesh, a dark on-brand tone
-    // on the pale light-mode one.
-    final Color meshForeground = isDark ? Colors.white : colorScheme.onPrimaryContainer;
-    final meshColors = [
-      Color.lerp(colorScheme.surface, colorScheme.primary, 0.35)!,
-      Color.lerp(colorScheme.surface, colorScheme.tertiary, 0.4)!,
-      Color.lerp(colorScheme.surface, colorScheme.tertiaryContainer, 0.6)!,
-      Color.lerp(colorScheme.surface, colorScheme.primaryContainer, 0.75)!,
-    ];
+    // Same gentle, on-brand mesh used by the recipe page's planner tiles, so
+    // the flow it opens into feels continuous.
+    final Color meshForeground = MealPlanMesh.foregroundOf(colorScheme);
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        AnimatedMeshGradient(
-          colors: meshColors,
-          options: AnimatedMeshGradientOptions(speed: 0.15),
-        ),
-        if (isDark) Container(color: Colors.black.withOpacity(0.1)),
+        const MealPlanMesh(),
         Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -924,56 +1043,6 @@ class _LoadingStateState extends State<_LoadingState> with TickerProviderStateMi
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ErrorState extends StatelessWidget {
-  const _ErrorState({required this.message, required this.onRetry});
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.error_outline, size: 40, color: Theme.of(context).colorScheme.error),
-            const SizedBox(height: 12),
-            Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            FilledButton(onPressed: onRetry, child: const Text('Try again')),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Short non-dismissible wait, mirroring RecipePage's private
-/// `_GeneratingDialog` (kept as a small local duplicate rather than an
-/// extraction — see the plan's "not doing" section).
-class _MealPlanBlockingDialog extends StatelessWidget {
-  const _MealPlanBlockingDialog({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CupertinoActivityIndicator(),
-            const SizedBox(width: 16),
-            Flexible(child: Text(text)),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -1125,47 +1194,25 @@ class _MealPlanDayTile extends StatelessWidget {
   void _openPublicPreview(BuildContext context) {
     final publicId = slot.publicRecipeId;
     if (publicId == null) return;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (_) => _RecipePreviewSheet(
-        name: slot.name,
-        image: slot.publicImage,
-        alwaysShowImage: false,
-        dataStream: Stream.fromFuture(publicPreload(publicId))
-            .map((p) => localizeRecipeData(p.data, LanguageService.instance.code.value)),
-      ),
+    openPublicRecipePreview(
+      context,
+      publicRecipeId: publicId,
+      name: slot.name,
+      image: slot.publicImage,
+      publicPreload: publicPreload,
     );
   }
 
   void _openOwnPreview(BuildContext context) {
     final recipeId = slot.recipeId;
     if (recipeId == null) return;
-    final recipeDoc = slot.source == MealPlanSource.newIdea
-        ? FirebaseFirestore.instance.collection('public_recipes').doc(recipeId)
-        : groupDoc.collection('recipes').doc(recipeId);
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (_) => _RecipePreviewSheet(
-        name: slot.name,
-        image: slot.publicImage,
-        alwaysShowImage: true,
-        dataStream: recipeDoc.snapshots().map((s) {
-          final d = s.data();
-          return d == null ? null : localizeRecipeData(d, LanguageService.instance.code.value);
-        }),
-      ),
+    openOwnRecipePreview(
+      context,
+      recipeId: recipeId,
+      source: slot.source,
+      groupDoc: groupDoc,
+      name: slot.name,
+      image: slot.publicImage,
     );
   }
 }
@@ -1340,7 +1387,7 @@ class _Thumbnail extends StatelessWidget {
           final pending = data?['pending'] as List?;
           final imageDone = pending != null && !pending.contains('image');
           final failed = data?['generationError'] == true;
-          if (!imageDone && !failed) return const _ImageShimmer();
+          if (!imageDone && !failed) return const ImageShimmer();
         }
         return _placeholder(context);
       },
@@ -1364,238 +1411,4 @@ class _Thumbnail extends StatelessWidget {
       child: Icon(Icons.restaurant_menu, size: _kTileHeight / 2.2, color: tint.toColor()),
     );
   }
-}
-
-/// Bottom sheet previewing a recipe (image, description, steps) before the
-/// plan is confirmed. Shared by public-recipe slots (a one-shot preload,
-/// wrapped as a single-event stream) and own/new-idea slots (a live
-/// Firestore stream, so a still-generating recipe's fields pop in as they
-/// land) — see the `_open*Preview` callers for how each wires up
-/// [dataStream].
-class _RecipePreviewSheet extends StatelessWidget {
-  const _RecipePreviewSheet({
-    required this.name,
-    required this.image,
-    required this.dataStream,
-    required this.alwaysShowImage,
-  });
-
-  /// Fallback name/image shown immediately, before the first [dataStream]
-  /// event arrives (or if a field isn't present yet).
-  final String name;
-  final String? image;
-  final Stream<Map<String, dynamic>?> dataStream;
-
-  /// Whether to render a persistent shimmer placeholder when no image is
-  /// available yet (own/new-idea slots, whose image may still be
-  /// generating) vs. simply omitting the image block (public slots, which
-  /// always already have one).
-  final bool alwaysShowImage;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return DraggableScrollableSheet(
-      initialChildSize: 0.7,
-      minChildSize: 0.4,
-      maxChildSize: 0.95,
-      expand: false,
-      builder: (context, scrollController) => StreamBuilder<Map<String, dynamic>?>(
-        stream: dataStream,
-        builder: (context, snap) {
-          final data = snap.data;
-          final loading = data == null;
-          final images = data?['images'] is List
-              ? List<String>.from(data!['images'])
-              : ((data?['image'] as String?)?.isNotEmpty == true
-                  ? [data!['image'] as String]
-                  : const <String>[]);
-          final displayImage = images.isNotEmpty ? images.first : image;
-          final steps = List<String>.from(data?['steps'] ?? const []);
-          final description = (data?['description'] ?? '').toString();
-          final time = (data?['time'] as num?)?.toInt() ?? 0;
-          final pending = data?['pending'] as List?;
-          final stepsDone = pending == null || !pending.contains('steps');
-          final displayName =
-              (data?['name'] as String?)?.isNotEmpty == true ? data!['name'] as String : name;
-          return ListView(
-            controller: scrollController,
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-            children: [
-              if (displayImage != null && displayImage.isNotEmpty)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: StorageImage(storagePath: displayImage, fit: BoxFit.cover),
-                  ),
-                )
-              else if (alwaysShowImage)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: _Shimmer(child: Container(color: colorScheme.surfaceContainerHighest)),
-                  ),
-                ),
-              if ((displayImage != null && displayImage.isNotEmpty) || alwaysShowImage)
-                const SizedBox(height: 16),
-              Text(displayName, style: Theme.of(context).textTheme.headlineSmall),
-              if (time > 0) ...[
-                const SizedBox(height: 8),
-                _SheetTimeRow(minutes: time),
-              ],
-              if (description.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text(
-                  description,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: colorScheme.onSurfaceVariant),
-                ),
-              ],
-              const SizedBox(height: 20),
-              if (loading || !stepsDone)
-                for (int i = 0; i < 4; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: _Shimmer(
-                      child: Container(
-                        height: 16,
-                        decoration: BoxDecoration(
-                          color: colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                  )
-              else if (steps.isEmpty)
-                Text('No steps available.', style: TextStyle(color: colorScheme.onSurfaceVariant))
-              else
-                for (int i = 0; i < steps.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CircleAvatar(
-                          radius: 12,
-                          backgroundColor: colorScheme.primaryContainer,
-                          child: Text(
-                            '${i + 1}',
-                            style: TextStyle(fontSize: 12, color: colorScheme.onPrimaryContainer),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                            child: Text(steps[i], style: Theme.of(context).textTheme.bodyMedium)),
-                      ],
-                    ),
-                  ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// Small "Xh Ym" row with a clock icon, shared by the meal-plan recipe
-/// preview sheets.
-class _SheetTimeRow extends StatelessWidget {
-  const _SheetTimeRow({required this.minutes});
-  final int minutes;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final hours = minutes ~/ 60;
-    final mins = minutes % 60;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.schedule, size: 18, color: colorScheme.onSurfaceVariant),
-        const SizedBox(width: 6),
-        Text(
-          hours > 0 ? '${hours}h ${mins}m' : '${mins}m',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
-        ),
-      ],
-    );
-  }
-}
-
-/// Square shimmer standing in for a thumbnail while its image generates,
-/// filling whatever space the parent (a fixed [_kTileHeight]x[_kTileHeight]
-/// box) gives it.
-class _ImageShimmer extends StatelessWidget {
-  const _ImageShimmer();
-
-  @override
-  Widget build(BuildContext context) {
-    return _Shimmer(
-      child: Container(color: Theme.of(context).colorScheme.surfaceContainerHighest),
-    );
-  }
-}
-
-// =============================================================================
-// Shimmer
-// =============================================================================
-
-/// Local duplicate of RecipeDetailPage's private `_Shimmer` (see this file's
-/// other small-duplicate notes) — a sliding-gradient shader over its child.
-class _Shimmer extends StatefulWidget {
-  const _Shimmer({required this.child});
-  final Widget child;
-
-  @override
-  State<_Shimmer> createState() => _ShimmerState();
-}
-
-class _ShimmerState extends State<_Shimmer> with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return AnimatedBuilder(
-      animation: _c,
-      child: widget.child,
-      builder: (context, child) => ShaderMask(
-        blendMode: BlendMode.srcATop,
-        shaderCallback: (bounds) => LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [
-            cs.surfaceContainerHighest,
-            cs.surfaceContainerLow,
-            cs.surfaceContainerHighest,
-          ],
-          stops: const [0.1, 0.5, 0.9],
-          transform: _SlidingGradient(_c.value),
-        ).createShader(bounds),
-        child: child,
-      ),
-    );
-  }
-}
-
-class _SlidingGradient extends GradientTransform {
-  const _SlidingGradient(this.t);
-  final double t;
-
-  @override
-  Matrix4? transform(Rect bounds, {TextDirection? textDirection}) =>
-      Matrix4.translationValues((t * 2 - 1) * bounds.width, 0, 0);
 }

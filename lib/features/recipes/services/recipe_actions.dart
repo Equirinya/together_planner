@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -12,6 +11,7 @@ import 'package:couple_planner/features/ingredients/services/ingredient_index.da
 import 'package:couple_planner/features/recipes/pages/recipe_page.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
+import 'package:couple_planner/features/recipes/services/recipe_photos.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/recipes/widgets/create_recipe_sheet.dart';
 import 'package:couple_planner/features/recipes/widgets/generating_dialog.dart';
@@ -558,17 +558,25 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
   }
 
   Future<void> _createFromPhoto() async {
-    final image = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+    final picked = await ImagePicker().pickMultiImage(
       maxWidth: 1280,
       imageQuality: 70,
+      limit: maxRecipePhotos,
     );
-    if (image == null || !mounted) return;
+    if (picked.isEmpty || !mounted) return;
     if (!widget.access.hasGenerationQuota) {
       _snack("You've used all your AI generations for this month.");
       return;
     }
-    final bytes = await image.readAsBytes();
+    // The picker's `limit` greys out further photos on the Android 13+ photo
+    // picker and on iOS, but it isn't honoured by every gallery (older Android
+    // pickers ignore it), so the cap is enforced here as well — and again in
+    // the backend. Say so rather than silently dropping the extras.
+    if (picked.length > maxRecipePhotos) {
+      _snack('Only the first $maxRecipePhotos photos are used.');
+    }
+    final images = await encodeRecipePhotos(picked);
+    if (!mounted) return;
     final ref = await _createRecipeDoc(name: '');
     if (!mounted) return;
     _pushDetail(ref.id, generating: true, initialData: _seedData(''));
@@ -577,8 +585,7 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
         'groupId': widget.groupId,
         'recipeId': ref.id,
         'source': 'photo',
-        'imageBase64': base64Encode(bytes),
-        'imageMimeType': image.mimeType ?? 'image/jpeg',
+        'images': images,
         'lang': LanguageService.instance.code.value,
       });
     } catch (e) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -37,10 +39,32 @@ class _MealPlanShoppingListPageState extends State<MealPlanShoppingListPage> {
   bool _saving = false;
   late int _people = widget.people;
 
+  /// True once the servings count has been written to every plan (by
+  /// [_submit]'s batch), so [dispose] doesn't write it a second time.
+  bool _servingsPersisted = false;
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  /// The plans were committed with [widget.people], so a servings change made
+  /// here has to be written back on the way out — otherwise the cooking plans
+  /// would show the count the flow was started with while their ingredient
+  /// quantities were scaled to something else. Done in [dispose]
+  /// (fire-and-forget: the user is on their way out, and a failed write only
+  /// leaves the original count) so every exit is covered — "Skip", the app
+  /// bar's back button and the system back gesture alike. The "Add to shopping
+  /// list" path writes it in [applyIngredientContributions]'s batch instead and
+  /// sets [_servingsPersisted] to skip this.
+  @override
+  void dispose() {
+    final sections = _sections;
+    if (!_servingsPersisted && sections != null && _people != widget.people) {
+      saveSectionServings(sections).ignore();
+    }
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -57,17 +81,9 @@ class _MealPlanShoppingListPageState extends State<MealPlanShoppingListPage> {
     Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
-  /// Skipping the shopping list still has to keep a servings change: the plans
-  /// were committed with [widget.people], so leaving without saving would show
-  /// the wrong count on the cooking plans. Fire-and-forget — the user is on
-  /// their way out and a failed write only leaves the original count.
-  void _skip() {
-    final sections = _sections;
-    if (sections != null && _people != widget.people) {
-      saveSectionServings(sections).ignore();
-    }
-    _finish();
-  }
+  /// Leaves without touching the shopping list. A servings change is still
+  /// kept — [dispose] writes it once this page is gone.
+  void _skip() => _finish();
 
   void _setPeople(int people) {
     final sections = _sections;
@@ -86,6 +102,8 @@ class _MealPlanShoppingListPageState extends State<MealPlanShoppingListPage> {
     setState(() => _saving = true);
     try {
       await applyIngredientContributions(group: widget.groupDoc, sections: sections);
+      // That batch rewrote every plan's `servings` too — don't write it again.
+      _servingsPersisted = true;
       if (mounted) _finish();
     } catch (_) {
       if (!mounted) return;

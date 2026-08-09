@@ -17,13 +17,16 @@ import 'package:couple_planner/features/recipes/widgets/recipe_card.dart';
 import 'package:couple_planner/features/recipes/widgets/suggested_row.dart';
 import 'package:couple_planner/features/recipes/widgets/add_to_shopping_list_dialog.dart';
 import 'package:couple_planner/features/recipes/widgets/empty_recipes_state.dart';
-import 'package:couple_planner/features/recipes/widgets/plan_next_days_button.dart';
+import 'package:couple_planner/features/recipes/widgets/planner_tiles.dart';
 import 'package:couple_planner/features/recipes/services/adopt_public_recipe.dart';
+import 'package:couple_planner/features/recipes/services/swipe_session_service.dart';
 import 'package:couple_planner/features/recipes/services/recipe_actions.dart';
 import 'package:couple_planner/features/recipes/services/recipe_suggestions.dart';
 import 'package:couple_planner/features/recipes/pages/meal_plan_flow.dart';
+import 'package:couple_planner/features/recipes/pages/swipe_to_plan_flow.dart';
 import 'package:couple_planner/features/settings/recipe_suggestion_notifier.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
+import 'package:couple_planner/features/settings/recipe_feature_settings.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 
 /// Lets a parent widget (the bottom-nav host) query whether the recipe page's
@@ -93,10 +96,44 @@ class _RecipePageState extends State<RecipePage>
   bool get plansLoaded => _plansLoaded;
   // Tracks the auto meal-plan trigger day across cooking-plan updates so a
   // move to a new day can fade out on the old one instead of just vanishing;
-  // see the cooking-plan listener in initState and PlanNextDaysButton.
+  // see the cooking-plan listener in initState and PlannerTiles.
   String? _lastTriggerDayKey;
   String? _fadingTriggerDayKey;
   Timer? _fadingTriggerTimer;
+  // The group's one open Swipe to Plan session, if any. Drives the swipe half
+  // of PlannerTiles: its label, its unread dot, and whether tapping it opens
+  // the setup page or drops straight into the running session.
+  SwipeSession? _swipeSession;
+  StreamSubscription<SwipeSession?>? _swipeSessionListener;
+  Timer? _swipeResubscribeTimer;
+
+  /// The Smart Meal Planner half is AI, so it follows both the server-side
+  /// entitlement and the local switch.
+  bool get _showMealPlannerTile =>
+      widget.access.canUseMealPlanner && AiFeatureSettings.mealPlannerEnabled.value;
+
+  /// The swipe half is not: its deck is drawn from recipes that already exist,
+  /// so it costs nothing and stays available to groups without AI access.
+  ///
+  /// Three things decide whether it shows, in this order:
+  ///
+  /// 1. **A running vote wins over everything.** If this user is one of its
+  ///    participants, the tile appears even with the feature switched off —
+  ///    the switch is a preference about clutter, not a way to silently drop
+  ///    out of a decision other people are waiting on.
+  /// 2. **Non-participants see nothing.** Someone left out of a running vote
+  ///    can't join it and can't start a second one (there's only ever one open
+  ///    session per group), so offering them a button that could only fail
+  ///    would be worse than offering nothing.
+  /// 3. Otherwise it's the plain start case: needs the switch on, and at least
+  ///    one recipe to build a deck from.
+  bool get _showSwipeTile {
+    final session = _swipeSession;
+    if (session != null) {
+      return session.isParticipant(FirebaseAuth.instance.currentUser?.uid ?? '');
+    }
+    return RecipeFeatureSettings.swipeToPlanEnabled.value && recipes.isNotEmpty;
+  }
   final Set<String> _deletingPlanIds = {};
   // Two listeners feed the merged [recipes] window: one ordered by
   // `createdAt` so freshly added recipes are always loaded, one ordered by
@@ -234,10 +271,6 @@ class _RecipePageState extends State<RecipePage>
   /// Opens the auto meal-plan flow starting on [day], with the days stepper
   /// clamped to how much of the rendered carousel window remains ahead.
   void _openMealPlanFlow(DateTime day) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final lastRendered = today.add(Duration(days: daysToShowFuture - 1));
-    final maxDays = (lastRendered.difference(day).inDays + 1).clamp(1, 14);
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -245,11 +278,44 @@ class _RecipePageState extends State<RecipePage>
           groupId: widget.groupId,
           groupDoc: groupDoc,
           startDate: day,
-          maxDays: maxDays,
+          maxDays: _maxPlanDaysFrom(day),
           access: widget.access,
         ),
       ),
     );
+  }
+
+  /// Opens Swipe to Plan. With no session running that means the setup page;
+  /// with one already open it jumps straight into whichever step the user
+  /// belongs on, since re-configuring a vote other people are already swiping
+  /// isn't a thing they can do.
+  void _openSwipeFlow(DateTime day) {
+    final session = _swipeSession;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => session == null
+            ? MealPlanSettingsPage(
+                groupId: widget.groupId,
+                groupDoc: groupDoc,
+                startDate: day,
+                maxDays: _maxPlanDaysFrom(day),
+                access: widget.access,
+                mode: MealPlanMode.swipe,
+              )
+            : SwipeToPlanFlow(groupDoc: groupDoc, sessionId: session.id),
+      ),
+      // Don't rely on the stream alone to have caught up by the time the user
+      // is looking at the tile again: popping back must never show "Swipe to
+      // Plan" for a session that is actually running.
+    ).then((_) => _refreshSwipeSession());
+  }
+
+  int _maxPlanDaysFrom(DateTime day) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final lastRendered = today.add(Duration(days: daysToShowFuture - 1));
+    return (lastRendered.difference(day).inDays + 1).clamp(1, 14);
   }
 
   @override
@@ -294,6 +360,11 @@ class _RecipePageState extends State<RecipePage>
       });
       _maybeRefreshEmptyGroupSuggestedRow();
     }, onError: (Object e) => debugPrint('Cooking plan listener error: $e'));
+
+    _subscribeSwipeSession();
+    // Read as a plain `.value` in [_showSwipeTile], so the tile needs a nudge
+    // to reflect the switch being flipped in Settings and back.
+    RecipeFeatureSettings.swipeToPlanEnabled.addListener(_onSwipeSettingChanged);
 
     _subscribeRecipes();
     _scrollController.addListener(_maybeLoadMoreRecipes);
@@ -404,6 +475,9 @@ class _RecipePageState extends State<RecipePage>
     widget.controller?._clearSearch = null;
     RecipeSuggestionNotifier.instance.removeListener(_initSuggestions);
     planListener?.cancel();
+    _swipeSessionListener?.cancel();
+    _swipeResubscribeTimer?.cancel();
+    RecipeFeatureSettings.swipeToPlanEnabled.removeListener(_onSwipeSettingChanged);
     _fadingTriggerTimer?.cancel();
     recipesByCreatedListener?.cancel();
     recipesByUsedListener?.cancel();
@@ -423,8 +497,51 @@ class _RecipePageState extends State<RecipePage>
   // yesterday's picks until the app is restarted. Re-check on resume.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _suggestionsEnabled) {
-      refreshSuggestedRowIfStale();
+    if (state == AppLifecycleState.resumed) {
+      if (_suggestionsEnabled) refreshSuggestedRowIfStale();
+      _refreshSwipeSession();
+    }
+  }
+
+  void _onSwipeSettingChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// (Re)subscribes to the group's open swipe session.
+  ///
+  /// A Firestore listener that errors is dead permanently — it does not retry —
+  /// so a single transient failure (say, the query running a beat before auth
+  /// settles on a cold start) would otherwise leave the planner tile stuck on
+  /// "Swipe to Plan" for the rest of the app's life, and tapping it would try
+  /// to start a second session. Hence the re-subscribe on error.
+  void _subscribeSwipeSession() {
+    _swipeSessionListener?.cancel();
+    _swipeSessionListener = watchOpenSwipeSession(groupDoc).listen(
+      (session) {
+        if (mounted) setState(() => _swipeSession = session);
+      },
+      onError: (Object e) {
+        debugPrint('Swipe session listener error: $e');
+        _swipeSessionListener?.cancel();
+        _swipeSessionListener = null;
+        _swipeResubscribeTimer?.cancel();
+        _swipeResubscribeTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted) _subscribeSwipeSession();
+        });
+      },
+    );
+  }
+
+  /// One-shot re-read, used where waiting on the stream isn't good enough:
+  /// coming back from the swipe flow, and resuming the app. Also revives a
+  /// listener that died, so the tile can't stay stale.
+  Future<void> _refreshSwipeSession() async {
+    if (_swipeSessionListener == null) _subscribeSwipeSession();
+    try {
+      final session = await fetchOpenSwipeSession(groupDoc);
+      if (mounted) setState(() => _swipeSession = session);
+    } catch (e) {
+      debugPrint('Swipe session refresh error: $e');
     }
   }
 
@@ -1062,25 +1179,33 @@ class _RecipePageState extends State<RecipePage>
                               ),
                             ),
                           ),
-                          // The auto meal-plan trigger: shown only on the
-                          // single soonest day at/after today that has no
-                          // plan yet (see _triggerDate), and only when the
-                          // meal planner is available. Pinned below the scrollable
-                          // plan list (not part of it) and sized like a
-                          // cropped recipe card so it holds a fixed size
+                          // The planning triggers — Swipe to Plan above the
+                          // Smart Meal Planner, sharing one mesh card. Shown
+                          // only on the single soonest day at/after today that
+                          // has no plan yet (see _triggerDate). Pinned below
+                          // the scrollable plan list (not part of it) and sized
+                          // like a cropped recipe card so it holds a fixed size
                           // instead of reflowing as the carousel's weighted
                           // widths change while scrolling. Kept mounted (as
                           // invisible) on the previous trigger day for a
                           // moment after the trigger moves, so it fades out
                           // there instead of just vanishing.
-                          if (widget.access.canUseMealPlanner &&
-                              AiFeatureSettings.mealPlannerEnabled.value &&
-                              _plansLoaded &&
+                          //
+                          // Swipe to Plan uses no AI, so it is not gated on
+                          // meal-planner access — a group without it still gets
+                          // the swipe half, just without the tile below.
+                          if (_plansLoaded &&
+                              (_showMealPlannerTile || _showSwipeTile) &&
                               (dayKey == triggerDayKey || dayKey == _fadingTriggerDayKey))
-                            PlanNextDaysButton(
+                            PlannerTiles(
                               crossAxisCount: planCrossAxisCount,
                               visible: dayKey == triggerDayKey,
-                              onTap: () => _openMealPlanFlow(day),
+                              showSwipe: _showSwipeTile,
+                              showMealPlanner: _showMealPlannerTile,
+                              swipeSession: _swipeSession,
+                              uid: FirebaseAuth.instance.currentUser?.uid,
+                              onTapMealPlanner: () => _openMealPlanFlow(day),
+                              onTapSwipe: () => _openSwipeFlow(day),
                             ),
                         ],
                       ),
