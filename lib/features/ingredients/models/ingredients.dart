@@ -37,6 +37,43 @@ class MatchedIngredient {
 
   String get defaultUnit => (data['defaultUnit'] ?? kDefaultUnitId).toString();
 
+  /// Whether this ingredient may be offered unprompted while the user types —
+  /// true for anything a normal supermarket run could contain (food of every
+  /// kind, drugstore and household consumables), false for things you'd never
+  /// put in a grocery basket (fridge, bowl, dessous). Set by the generation
+  /// cloud function and editable in the ingredient admin page.
+  ///
+  /// Ingredients predating the field count as suggestible, so nothing
+  /// disappears from search before the backfill has run.
+  bool get suggest => data['suggest'] != false;
+
+  /// True when [term] is exactly (case-insensitively) one of this ingredient's
+  /// names or synonyms, in any language. An exact hit is an unambiguous
+  /// reference to *this* ingredient, so it overrides [suggest] wherever the
+  /// flag would otherwise hide it: typing "Kühlschrank" in full still offers
+  /// the fridge, typing "kühl" does not.
+  bool matchesExactly(String term) {
+    final needle = term.trim().toLowerCase();
+    if (needle.isEmpty) return false;
+
+    final names = data['name'];
+    if (names is Map) {
+      for (final n in names.values) {
+        if (n.toString().toLowerCase() == needle) return true;
+      }
+    }
+    final syns = data['synonyms'];
+    if (syns is Map) {
+      for (final list in syns.values) {
+        if (list is List &&
+            list.any((s) => s.toString().toLowerCase() == needle)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   String displayName(String lang) {
     final n = data['name'];
     return n is Map ? (n[lang] ?? n['en'] ?? '').toString() : '';

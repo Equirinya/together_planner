@@ -14,6 +14,17 @@ import 'package:image_picker/image_picker.dart';
 /// same cap server-side.
 const int maxRecipePhotos = 5;
 
+/// How long the client waits for `generateRecipeStaged` before giving up.
+///
+/// Matches the function's own `timeoutSeconds: 300`. The default callable
+/// timeout is a minute, which is shorter than a legitimate slow generation —
+/// so a recipe that was being produced perfectly well would surface as a
+/// timeout on the client. Nothing in the UI actually waits on this call (every
+/// stage is streamed from the recipe document as it lands); the result only
+/// matters for surfacing a quota/plan message, so waiting the full server
+/// budget costs nothing.
+const Duration kRecipeGenerationTimeout = Duration(minutes: 5);
+
 /// The width every photo is downscaled to before it is sent. Large enough for
 /// the model to read printed recipe text, small enough that [maxRecipePhotos]
 /// photos still fit comfortably inside the callable's request-size limit.

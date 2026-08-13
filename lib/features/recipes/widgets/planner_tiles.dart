@@ -45,7 +45,7 @@ class PlannerTiles extends StatefulWidget {
   final bool showSwipe;
   final bool showMealPlanner;
 
-  static const double _halfHeight = 100;
+  static const double _halfHeight = 88;
 
   /// Total height, so callers can reason about the day cell's growth.
   static double heightFor({bool swipe = true, bool mealPlanner = true}) =>
@@ -185,7 +185,7 @@ class _PlannerTilesState extends State<PlannerTiles> {
                               height: PlannerTiles._halfHeight -
                                   (widget.showSwipe ? 1 : 0),
                               icon: MdiIcons.chefHat,
-                              label: 'Smart Meal Planner',
+                              label: 'Smart Meal\nPlanner',
                               foreground: meshForeground,
                               onTap: widget.onTapMealPlanner,
                             ),

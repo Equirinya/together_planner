@@ -8,10 +8,12 @@ import 'package:couple_planner/features/ingredients/widgets/avatar.dart';
 import 'package:couple_planner/features/ingredients/widgets/ingredient_search_sheet.dart';
 import 'package:couple_planner/features/ingredients/widgets/quantity_editor.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
+import 'package:couple_planner/core/widgets/undo_snackbar.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -97,6 +99,29 @@ class _ShoppingListPageState extends State<ShoppingListPage>
 
   bool _foreground = true;
 
+  /// How long a swipe-away is held back before it is actually written to
+  /// Firestore. Short enough that the partner's list stays in step, long enough
+  /// that a swipe which was really the tail of a system "close the app" gesture
+  /// never reaches the server at all — see [_cancelUncommittedRemovals].
+  static const Duration _undoCommitDelay = Duration(milliseconds: 500);
+
+  /// Items swiped away and not yet safely gone: either still inside the commit
+  /// delay, or written but still undoable from the prompt.
+  final Map<String, _PendingRemoval> _pendingRemovals = {};
+
+  /// The removals the prompt currently on screen would undo. A run of quick
+  /// swipes collects into one batch rather than one prompt per item.
+  final List<String> _undoBatch = [];
+
+  /// Non-null while the prompt is in the tree. It deliberately outlives
+  /// [_undoBatch]: after "Undo" is tapped the batch is empty immediately, but
+  /// the prompt stays mounted until it has finished animating out.
+  String? _undoMessage;
+
+  /// Bumped on every swipe so the prompt restarts its countdown instead of
+  /// timing out from when the first item of the batch was removed.
+  int _undoToken = 0;
+
   String get _seenKey => 'shopping_seen_upto_${widget.groupId}';
 
   CollectionReference<Map<String, dynamic>> get _listRef =>
@@ -135,6 +160,11 @@ class _ShoppingListPageState extends State<ShoppingListPage>
     final foreground = state == AppLifecycleState.resumed;
     if (foreground == _foreground) return;
     _foreground = foreground;
+    // Leaving the foreground undoes anything swiped away in the last
+    // [_undoCommitDelay]. On both platforms closing the app is itself an
+    // edge swipe, and a list row that goes away in the same breath was almost
+    // certainly caught by that gesture rather than checked off on purpose.
+    if (!foreground) _cancelUncommittedRemovals();
     // Coming back to the app: whatever is on the list now is being looked at,
     // so it stops counting as new for *future* sessions. Snapshots that landed
     // while we were away didn't advance the watermark themselves, and this is
@@ -148,6 +178,11 @@ class _ShoppingListPageState extends State<ShoppingListPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _listSub?.cancel();
+    // Uncommitted removals die with the page — which is the point: nothing was
+    // written, so they are undone by never having happened.
+    for (final pending in _pendingRemovals.values) {
+      pending.timer?.cancel();
+    }
     super.dispose();
   }
 
@@ -244,7 +279,10 @@ class _ShoppingListPageState extends State<ShoppingListPage>
 
   // ── item mutations ─────────────────────────────────────────────────────────
 
-  Future<void> _markDone(Map<String, dynamic> item) async {
+  /// A swipe-away. The row leaves the screen at once, but the write is held
+  /// back by [_undoCommitDelay] so that the two cheap ways out of a mistake —
+  /// tapping Undo, or the app going away — cost nothing at all.
+  void _markDone(Map<String, dynamic> item) {
     final id = item['id'] as String;
     // Hiding it locally takes it straight out of _activeItems(), so it has to
     // be handed to _removingItems in the same breath — otherwise our own
@@ -252,7 +290,26 @@ class _ShoppingListPageState extends State<ShoppingListPage>
     setState(() {
       _optimisticallyHidden.add(id);
       _removingItems[id] = item;
+      _pendingRemovals[id] = _PendingRemoval(
+        timer: Timer(_undoCommitDelay, () => _commitRemoval(id)),
+      );
+      _undoBatch.add(id);
+      _undoToken++;
+      _undoMessage = _undoBatch.length == 1
+          ? '${(item['displayName'] ?? 'Item').toString()} removed'
+          : '${_undoBatch.length} items removed';
     });
+    HapticFeedback.lightImpact();
+  }
+
+  /// Writes the held-back mark-done. The item stays in [_pendingRemovals]
+  /// afterwards, flagged as committed, because the prompt is usually still up
+  /// and undoing then means writing the item back rather than dropping a timer.
+  Future<void> _commitRemoval(String id) async {
+    final pending = _pendingRemovals[id];
+    if (pending == null) return;
+    pending.timer = null;
+    pending.committed = true;
     try {
       // Use a concrete client timestamp rather than a server one: a pending
       // FieldValue.serverTimestamp() reads back as null (and stays null when a
@@ -263,14 +320,69 @@ class _ShoppingListPageState extends State<ShoppingListPage>
       await _listRef.doc(id).update({'doneAt': Timestamp.now()});
     } catch (_) {
       // Write failed: put it back, as a fresh row that grows in again.
-      if (mounted) {
-        setState(() {
-          _optimisticallyHidden.remove(id);
-          _removingItems.remove(id);
-          _restoreCount.update(id, (n) => n + 1, ifAbsent: () => 1);
+      _pendingRemovals.remove(id);
+      _undoBatch.remove(id);
+      _restoreRow(id);
+    }
+  }
+
+  /// Puts a row back on the list locally, as a *new* row (see [_restoreCount])
+  /// so it grows in rather than reappearing mid-swipe.
+  void _restoreRow(String id) {
+    if (!mounted) return;
+    setState(() {
+      _optimisticallyHidden.remove(id);
+      _removingItems.remove(id);
+      _restoreCount.update(id, (n) => n + 1, ifAbsent: () => 1);
+    });
+  }
+
+  /// "Undo" on the prompt: rolls back everything it covers. Items still inside
+  /// the commit delay simply never get written; ones already committed are
+  /// written back by clearing doneAt, which Firestore reflects locally on the
+  /// spot, so the row returns immediately either way.
+  void _undoRemovals() {
+    final ids = List<String>.of(_undoBatch);
+    _undoBatch.clear();
+    for (final id in ids) {
+      final pending = _pendingRemovals.remove(id);
+      if (pending == null) continue;
+      pending.timer?.cancel();
+      if (pending.committed) {
+        _listRef.doc(id).update({'doneAt': null}).catchError((Object e) {
+          debugPrint('Undo failed for $id: $e');
         });
       }
+      _restoreRow(id);
     }
+  }
+
+  /// Rolls back only the removals that haven't been written yet. Called when
+  /// the app leaves the foreground: those writes can be cancelled outright,
+  /// with nothing to compensate for and no dependence on the process living
+  /// long enough to send anything.
+  void _cancelUncommittedRemovals() {
+    final ids = _pendingRemovals.entries
+        .where((e) => !e.value.committed)
+        .map((e) => e.key)
+        .toList();
+    if (ids.isEmpty) return;
+    for (final id in ids) {
+      _pendingRemovals.remove(id)!.timer?.cancel();
+      _undoBatch.remove(id);
+      _restoreRow(id);
+    }
+    // No exit animation here — nobody is watching the app any more.
+    if (_undoBatch.isEmpty && mounted) setState(() => _undoMessage = null);
+  }
+
+  /// The prompt has finished animating out: drop it, and let go of the
+  /// removals it was covering.
+  void _dismissUndoPrompt() {
+    if (!mounted) return;
+    _undoBatch.clear();
+    _pendingRemovals.removeWhere((_, pending) => pending.committed);
+    setState(() => _undoMessage = null);
   }
 
   /// Hand edits from the quantity editor. The *change* is attributed to
@@ -377,6 +489,26 @@ class _ShoppingListPageState extends State<ShoppingListPage>
             ),
           ),
         ),
+        // Sits above the add-item bar, and last in the stack so its button is
+        // the one that gets the taps.
+        if (_undoMessage != null)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 72),
+                child: UndoSnackbar(
+                  message: _undoMessage!,
+                  restartToken: _undoToken,
+                  onUndo: _undoRemovals,
+                  onDismissed: _dismissUndoPrompt,
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -426,6 +558,16 @@ class _ShoppingListPageState extends State<ShoppingListPage>
     final created = (item['createdAt'] as Timestamp?)?.toDate();
     return _lastSeen != null && created != null && created.isAfter(_lastSeen!);
   }
+}
+
+/// A swipe-away that hasn't settled yet: either still waiting out the commit
+/// delay ([timer] alive, [committed] false), or written and merely still
+/// undoable from the prompt ([timer] null, [committed] true).
+class _PendingRemoval {
+  _PendingRemoval({required this.timer});
+
+  Timer? timer;
+  bool committed = false;
 }
 
 /// Section separator: a small category icon followed by a hairline divider.

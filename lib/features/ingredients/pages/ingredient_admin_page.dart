@@ -45,6 +45,46 @@ Future<void> _regenerateIcon(BuildContext context, String id) async {
   }
 }
 
+/// Classifies ingredients that predate the `suggest` field, in server-side
+/// batches. Idempotent and resumable: only documents still missing the field
+/// are touched, so it can be run repeatedly until nothing is left.
+Future<void> _backfillSuggest(BuildContext context) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Backfill "suggest"?'),
+      content: const Text(
+        'Classifies every ingredient that has no suggest flag yet via the AI, in '
+        'batches. Values you set by hand are never overwritten. Costs tokens.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Run')),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.showSnackBar(const SnackBar(content: Text('Backfilling…')));
+  try {
+    // A full pass classifies hundreds of ingredients in batches, so it can run
+    // well past the 60s callable default.
+    final res = await FirebaseFunctions.instanceFor(region: 'europe-west1')
+        .httpsCallable(
+          'ingredients-backfillIngredientSuggest',
+          options: HttpsCallableOptions(timeout: const Duration(minutes: 9)),
+        )
+        .call(<String, dynamic>{});
+    final data = Map<String, dynamic>.from(res.data as Map);
+    messenger.showSnackBar(SnackBar(
+      content: Text('Updated ${data['updated']}, ${data['remaining']} left'),
+    ));
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text('Error: $e')));
+  }
+}
+
 class IngredientAdminPage extends StatefulWidget {
   const IngredientAdminPage({super.key});
 
@@ -123,7 +163,25 @@ class _IngredientAdminPageState extends State<IngredientAdminPage> {
         ? _docs
         : _docs.where((d) => _nameFor(d).toLowerCase().contains(_query.toLowerCase())).toList();
     return Scaffold(
-      appBar: AppBar(title: const Text('Ingredients')),
+      appBar: AppBar(
+        title: const Text('Ingredients'),
+        actions: [
+          IconButton(
+            tooltip: 'Backfill "suggest"',
+            icon: const Icon(Icons.auto_fix_high),
+            onPressed: () async {
+              await _backfillSuggest(context);
+              if (!mounted) return;
+              setState(() {
+                _docs.clear();
+                _lastDoc = null;
+                _hasMore = true;
+              });
+              _loadMore();
+            },
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -180,6 +238,13 @@ class _IngredientAdminPageState extends State<IngredientAdminPage> {
                   trailing: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // Never offered unprompted while typing — only on an exact
+                      // name/synonym hit. Worth flagging in the list.
+                      if (d.data()['suggest'] == false)
+                        const Padding(
+                          padding: EdgeInsets.only(right: 4),
+                          child: Icon(Icons.visibility_off_outlined, size: 18),
+                        ),
                       IconButton(icon: const Icon(Icons.refresh), onPressed: () => _regenerateIcon(context, d.id)),
                       IconButton(
                         icon: const Icon(Icons.delete),
@@ -217,6 +282,7 @@ class _IngredientEditPageState extends State<IngredientEditPage> {
   final Map<String, TextEditingController> _synCtrls = {};
   String? _category;
   String? _defaultUnit;
+  bool _suggest = true;
   bool _loading = true;
 
   @override
@@ -244,6 +310,8 @@ class _IngredientEditPageState extends State<IngredientEditPage> {
     }
     _category = data['category'] as String?;
     _defaultUnit = data['defaultUnit'] as String?;
+    // Absent counts as suggestible — same convention as MatchedIngredient.suggest.
+    _suggest = data['suggest'] != false;
     setState(() => _loading = false);
   }
 
@@ -266,6 +334,7 @@ class _IngredientEditPageState extends State<IngredientEditPage> {
         'synonyms': synonyms,
         'category': _category,
         'defaultUnit': _defaultUnit,
+        'suggest': _suggest,
       });
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
     } catch (e) {
@@ -314,6 +383,18 @@ class _IngredientEditPageState extends State<IngredientEditPage> {
                     for (final u in units) DropdownMenuItem(value: u.id, child: Text(u.display(lang, 1))),
                   ],
                   onChanged: (v) => setState(() => _defaultUnit = v),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _suggest,
+                  onChanged: (v) => setState(() => _suggest = v),
+                  title: const Text('Suggest while typing'),
+                  subtitle: const Text(
+                    'On for anything a supermarket or drugstore sells. Off for things you '
+                    'never put in a grocery basket (fridge, bowl, clothing) — those are '
+                    'still found when the name is typed out in full.',
+                  ),
                 ),
                 const SizedBox(height: 24),
                 Row(

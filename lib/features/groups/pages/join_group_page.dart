@@ -324,6 +324,10 @@ class _RecipeCardsBackground extends StatefulWidget {
 }
 
 class _RecipeCardsBackgroundState extends State<_RecipeCardsBackground> {
+  /// Below this many recipes the background stays empty instead of showing a
+  /// sparse, repetitive set of cards.
+  static const int _minRecipes = 8;
+
   List<Map<String, dynamic>> _recipes = [];
 
   @override
@@ -346,10 +350,9 @@ class _RecipeCardsBackgroundState extends State<_RecipeCardsBackground> {
 
   @override
   Widget build(BuildContext context) {
-    // Use placeholders until recipes load, so the animation starts immediately.
-    final items = _recipes.isEmpty
-        ? List.generate(6, (_) => <String, dynamic>{})
-        : _recipes;
+    // Nothing to show until we know the group has enough recipes.
+    if (_recipes.length < _minRecipes) return const SizedBox.shrink();
+    final items = _recipes;
 
     // Split into up to 3 rows with different subsets, speeds and vertical offsets.
     final rowRecipes = [

@@ -184,7 +184,10 @@ Future<void> _resolveAfterUse(
   // ingredientId changed (doc was deleted + re-resolved) — also update category.
   final updates = <String, dynamic>{'ingredientId': id};
   if (id != kPendingIngredient && id != kUnknownIngredient) {
-    final candidates = await IngredientIndex.instance.match(s.displayName, lang);
+    // Looking up a known id's category, not offering suggestions — the
+    // `suggest` filter would only hide the very doc we're after.
+    final candidates = await IngredientIndex.instance
+        .match(s.displayName, lang, includeUnsuggested: true);
     final matched = candidates.where((m) => m.id == id).firstOrNull;
     if (matched != null) updates['category'] = matched.category(lang);
   }

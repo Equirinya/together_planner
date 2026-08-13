@@ -108,7 +108,13 @@ class NotificationFeatureSettings {
   /// The reusable list of on/off tiles, shown both in App Settings and on the
   /// notification info page. Add future notification categories here once and
   /// they appear in both places.
-  static List<Widget> buildTiles() {
+  ///
+  /// Pass `enabled: false` when the OS has notifications blocked for the app.
+  /// The switches then render greyed out and ignore taps: their stored values
+  /// are untouched (so the user's choices survive re-enabling notifications),
+  /// but nothing can be delivered while the OS is blocking, and a live-looking
+  /// switch there just implies otherwise.
+  static List<Widget> buildTiles({bool enabled = true}) {
     return [
       _NotificationToggleTile(
         icon: Icons.shopping_bag_outlined,
@@ -116,6 +122,7 @@ class NotificationFeatureSettings {
         subtitle: 'When items are added to or checked off the shared list',
         notifier: shoppingListEnabled,
         onChanged: setShoppingListEnabled,
+        enabled: enabled,
       ),
       _NotificationToggleTile(
         icon: Icons.checklist_outlined,
@@ -123,6 +130,7 @@ class NotificationFeatureSettings {
         subtitle: 'When a chore or to-do is assigned to you or falls due',
         notifier: remindersEnabled,
         onChanged: setRemindersEnabled,
+        enabled: enabled,
       ),
     ];
   }
@@ -137,6 +145,7 @@ class _NotificationToggleTile extends StatelessWidget {
     required this.subtitle,
     required this.notifier,
     required this.onChanged,
+    this.enabled = true,
   });
 
   final IconData icon;
@@ -145,16 +154,20 @@ class _NotificationToggleTile extends StatelessWidget {
   final ValueNotifier<bool> notifier;
   final Future<void> Function(bool) onChanged;
 
+  /// False greys the tile out — see [NotificationFeatureSettings.buildTiles].
+  final bool enabled;
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<bool>(
       valueListenable: notifier,
-      builder: (context, enabled, _) => SwitchListTile(
+      builder: (context, value, _) => SwitchListTile(
         secondary: Icon(icon),
         title: Text(title),
         subtitle: Text(subtitle),
-        value: enabled,
-        onChanged: onChanged,
+        value: value,
+        // A null callback is what makes SwitchListTile paint itself disabled.
+        onChanged: enabled ? onChanged : null,
       ),
     );
   }

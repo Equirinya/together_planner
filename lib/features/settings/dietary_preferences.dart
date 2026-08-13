@@ -124,6 +124,42 @@ Set<String> dietarySynonyms(String label) {
   return const {};
 }
 
+/// The mutually-implying diets, strictest first: vegan implies vegetarian
+/// implies pescatarian, so a recipe usually carries all three and only the
+/// tightest one that applies is worth showing.
+const List<String> kPrimaryDietOrder = ['Vegan', 'Vegetarian', 'Pescatarian'];
+
+/// Drops the implied members of [kPrimaryDietOrder] from a recipe's `dietary`
+/// list, keeping only the strictest one it satisfies. Everything else (
+/// gluten-free, halal, custom entries…) is passed through untouched, in the
+/// original order and with the original casing.
+///
+/// Matching goes through [canonicalDietaryLabel], so a German "Vegetarisch"
+/// collapses against an English "Vegan" just as well.
+List<String> collapseDietaryLabels(Iterable<String> dietary) {
+  final labels = dietary.toList();
+  String? strictest;
+  for (final primary in kPrimaryDietOrder) {
+    if (labels.any((d) => canonicalDietaryLabel(d) == primary)) {
+      strictest = primary;
+      break;
+    }
+  }
+
+  final result = <String>[];
+  var primaryShown = false;
+  for (final label in labels) {
+    final canonical = canonicalDietaryLabel(label);
+    if (canonical != null && kPrimaryDietOrder.contains(canonical)) {
+      // Keep the first mention of the strictest diet, drop the rest.
+      if (canonical != strictest || primaryShown) continue;
+      primaryShown = true;
+    }
+    result.add(label);
+  }
+  return result;
+}
+
 /// Lets the user pick preset dietary preferences and add their own. Controlled:
 /// reports the full list (presets + custom) via [onChanged].
 class DietaryPreferencesSelector extends StatefulWidget {

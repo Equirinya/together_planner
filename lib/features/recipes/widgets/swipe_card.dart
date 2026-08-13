@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
 
 import 'package:couple_planner/features/recipes/widgets/recipe_photo.dart';
+import 'package:couple_planner/features/settings/dietary_preferences.dart';
 import 'package:couple_planner/features/recipes/services/swipe_session_service.dart';
 
 /// Turns the card's drag offset into a verdict.
@@ -146,7 +147,11 @@ class SwipeCardView extends StatelessWidget {
                       _CardChip(icon: Icons.schedule, label: '${card.time} min'),
                     if (card.usageHint != null)
                       _CardChip(icon: MdiIcons.silverwareForkKnife, label: card.usageHint!),
-                    for (final d in card.dietary.take(3)) _CardChip(label: d),
+                    // Collapsed first: a vegan recipe is tagged vegan,
+                    // vegetarian and pescatarian, and showing all three would
+                    // spend the card's three chip slots saying one thing.
+                    for (final d in collapseDietaryLabels(card.dietary).take(3))
+                      _CardChip(icon: dietaryTagIcon(d), label: d),
                   ],
                 ),
               ],

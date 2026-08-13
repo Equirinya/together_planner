@@ -51,8 +51,19 @@ Future<AddItemResult> addShoppingItemByName(
   // Match against the ingredient index so the item lands in the right category
   // with the right icon. An unmatched name is stored as pending and resolved
   // after the write, exactly as a typed one would be.
-  final matches = await IngredientIndex.instance.match(name, lang);
-  final matched = matches.isEmpty ? null : matches.first;
+  // The whole phrase was spoken/shared deliberately, so this identifies rather
+  // than suggests: `suggest: false` ingredients stay eligible, they just rank
+  // behind anything shoppable or named outright (same rule as resolveByName).
+  final matches =
+      await IngredientIndex.instance.match(name, lang, includeUnsuggested: true);
+  MatchedIngredient? matched;
+  for (final m in matches) {
+    if (m.suggest || m.matchesExactly(name)) {
+      matched = m;
+      break;
+    }
+  }
+  matched ??= matches.isEmpty ? null : matches.first;
   final matchedName = matched?.displayName(lang).trim() ?? '';
 
   final suggestion = Suggestion(

@@ -35,7 +35,9 @@ import 'package:couple_planner/features/settings/pages/profile_page.dart';
 import 'package:couple_planner/features/settings/pages/notification_info_page.dart';
 import 'package:couple_planner/features/settings/notification_feature_settings.dart';
 import 'package:couple_planner/core/language.dart';
+import 'package:couple_planner/core/push_token_service.dart';
 import 'package:couple_planner/core/restart_widget.dart';
+import 'package:couple_planner/core/version_gate.dart';
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/settings/recipe_feature_settings.dart';
 import 'package:couple_planner/core/animated_background.dart';
@@ -104,7 +106,9 @@ class _MyAppState extends State<MyApp> {
       debugShowCheckedModeBanner: false,
       theme: _buildTheme(SystemTheme.accentColor.accent, Brightness.light),
       darkTheme: _buildTheme(SystemTheme.accentColor.dark, Brightness.dark),
-      home: const HomePage(),
+      // Wraps the whole app: an installed version below
+      // `config/app.minRequiredVersion` never reaches HomePage.
+      home: const VersionGate(child: HomePage()),
     );
   }
 }
@@ -326,52 +330,19 @@ class _HomePageState extends State<HomePage> {
   void _persistLanguage() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    db.collection('users').doc(uid).update({'language': LanguageService.instance.code.value}).catchError((_) {});
+    db.collection('users').doc(uid).update({'language': LanguageService.instance.code.value}).catchError((error) {
+      if (kDebugMode) print('Failed to persist language: $error');
+    });
   }
 
   /// Returns the device's FCM token **only if** notification permission has
   /// already been granted, without ever prompting the user. The permission
-  /// request itself now lives behind the priming screen
-  /// ([NotificationInfoPage], shown from [_maybeShowNotificationPriming]) so it
+  /// request itself lives behind the priming screen ([NotificationInfoPage],
+  /// shown from [_maybeShowNotificationPriming] or from App Settings) so it
   /// no longer fires on every cold start.
   Future<String?> _fetchFcmToken() async {
-    try {
-      final settings = await FirebaseMessaging.instance.getNotificationSettings();
-      final authed = settings.authorizationStatus == AuthorizationStatus.authorized ||
-          settings.authorizationStatus == AuthorizationStatus.provisional;
-      if (!authed) return null;
-      return await FirebaseMessaging.instance.getToken();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Fetches the FCM token (permission assumed granted) and mirrors it onto the
-  /// user document. Called after the user grants permission from the priming
-  /// screen. No-op while signed out.
-  Future<void> _storeFcmToken() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    try {
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token == null) return;
-      await _registerFcmToken(uid, token);
-    } catch (_) {}
-  }
-
-  /// Adds [token] to `users/{uid}.fcmTokens`.
-  ///
-  /// An array rather than the single `fcmToken` field this used to write: that
-  /// field silently dropped notifications for every device except the most
-  /// recently registered one, so a user with a phone and a tablet only ever
-  /// heard from the one they'd opened last.
-  ///
-  /// Dead tokens are pruned server-side on send (see functions/src/lib/push.ts),
-  /// so nothing needs to expire them here.
-  Future<void> _registerFcmToken(String uid, String token) async {
-    await db.collection('users').doc(uid).update({
-      'fcmTokens': FieldValue.arrayUnion([token]),
-    }).catchError((_) {});
+    if (!await PushTokenService.isAuthorized()) return null;
+    return PushTokenService.fetchToken();
   }
 
   /// Decides whether to show the notification priming/info screen on this
@@ -406,7 +377,7 @@ class _HomePageState extends State<HomePage> {
       MaterialPageRoute(builder: (_) => const NotificationInfoPage()),
     );
     if (granted == true) {
-      await _storeFcmToken();
+      await PushTokenService.storeForCurrentUser();
     } else {
       await prefs.setBool('notif_priming_dismissed', true);
     }
@@ -433,7 +404,7 @@ class _HomePageState extends State<HomePage> {
     _fcmTokenSub = FirebaseMessaging.instance.onTokenRefresh.listen((token) {
       final uid = FirebaseAuth.instance.currentUser?.uid;
       if (uid == null) return;
-      _registerFcmToken(uid, token);
+      PushTokenService.register(uid, token);
     });
   }
 
@@ -651,7 +622,8 @@ class _HomePageState extends State<HomePage> {
       ),
     ));
     FirebaseFunctions.instanceFor(region: 'europe-west1')
-        .httpsCallable('recipes-generateRecipeStaged')
+        .httpsCallable('recipes-generateRecipeStaged',
+            options: HttpsCallableOptions(timeout: kRecipeGenerationTimeout))
         .call(<String, dynamic>{
       'groupId': _selectedGroup,
       'recipeId': ref.id,
@@ -737,7 +709,8 @@ class _HomePageState extends State<HomePage> {
       ),
     ));
     FirebaseFunctions.instanceFor(region: 'europe-west1')
-        .httpsCallable('recipes-generateRecipeStaged')
+        .httpsCallable('recipes-generateRecipeStaged',
+            options: HttpsCallableOptions(timeout: kRecipeGenerationTimeout))
         .call(<String, dynamic>{
       'groupId': _selectedGroup,
       'recipeId': ref.id,
@@ -1605,7 +1578,7 @@ class _HomePageState extends State<HomePage> {
                     const Icon(Icons.group_off, size: 32),
                     const SizedBox(height: 16),
                     const Text(
-                      'You are not a member of any group yet. Ask someone to send you an invite link to their group — or create your own below.',
+                      'You are not a member of any group yet. Ask someone to send you an invite link to their group or create your own below.',
                       style: TextStyle(fontSize: 18),
                       textAlign: TextAlign.center,
                     ),

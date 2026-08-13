@@ -630,6 +630,12 @@ class _SwipeResultsViewState extends State<SwipeResultsView> {
   /// Everything the group liked that isn't on a day, best first.
   List<String> _pool = [];
 
+  /// True once the first snapshot has laid the plan out, so later snapshots
+  /// update the ranking without resetting what the user has arranged.
+  bool _arranged = false;
+
+  StreamSubscription<List<SwipeVote>>? _votesSub;
+
   String get _uid => FirebaseAuth.instance.currentUser?.uid ?? '';
   String get _lang => LanguageService.instance.code.value;
 
@@ -690,6 +696,7 @@ class _SwipeResultsViewState extends State<SwipeResultsView> {
   @override
   void dispose() {
     _stopAutoScroll();
+    _votesSub?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -700,26 +707,55 @@ class _SwipeResultsViewState extends State<SwipeResultsView> {
     _load();
   }
 
-  Future<void> _load() async {
-    try {
-      final votes = await watchSwipeVotes(widget.session).first;
-      if (!mounted) return;
-      final ranked = rankSwipeSession(widget.session, votes);
-      // Only recipes somebody actually swiped right on are candidates at all.
-      // The rest of the deck is noise here: nobody wants to scroll past twenty
-      // rejected cards to find one they'd like to swap in.
-      final liked = [
-        for (final r in ranked)
-          if (r.hasAnyLike) r.card.cardId,
-      ];
-      final dayCount = widget.session.dates.length;
+  /// Subscribes to the votes rather than reading them once.
+  ///
+  /// This used to `await watchSwipeVotes(...).first`, which was wrong in a way
+  /// that looked like it worked: Firestore emits the **cached** snapshot first
+  /// and the server's a moment later, and a device's cache only holds the vote
+  /// it wrote itself. So every member saw a tally built from their own vote
+  /// alone and never anyone else's. Staying subscribed also means a vote that
+  /// arrives while the screen is open is picked up instead of ignored.
+  void _load() {
+    _votesSub?.cancel();
+    _votesSub = watchSwipeVotes(widget.session).listen(
+      _applyVotes,
+      onError: (Object _) {
+        if (mounted) setState(() => _error = 'Could not load the results.');
+      },
+    );
+  }
 
-      setState(() {
-        _ranked = ranked;
+  void _applyVotes(List<SwipeVote> votes) {
+    if (!mounted) return;
+    final ranked = rankSwipeSession(widget.session, votes);
+    // Only recipes somebody actually swiped right on are candidates at all.
+    // The rest of the deck is noise here: nobody wants to scroll past twenty
+    // rejected cards to find one they'd like to swap in.
+    final liked = [
+      for (final r in ranked)
+        if (r.hasAnyLike) r.card.cardId,
+    ];
+    final dayCount = widget.session.dates.length;
+
+    setState(() {
+      _ranked = ranked;
+      _error = null;
+
+      if (!_arranged) {
+        _arranged = true;
         final approved = widget.session.assignment;
         if (approved == null) {
+          // Not simply the top N by score: within each block of equally-scored
+          // recipes, [selectFairPlan] takes the one that best evens out who has
+          // had something they loved. See its doc comment.
+          final plan = selectFairPlan(
+            ranked: ranked,
+            participants: widget.session.participants,
+            slots: dayCount,
+          );
           _slots = [
-            for (var i = 0; i < dayCount; i++) i < liked.length ? liked[i] : null,
+            for (var i = 0; i < dayCount; i++)
+              i < plan.length ? plan[i].card.cardId : null,
           ];
         } else {
           // A committed session replays exactly what was approved. Empty days
@@ -733,10 +769,21 @@ class _SwipeResultsViewState extends State<SwipeResultsView> {
           for (final id in liked)
             if (!_slots.contains(id)) id,
         ];
-      });
-    } catch (_) {
-      if (mounted) setState(() => _error = 'Could not load the results.');
-    }
+        return;
+      }
+
+      // A later snapshot must not throw away an arrangement the user is in the
+      // middle of. Newly-liked recipes join the pool; ones that are no longer
+      // liked by anyone drop out of it.
+      _pool = [
+        for (final id in liked)
+          if (!_slots.contains(id)) id,
+      ];
+      for (var i = 0; i < _slots.length; i++) {
+        final id = _slots[i];
+        if (id != null && !liked.contains(id)) _slots[i] = null;
+      }
+    });
   }
 
   @override
@@ -878,7 +925,10 @@ class _SwipeResultsViewState extends State<SwipeResultsView> {
       );
       if (!mounted) return;
       Navigator.of(context, rootNavigator: true).pop(); // blocking dialog
-      Navigator.of(context).pushReplacement(
+      // Pushed, not replaced: backing out of the shopping list should land on
+      // the plan that was just approved (the flow re-renders it read-only now
+      // the session is committed), not drop the user out of the flow entirely.
+      Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => MealPlanShoppingListPage(
             groupDoc: widget.groupDoc,

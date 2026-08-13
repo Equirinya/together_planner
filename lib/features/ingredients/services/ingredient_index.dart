@@ -48,7 +48,22 @@ class IngredientIndex extends ChangeNotifier {
   /// Searches ingredients whose name starts with [name] (prefix) or whose
   /// synonyms contain [name] exactly. Names are stored capitalized, synonyms
   /// lowercase — mirrored here. Falls back to English when [lang] isn't English.
-  Future<List<MatchedIngredient>> match(String name, String lang) async {
+  ///
+  /// Results are filtered to what is worth offering unprompted: ingredients
+  /// flagged `suggest: false` (a fridge, a mixing bowl, dessous — buyable, but
+  /// never part of a grocery run) are dropped, *unless* [name] is an exact,
+  /// case-insensitive hit on one of their names or synonyms, in which case the
+  /// user clearly meant that specific thing. Pass [includeUnsuggested] to get
+  /// the unfiltered set.
+  ///
+  /// The cache always holds the unfiltered results, so the same query can serve
+  /// both a prefix search (filtered) and a later exact lookup (not filtered)
+  /// without a second round-trip.
+  Future<List<MatchedIngredient>> match(
+    String name,
+    String lang, {
+    bool includeUnsuggested = false,
+  }) async {
     final trimmed = name.trim();
     if (trimmed.isEmpty) return const [];
     final key = '$lang|${trimmed.toLowerCase()}';
@@ -56,7 +71,7 @@ class IngredientIndex extends ChangeNotifier {
     final hit = _results[key];
     if (hit != null) {
       _scheduleServerRefresh(key, trimmed, lang);
-      return hit;
+      return _suggestable(hit, trimmed, includeUnsuggested);
     }
 
     // Offline cache: instant, no network, empty result if never synced —
@@ -64,7 +79,15 @@ class IngredientIndex extends ChangeNotifier {
     final local = await _query(trimmed, lang, Source.cache);
     _results[key] = local;
     _scheduleServerRefresh(key, trimmed, lang);
-    return local;
+    return _suggestable(local, trimmed, includeUnsuggested);
+  }
+
+  /// Drops `suggest: false` ingredients that [term] didn't name outright.
+  List<MatchedIngredient> _suggestable(
+      List<MatchedIngredient> all, String term, bool includeUnsuggested) {
+    if (includeUnsuggested) return all;
+    if (all.every((m) => m.suggest)) return all; // common case, no copy
+    return all.where((m) => m.suggest || m.matchesExactly(term)).toList();
   }
 
   /// Call after an ingredient was added to a list. Returns the id the item
@@ -84,11 +107,25 @@ class IngredientIndex extends ChangeNotifier {
   }
 
   /// Local match (progressively shorter substrings) → cloud function → unknown.
+  ///
+  /// Unlike [match] this ranks rather than filters: the item is already on the
+  /// list, so linking it to a `suggest: false` ingredient still beats leaving
+  /// it unknown (it's what gives the row its icon and category). A suggestible
+  /// or exactly-named ingredient always wins though, and a merely-prefixed
+  /// `suggest: false` one is only accepted once every shorter candidate has
+  /// been tried — so "Kühlschrank" resolves to the fridge, while "Kühl" prefers
+  /// anything shoppable it can find first.
   Future<String> resolveByName(String displayName, String lang) async {
+    String? weakFallback;
     for (final cand in subsetCandidates(displayName)) {
-      final matches = await match(cand, lang);
-      if (matches.isNotEmpty) return matches.first.id;
+      final matches = await match(cand, lang, includeUnsuggested: true);
+      if (matches.isEmpty) continue;
+      for (final m in matches) {
+        if (m.suggest || m.matchesExactly(cand)) return m.id;
+      }
+      weakFallback ??= matches.first.id;
     }
+    if (weakFallback != null) return weakFallback;
     try {
       final fromFn = await resolveViaFunction(displayName, lang);
       final id = fromFn.isEmpty ? '' : fromFn.first.ingredientId;

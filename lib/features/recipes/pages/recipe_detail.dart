@@ -20,7 +20,7 @@ import 'package:couple_planner/features/recipes/services/recipe_localization.dar
 import 'package:couple_planner/features/recipes/services/recipe_share_education.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/groups/pages/group_settings_page.dart' show shareRecipeViewerInvite;
-import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon;
+import 'package:couple_planner/features/settings/dietary_preferences.dart' show dietaryTagIcon, kPrimaryDietOrder;
 import 'package:couple_planner/features/settings/ai_feature_settings.dart';
 import 'package:couple_planner/features/ai/ai_access.dart';
 import 'package:couple_planner/features/ai/ai_errors.dart';
@@ -134,7 +134,14 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   List<TextEditingController>? stepsControllers;
   TextEditingController? tagsController;
 
+  // For each step field, which entry of the *stored* steps array it came from,
+  // or null for a step the user just added. Reordering moves these along with
+  // the controllers, which is what lets a save carry the new order over to the
+  // English base of a translated recipe (whose fields the editor never shows).
+  List<int?> _stepOrigins = const [];
+
   Map<String, dynamic>? recipeData;
+  Map<String, dynamic>? _rawRecipeData;
   late DocumentReference<Map<String, dynamic>> docRef;
   late CollectionReference<Map<String, dynamic>> ingredientsRef;
 
@@ -338,6 +345,10 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   void _applyData(Map<String, dynamic> rawData) {
     final data = localizeRecipeData(rawData, lang);
     recipeData = data;
+    // Kept unlocalized as well: saving needs to know whether what the editor
+    // showed was the base or a translation, and needs the base `steps` to
+    // reorder them alongside the translated ones.
+    _rawRecipeData = rawData;
 
     images = List<String>.from(data['images'] ?? []);
     steps = List<String>.from(data['steps'] ?? []);
@@ -380,10 +391,21 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     nameController ??= TextEditingController(text: data['name']);
     descriptionController ??=
         TextEditingController(text: data['description']);
-    stepsControllers ??=
-        steps.map((s) => TextEditingController(text: s)).toList();
+    if (stepsControllers == null) _setStepControllers(steps);
     tagsController ??=
         TextEditingController(text: tags.map((e) => '#$e ').join(''));
+  }
+
+  /// Rebuilds the step fields from [values] (in display language) and resets
+  /// each field's origin to its position in the stored array — the two are
+  /// parallel whenever steps come straight out of the document.
+  void _setStepControllers(List<String> values) {
+    for (final c in stepsControllers ?? const <TextEditingController>[]) {
+      c.dispose();
+    }
+    stepsControllers =
+        values.map((s) => TextEditingController(text: s)).toList();
+    _stepOrigins = List<int?>.generate(values.length, (i) => i);
   }
 
   Future<void> _loadRecipe() async {
@@ -616,13 +638,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final newTags = List<String>.from(recipeData?['tags'] ?? []);
     tagsController?.text = newTags.map((e) => '#$e ').join('');
     final newSteps = List<String>.from(recipeData?['steps'] ?? []);
-    if (newSteps.isNotEmpty) {
-      for (final c in stepsControllers ?? const <TextEditingController>[]) {
-        c.dispose();
-      }
-      stepsControllers =
-          newSteps.map((s) => TextEditingController(text: s)).toList();
-    }
+    if (newSteps.isNotEmpty) _setStepControllers(newSteps);
   }
 
   void _startIngredientsSubscription() {
@@ -681,11 +697,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     if (!mounted) return;
     steps = List<String>.from(doc.data()?['steps'] ?? []);
     if (steps.isEmpty) steps = [''];
-    for (final c in stepsControllers ?? const <TextEditingController>[]) {
-      c.dispose();
-    }
-    stepsControllers =
-        steps.map((s) => TextEditingController(text: s)).toList();
+    _setStepControllers(steps);
     setState(() {});
   }
 
@@ -806,12 +818,11 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
   }
 
   void _clearSteps() {
-    for (final c in stepsControllers ?? const <TextEditingController>[]) {
-      c.dispose();
-    }
     setState(() {
       steps = [''];
-      stepsControllers = [TextEditingController()];
+      _setStepControllers(const ['']);
+      // Nothing here came from the stored array any more.
+      _stepOrigins = <int?>[null];
     });
   }
 
@@ -1060,21 +1071,82 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     return name.isEmpty && desc.isEmpty && !hasSteps && !hasTags && ingredients.isEmpty && images.isEmpty;
   }
 
+  /// Builds the text half of a save, aimed at whichever language copy the
+  /// editor was actually showing.
+  ///
+  /// A generated recipe stores an English base plus `translations[lang]`, and
+  /// the page displays the translation (see [localizeRecipeData]). Writing the
+  /// edits to the base alone therefore looked like they were dropped — the
+  /// base changed, but the translation that gets read back did not. Reordering
+  /// made that obvious, since untranslated recipes saved fine and translated
+  /// ones snapped back.
+  ///
+  /// So: edits go to the translation when there is one, and the base `steps`
+  /// are permuted with the same move (via [origins]) so both languages keep
+  /// the same order. Base *text* stays as-is — it is English, and there is
+  /// nothing here to translate it with.
+  Map<String, Object?> _editedTextUpdate({
+    required String name,
+    required String description,
+    required List<String> tags,
+    required List<String> steps,
+    required List<int?> origins,
+  }) {
+    final translations = _rawRecipeData?['translations'] as Map?;
+    final editingTranslation = lang != 'en' && translations?[lang] != null;
+    if (!editingTranslation) {
+      return {
+        'name': name,
+        'description': description,
+        'tags': tags,
+        'steps': steps,
+      };
+    }
+    final baseSteps = List<String>.from(_rawRecipeData?['steps'] ?? const []);
+    final reorderedBase = <String>[];
+    for (var i = 0; i < steps.length; i++) {
+      final origin = origins[i];
+      // A step the user added has no English counterpart, so the base gets the
+      // text as typed.
+      reorderedBase.add(origin != null && origin < baseSteps.length
+          ? baseSteps[origin]
+          : steps[i]);
+    }
+    return {
+      'translations.$lang.name': name,
+      'translations.$lang.description': description,
+      'translations.$lang.tags': tags,
+      'translations.$lang.steps': steps,
+      'steps': reorderedBase,
+    };
+  }
+
   Future<void> _saveAndExit() async {
     var name = nameController!.text.trim();
     if (name.isEmpty) name = 'New Recipe';
+
+    // Drop blank rows, keeping each surviving step's origin next to it.
+    final editedSteps = <String>[];
+    final editedOrigins = <int?>[];
+    for (var i = 0; i < stepsControllers!.length; i++) {
+      final text = stepsControllers![i].text.trim();
+      if (text.isEmpty) continue;
+      editedSteps.add(text);
+      editedOrigins.add(i < _stepOrigins.length ? _stepOrigins[i] : null);
+    }
+
     final update = docRef.update({
-      'name': name,
-      'description': descriptionController!.text,
-      'steps': stepsControllers!
-          .map((c) => c.text.trim())
-          .where((s) => s.isNotEmpty)
-          .toList(),
-      'tags': tagsController!.text
-          .split('#')
-          .map((t) => t.trim())
-          .where((t) => t.isNotEmpty)
-          .toList(),
+      ..._editedTextUpdate(
+        name: name,
+        description: descriptionController!.text,
+        tags: tagsController!.text
+            .split('#')
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList(),
+        steps: editedSteps,
+        origins: editedOrigins,
+      ),
       'servings': _hasServings ? _servingsForStore(servings) : null,
     });
     if (_isRecipeEmpty()) {
@@ -1344,12 +1416,16 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── Images ──────────────────────────────────────────────────
-            if (edit || images.isNotEmpty || _pending.contains('image'))
+            if (edit ||
+                images.isNotEmpty ||
+                _pending.contains('image') ||
+                _generatingImage)
               SizedBox(
                 height: MediaQuery.of(context).size.height * 0.3,
                 child: edit
                     ? _editImageCarousel()
-                    : (images.isEmpty && _pending.contains('image'))
+                    : (images.isEmpty &&
+                            (_pending.contains('image') || _generatingImage))
                         ? _generatingImagePlaceholder()
                         : _viewImageCarousel(),
               ),
@@ -1470,10 +1546,26 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     final cacheWidth =
         (MediaQuery.of(context).size.width * MediaQuery.of(context).devicePixelRatio)
             .round();
+    // An AI generation started in edit mode keeps running after the user
+    // leaves edit mode, so the view carousel carries the same shimmer as a
+    // trailing page until the new image lands.
     return PageView.builder(
       controller: _imageController,
-      itemCount: images.length,
-      itemBuilder: (context, index) => GestureDetector(
+      itemCount: images.length + (_generatingImage ? 1 : 0),
+      itemBuilder: (context, index) => index >= images.length
+          ? Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(28),
+                child: _Shimmer(
+                  child: Container(
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                  ),
+                ),
+              ),
+            )
+          : GestureDetector(
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) =>
@@ -1806,17 +1898,17 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
         if (_loadingSteps || _pending.contains('steps'))
           _skeleton(3)
         else ...[
-          for (var (index, step) in steps.indexed)
-            if (edit)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 4),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: CircleAvatar(
+          if (edit) _reorderableStepFields(),
+          if (!edit)
+            for (var (index, step) in steps.indexed)
+              if (step.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 7),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      CircleAvatar(
                         radius: 12,
                         backgroundColor:
                             Theme.of(context).colorScheme.primaryContainer,
@@ -1829,46 +1921,13 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                                   .onPrimaryContainer),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextField(
-                        controller: stepsControllers![index],
-                        maxLines: null,
-                        style:
-                        Theme.of(context).textTheme.bodyMedium,
-                      ),
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Text(step,
+                              style: Theme.of(context).textTheme.bodyMedium)),
+                    ],
+                  ),
                 ),
-              )
-            else if (step.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 7),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    CircleAvatar(
-                      radius: 12,
-                      backgroundColor:
-                          Theme.of(context).colorScheme.primaryContainer,
-                      child: Text(
-                        '${index + 1}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onPrimaryContainer),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                        child: Text(step,
-                            style: Theme.of(context).textTheme.bodyMedium)),
-                  ],
-                ),
-              ),
           if (edit)
             Padding(
               padding: const EdgeInsets.symmetric(
@@ -1879,6 +1938,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
                   onPressed: () => setState(() {
                     steps.add('');
                     stepsControllers!.add(TextEditingController());
+                    _stepOrigins = [..._stepOrigins, null];
                   }),
                   child: const Text("Add Step"),
                 ),
@@ -1889,11 +1949,76 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     );
   }
 
-  // ── component helpers ─────────────────────────────────────────────────────
+  /// The editable step fields, reorderable by holding the number avatar.
+  ///
+  /// Deliberately understated: there is no drag handle column, since a step's
+  /// number already reads as "this one is third". Only that avatar starts a
+  /// drag (after a long-press), so dragging never fights the text fields, and
+  /// the list looks exactly like the plain one it replaced.
+  Widget _reorderableStepFields() {
+    final controllers = stepsControllers!;
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      buildDefaultDragHandles: false,
+      itemCount: controllers.length,
+      onReorder: (oldIdx, newIdx) {
+        setState(() {
+          if (newIdx > oldIdx) newIdx -= 1;
+          controllers.insert(newIdx, controllers.removeAt(oldIdx));
+          // [steps] mirrors the controllers (it drives the view-mode list and
+          // the "clear all" button), so it has to move in lockstep.
+          if (steps.length == controllers.length) {
+            steps.insert(newIdx, steps.removeAt(oldIdx));
+          }
+          if (_stepOrigins.length == controllers.length) {
+            final origins = [..._stepOrigins];
+            origins.insert(newIdx, origins.removeAt(oldIdx));
+            _stepOrigins = origins;
+          }
+        });
+      },
+      itemBuilder: (context, index) => Padding(
+        // ObjectKey over the controller: index keys would swap the text back
+        // as soon as the list reorders.
+        key: ObjectKey(controllers[index]),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: ReorderableDelayedDragStartListener(
+                index: index,
+                child: CircleAvatar(
+                  radius: 12,
+                  backgroundColor:
+                      Theme.of(context).colorScheme.primaryContainer,
+                  child: Text(
+                    '${index + 1}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color:
+                            Theme.of(context).colorScheme.onPrimaryContainer),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: TextField(
+                controller: controllers[index],
+                maxLines: null,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
-  // Vegan implies vegetarian implies pescatarian, so only the tightest one
-  // that applies is worth showing.
-  static const _kPrimaryDietOrder = ['Vegan', 'Vegetarian', 'Pescatarian'];
+  // ── component helpers ─────────────────────────────────────────────────────
 
   /// Picks which of [dietary]'s standard diet labels to show as chips: the
   /// ones the signed-in user has selected for themselves, plus the strongest
@@ -1919,7 +2044,7 @@ class _RecipeDetailPageState extends State<RecipeDetailPage> {
     for (final pref in _userDietaryPrefs) {
       addIfPresent(pref);
     }
-    for (final primary in _kPrimaryDietOrder) {
+    for (final primary in kPrimaryDietOrder) {
       if (dietary.any((d) => d.toLowerCase() == primary.toLowerCase())) {
         addIfPresent(primary);
         break;

@@ -59,6 +59,9 @@ Future<String> copyGroupRecipe({
     'servings': s['servings'],
     'tags': List<dynamic>.from(s['tags'] ?? const []),
     'dietary': List<dynamic>.from(s['dietary'] ?? const []),
+    // Hidden classification flag; carried over unchanged with the rest of the
+    // recipe. Null when the source predates the field.
+    'category': s['category'],
     if (s['languages'] != null) 'languages': List<dynamic>.from(s['languages']),
     if (s['translations'] != null) 'translations': s['translations'],
     'steps': List<dynamic>.from(s['steps'] ?? const []),

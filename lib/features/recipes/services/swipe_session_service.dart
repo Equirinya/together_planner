@@ -16,6 +16,20 @@ import 'package:couple_planner/features/recipes/services/meal_plan_service.dart'
 
 final _functions = FirebaseFunctions.instanceFor(region: 'europe-west1');
 
+// Deck sizing, mirrored from `swipeSession.ts` (DECK_BASE, CARDS_PER_DAY,
+// MIN_DECK, MAX_DECK). Duplicated rather than fetched because the setup page
+// has to tell the user how big a deck they're about to get *before* asking the
+// server to build one — see the thin-collection warning on MealPlanSettingsPage.
+// Keep the two in step; the server remains the authority on the actual deck.
+const int kSwipeDeckBase = 8;
+const int kSwipeCardsPerDay = 4;
+const int kSwipeMinDeck = 12;
+const int kSwipeMaxDeck = 40;
+
+/// How many cards a session over [days] days aims for.
+int swipeDeckSize(int days) =>
+    (kSwipeDeckBase + days * kSwipeCardsPerDay).clamp(kSwipeMinDeck, kSwipeMaxDeck);
+
 String swipeDateKey(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -297,6 +311,115 @@ List<SwipeRanked> rankSwipeSession(SwipeSession session, List<SwipeVote> votes) 
     return (deckOrder[a.card.cardId] ?? 0).compareTo(deckOrder[b.card.cardId] ?? 0);
   });
   return ranked;
+}
+
+/// Chooses which recipes fill the plan, best score first, breaking ties so the
+/// loves — and then the yeses — land as evenly across the group as possible.
+///
+/// Score alone leaves a lot undecided: several recipes routinely tie, and
+/// taking whichever happened to sort first can hand every day to the same two
+/// people while somebody else gets nothing they loved. So within each block of
+/// equally-scored candidates this picks the one that most improves the person
+/// currently doing worst.
+///
+/// "Doing worst" is decided by **leximin**: for each candidate, imagine picking
+/// it, list how many loves each participant would then have, sort that list
+/// ascending, and prefer the candidate whose list is lexicographically
+/// greatest. Comparing sorted-ascending distributions is exactly "raise the
+/// worst-off first, then the next worst-off" — the whole fairness rule in one
+/// comparison, with no weights to tune. Yeses settle any remaining tie the
+/// same way.
+///
+/// Worked example, 4 days: the first three go to recipes scoring 5, and after
+/// them one participant still has no loved recipe. Among the recipes scoring 4,
+/// the ones that person loves give a loves distribution of [1,1,1,1] where the
+/// others give [0,1,1,2] — and [1,…] beats [0,…] on the first element, so the
+/// fourth day goes to them.
+///
+/// Deterministic: [ranked] and [participants] are both in a fixed order and
+/// only a strictly better candidate displaces the incumbent, so every client
+/// computes the same plan from the same votes.
+List<SwipeRanked> selectFairPlan({
+  required List<SwipeRanked> ranked,
+  required List<String> participants,
+  required int slots,
+}) {
+  final pool = [
+    for (final r in ranked)
+      if (r.hasAnyLike) r,
+  ];
+  final loves = {for (final p in participants) p: 0};
+  final likes = {for (final p in participants) p: 0};
+  final chosen = <SwipeRanked>[];
+
+  while (chosen.length < slots && pool.isNotEmpty) {
+    // `pool` stays in score order, so the head is always the best remaining.
+    final topScore = pool.first.score;
+    final tied = [
+      for (final r in pool)
+        if ((r.score - topScore).abs() < 1e-9) r,
+    ];
+
+    var best = tied.first;
+    for (final candidate in tied.skip(1)) {
+      if (_compareFairness(candidate, best, loves, likes, participants) > 0) {
+        best = candidate;
+      }
+    }
+
+    for (final uid in best.lovedBy) {
+      if (loves.containsKey(uid)) loves[uid] = loves[uid]! + 1;
+    }
+    for (final uid in best.likedBy) {
+      if (likes.containsKey(uid)) likes[uid] = likes[uid]! + 1;
+    }
+    chosen.add(best);
+    pool.remove(best);
+  }
+  return chosen;
+}
+
+/// Positive when [a] leaves the group better off than [b] would.
+int _compareFairness(
+  SwipeRanked a,
+  SwipeRanked b,
+  Map<String, int> loves,
+  Map<String, int> likes,
+  List<String> participants,
+) {
+  final byLoves = _compareLeximin(
+    _distributionWith(loves, a.lovedBy, participants),
+    _distributionWith(loves, b.lovedBy, participants),
+  );
+  if (byLoves != 0) return byLoves;
+  // A love is also a yes, so `likedBy` already contains everyone who loved it;
+  // this second pass only separates candidates the loves couldn't.
+  return _compareLeximin(
+    _distributionWith(likes, a.likedBy, participants),
+    _distributionWith(likes, b.likedBy, participants),
+  );
+}
+
+/// Per-participant counts as they would be after taking a candidate, sorted
+/// ascending so the worst-off comes first.
+List<int> _distributionWith(
+  Map<String, int> counts,
+  List<String> beneficiaries,
+  List<String> participants,
+) {
+  final result = [
+    for (final p in participants) (counts[p] ?? 0) + (beneficiaries.contains(p) ? 1 : 0),
+  ];
+  result.sort();
+  return result;
+}
+
+int _compareLeximin(List<int> a, List<int> b) {
+  for (var i = 0; i < a.length && i < b.length; i++) {
+    final c = a[i].compareTo(b[i]);
+    if (c != 0) return c;
+  }
+  return 0;
 }
 
 // ─── Reads ──────────────────────────────────────────────────────────────────

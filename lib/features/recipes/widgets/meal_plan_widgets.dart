@@ -27,6 +27,7 @@ class StepperRow extends StatelessWidget {
     required this.min,
     required this.max,
     required this.onChanged,
+    this.footer,
   });
 
   final IconData icon;
@@ -35,31 +36,154 @@ class StepperRow extends StatelessWidget {
   final int max;
   final ValueChanged<int> onChanged;
 
+  /// Optional content rendered inside the same rounded card, below the stepper
+  /// and a hairline divider. For settings that belong to the count above rather
+  /// than deserving a section of their own — see the side-recipe switch on
+  /// [MealPlanSettingsPage].
+  final Widget? footer;
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final stepper = Row(
+      children: [
+        Icon(icon, color: colorScheme.onSurfaceVariant),
+        const SizedBox(width: 12),
+        Expanded(child: Text('$value', style: Theme.of(context).textTheme.titleLarge)),
+        IconButton.filledTonal(
+          onPressed: value > min ? () => onChanged(value - 1) : null,
+          icon: const Icon(Icons.remove),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filled(
+          onPressed: value < max ? () => onChanged(value + 1) : null,
+          icon: const Icon(Icons.add),
+        ),
+      ],
+    );
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Row(
-        children: [
-          Icon(icon, color: colorScheme.onSurfaceVariant),
-          const SizedBox(width: 12),
-          Expanded(child: Text('$value', style: Theme.of(context).textTheme.titleLarge)),
-          IconButton.filledTonal(
-            onPressed: value > min ? () => onChanged(value - 1) : null,
-            icon: const Icon(Icons.remove),
-          ),
-          const SizedBox(width: 8),
-          IconButton.filled(
-            onPressed: value < max ? () => onChanged(value + 1) : null,
-            icon: const Icon(Icons.add),
-          ),
-        ],
+      child: footer == null
+          ? stepper
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                stepper,
+                Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                ),
+                footer!,
+              ],
+            ),
+    );
+  }
+}
+
+/// A standalone switch in the same rounded card as [StepperRow], for a setting
+/// that belongs to no count above it and so can't ride along as a `footer`.
+///
+/// When [notice] is set the card turns error-coloured and shows the message
+/// *above* the switch. Above rather than below because the message is about a
+/// consequence of the current setting, and anything below the last control on a
+/// scrolling settings page can sit off-screen at the moment it matters most.
+class SettingSwitchCard extends StatelessWidget {
+  const SettingSwitchCard({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    required this.title,
+    required this.subtitle,
+    this.icon,
+    this.notice,
+  });
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  final String title;
+  final String subtitle;
+  final IconData? icon;
+
+  /// Optional warning about the setting's current state. Its presence is what
+  /// puts the whole card into the error colours — a red card with no
+  /// explanation would be worse than none.
+  final String? notice;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final alert = notice != null;
+
+    // Material 3 has no "muted error" role — `errorContainer` is the only error
+    // surface, and at full strength it reads as a failure rather than a heads-up
+    // about a setting the user chose on purpose. So the card keeps its normal
+    // surface and takes a wash of `error` over it: the same family as every
+    // other card on the page, tinted. Blending rather than using a translucent
+    // colour keeps it opaque, so it looks the same whatever sits behind it, and
+    // deriving it from the scheme means it darkens by itself in dark mode.
+    final background = alert
+        ? Color.alphaBlend(colorScheme.error.withValues(alpha: 0.12),
+            colorScheme.surfaceContainerHighest)
+        : colorScheme.surfaceContainerHighest;
+
+    // Only the notice line is error-coloured; the switch keeps normal text
+    // colours so the warning reads as one clear point rather than the whole
+    // control shouting. `error` works as the accent in both brightnesses — dark
+    // red on the light tint, light red on the dark one.
+    final tile = SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      value: value,
+      onChanged: onChanged,
+      secondary: icon == null ? null : Icon(icon, color: colorScheme.onSurfaceVariant),
+      title: Text(title),
+      subtitle: Text(subtitle),
+    );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(20),
+        border: alert
+            ? Border.all(color: colorScheme.error.withValues(alpha: 0.35))
+            : null,
       ),
+      child: !alert
+          ? tile
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 12, 0, 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.warning_amber_rounded, size: 20, color: colorScheme.error),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          notice!,
+                          style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.error),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: colorScheme.error.withValues(alpha: 0.25),
+                ),
+                tile,
+              ],
+            ),
     );
   }
 }

@@ -1,9 +1,9 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'package:couple_planner/core/animated_background.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show onboardingTheme, FeatureBubbleField, kOnboardingFeatures;
+import 'package:couple_planner/features/groups/invite_links.dart' show createGroup;
 
 /// Onboarding-styled screen for creating an additional group: the animated
 /// background and the floating feature bubbles, reused from onboarding. Pops
@@ -19,6 +19,10 @@ class _CreateGroupPageState extends State<CreateGroupPage> {
   final TextEditingController _nameCtrl = TextEditingController();
   final Set<String> _selected = {};
 
+  /// Guards against a double tap firing two createGroup calls, which would
+  /// leave the user with two identical groups.
+  bool _busy = false;
+
   @override
   void initState() {
     super.initState();
@@ -33,26 +37,35 @@ class _CreateGroupPageState extends State<CreateGroupPage> {
     super.dispose();
   }
 
-  bool get _valid => _nameCtrl.text.trim().isNotEmpty && _selected.isNotEmpty;
+  bool get _valid => _nameCtrl.text.trim().isNotEmpty && _selected.isNotEmpty && !_busy;
 
-  void _create() {
+  /// Creating the group is a round trip to the createGroup Cloud Function
+  /// rather than two direct Firestore writes: the group doc and the creator's
+  /// admin member doc have to land together, and the rules no longer let a
+  /// client write either one. Hence the busy flag and the error path, neither
+  /// of which the old fire-and-forget version needed.
+  Future<void> _create() async {
+    if (_busy) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
+    setState(() => _busy = true);
+
     final ordered = kOnboardingFeatures.where((f) => _selected.contains(f.key)).map((f) => f.key).toList();
-    final db = FirebaseFirestore.instance;
-    final ref = db.collection('groups').doc();
-    ref.set({
-      'name': _nameCtrl.text.trim(),
-      'enabledFeatures': ordered,
-      'defaultPage': ordered.contains('recipes') ? 'recipes' : ordered.first,
-    });
-    ref.collection('members').doc(uid).set({
-      'role': 'admin',
-      'status': 'active',
-      'joinedAt': FieldValue.serverTimestamp(),
-      'lastActive': FieldValue.serverTimestamp(),
-    });
-    Navigator.of(context).pop(ref.id);
+    try {
+      final groupId = await createGroup(
+        name: _nameCtrl.text.trim(),
+        enabledFeatures: ordered,
+        defaultPage: ordered.contains('recipes') ? 'recipes' : ordered.first,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(groupId);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not create the group: $error')),
+      );
+    }
   }
 
   @override
@@ -125,7 +138,13 @@ class _CreateGroupPageState extends State<CreateGroupPage> {
                     padding: const EdgeInsets.fromLTRB(32, 8, 32, 16),
                     child: FilledButton(
                       onPressed: _valid ? _create : null,
-                      child: const Text('Create group'),
+                      child: _busy
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2.5),
+                            )
+                          : const Text('Create group'),
                     ),
                   ),
                 ],

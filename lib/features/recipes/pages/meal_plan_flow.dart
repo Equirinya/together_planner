@@ -55,6 +55,14 @@ const String _kPrefPeople = 'meal_plan_last_people';
 const String _kPrefStyles = 'meal_plan_last_styles';
 const String _kPrefNotes = 'meal_plan_last_notes';
 
+/// Whether the last AI plan asked for the complementary side recipe. Defaults
+/// to on, matching the behaviour from before the switch existed.
+const String _kPrefExtra = 'meal_plan_last_extra';
+
+/// Whether the last swipe session let public recipes into the deck. Defaults to
+/// on, matching the behaviour from before the switch existed.
+const String _kPrefSwipePublic = 'swipe_last_include_public';
+
 String _dateKey(DateTime d) =>
     '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
@@ -62,8 +70,9 @@ const String _kPrefPlanCache = 'meal_plan_proposal_cache';
 
 /// Serializes a [MealPlanSlot] for [_kPrefPlanCache], mirroring the shape
 /// [MealPlanSlot.fromJson] already expects from the server plus its own
-/// [MealPlanSlot.date] and [MealPlanSlot.removed] (neither of which the
-/// server response carries, since those come from the client's request/UI).
+/// [MealPlanSlot.date], [MealPlanSlot.removed] and [MealPlanSlot.isExtra]
+/// (none of which the server response carries, since those come from the
+/// client's request/UI).
 Map<String, dynamic> _slotToJson(MealPlanSlot s) => {
       'date': _dateKey(s.date),
       'source': switch (s.source) {
@@ -79,6 +88,9 @@ Map<String, dynamic> _slotToJson(MealPlanSlot s) => {
       'reason': s.reason,
       'dietary': s.dietary,
       'removed': s.removed,
+      // Without this the extra comes back as an ordinary day slot and, since it
+      // shares a date with that day's main, silently replaces it.
+      'isExtra': s.isExtra,
     };
 
 MealPlanSlot? _slotFromJson(Map<String, dynamic> json) {
@@ -87,6 +99,7 @@ MealPlanSlot? _slotFromJson(Map<String, dynamic> json) {
   final parts = dateStr.split('-').map(int.parse).toList();
   final slot = MealPlanSlot.fromJson(DateTime(parts[0], parts[1], parts[2]), json);
   slot.removed = json['removed'] == true;
+  slot.isExtra = json['isExtra'] == true;
   return slot;
 }
 
@@ -139,7 +152,49 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
   final Set<String> _styles = {};
   final TextEditingController _notesCtrl = TextEditingController();
 
+  /// AI mode only: whether to also ask for the complementary "Additionally?"
+  /// side recipe. Restored from [_kPrefExtra], so the choice sticks between
+  /// plans — someone who never wants a dessert alongside their week shouldn't
+  /// have to turn it off every time.
+  bool _wantExtra = true;
+
+  /// Swipe mode only: whether public recipes may supplement the group's own in
+  /// the deck. Restored from [_kPrefSwipePublic], so a group that only ever
+  /// wants to vote on recipes it already owns doesn't have to say so every
+  /// time. Absolute: turning it off means a shorter deck, never a quietly
+  /// padded one — see [_thinCollectionNotice], which warns when that would
+  /// leave too little to swipe on.
+  bool _includePublic = true;
+
+  /// Swipe mode only: how many recipes the group owns, loaded in [_load] as a
+  /// count aggregation rather than a document read. Only used to warn when
+  /// turning public recipes off would leave too few cards to swipe on — see
+  /// [_thinCollectionNotice]. Null until loaded, which suppresses the warning
+  /// rather than guessing.
+  int? _ownRecipeCount;
+
   bool get _isSwipe => widget.mode == MealPlanMode.swipe;
+
+  /// The warning to show on the public-recipes switch, or null when there is
+  /// nothing to warn about: the group's own recipes can't fill the deck [_days]
+  /// asks for, and public recipes aren't allowed to make up the difference.
+  ///
+  /// A getter rather than cached state, so it re-evaluates on every build —
+  /// changing the day count or flipping the switch updates it immediately.
+  ///
+  /// Deliberately compares against the *total* recipe count: the server also
+  /// drops recipes cooked in the last week or already on the calendar, so the
+  /// real pool is smaller than this and the warning under-fires rather than
+  /// crying wolf. Left unsaid in the message on purpose — a caveat about
+  /// exclusions the user can't see would cost more attention than it repays.
+  String? get _thinCollectionNotice {
+    final count = _ownRecipeCount;
+    if (!_isSwipe || _includePublic || count == null) return null;
+    final deckSize = swipeDeckSize(_days);
+    if (count >= deckSize) return null;
+    return 'You have only $count own ${count == 1 ? 'recipe' : 'recipes'} to swipe '
+        'through, and we\'d suggest around $deckSize for this many days.';
+  }
 
   /// Swipe mode only: every member who could take part, and who currently is.
   /// Loaded in [_load]; the picker itself is hidden for groups of two or fewer,
@@ -262,15 +317,31 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
             .catchError((_) => <String>[])
         : Future.value(<String>[]);
 
+    // A count aggregation, not a read of every recipe: the setup page only
+    // needs the size of the collection, and a group with 200 recipes shouldn't
+    // pay 200 reads to open a settings screen.
+    final recipeCountFuture = _isSwipe
+        ? widget.groupDoc
+            .collection('recipes')
+            .count()
+            .get()
+            .then((s) => s.count)
+            .catchError((_) => null)
+        : Future.value(null);
+
     final prefs = await prefsFuture;
     final dietary = await dietaryFuture;
     final members = await membersFuture;
+    final recipeCount = await recipeCountFuture;
     _loadPlanCache(prefs);
     if (!mounted) return;
     setState(() {
       _days = (prefs.getInt(_kPrefDays) ?? _days).clamp(1, widget.maxDays);
       _people = (prefs.getInt(_kPrefPeople) ?? 2).clamp(1, 12);
       _styles.addAll((prefs.getStringList(_kPrefStyles) ?? const []).where(kMealPlanStyles.contains));
+      _wantExtra = prefs.getBool(_kPrefExtra) ?? true;
+      _includePublic = prefs.getBool(_kPrefSwipePublic) ?? true;
+      _ownRecipeCount = recipeCount;
       // Swipe mode drops the user's free-text dietary entries on the way in,
       // not just out of the picker: they can't filter a recipe corpus (see the
       // selector's allowCustomEntries note), so showing them preselected would
@@ -296,6 +367,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_kPrefDays, _days);
     await prefs.setInt(_kPrefPeople, _people);
+    await prefs.setBool(_kPrefSwipePublic, _includePublic);
 
     setState(() => _starting = true);
     final dates = [
@@ -314,6 +386,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
         people: _people,
         dietary: _dietary,
         participants: participants,
+        includePublic: _includePublic,
       );
       if (!mounted) return;
       await Navigator.pushReplacement(
@@ -351,6 +424,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
     await prefs.setInt(_kPrefPeople, _people);
     await prefs.setStringList(_kPrefStyles, _styles.toList());
     await prefs.setString(_kPrefNotes, notes);
+    await prefs.setBool(_kPrefExtra, _wantExtra);
 
     final sig = _signature();
     var cached = _planCache[sig];
@@ -374,6 +448,7 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
           styles: _styles.toList(),
           notes: notes,
           access: widget.access,
+          includeExtra: _wantExtra,
           initialSlots: cached,
         ),
       ),
@@ -408,6 +483,19 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
                   min: 1,
                   max: widget.maxDays,
                   onChanged: (v) => setState(() => _days = v),
+                  // Sits in the days card rather than in its own section: it
+                  // describes what else the week should contain, so it belongs
+                  // with the window it applies to. Swipe mode has no extra to
+                  // ask for — the deck is main dishes only.
+                  footer: _isSwipe
+                      ? null
+                      : SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: _wantExtra,
+                          onChanged: (v) => setState(() => _wantExtra = v),
+                          title: const Text('Add a side recipe'),
+                        ),
                 ),
                 const SizedBox(height: 20),
                 const SectionLabel('For how many people?'),
@@ -485,6 +573,22 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
                   // rather than accepting one and silently dropping it.
                   allowCustomEntries: !_isSwipe,
                 ),
+                // Last thing on the page: it widens the pool everything above
+                // is drawn from, so it only makes sense once the rest has been
+                // answered. AI mode has no equivalent — it writes recipes
+                // rather than drawing them from a corpus.
+                if (_isSwipe) ...[
+                  const SizedBox(height: 24),
+                  const SectionLabel('Recipe pool'),
+                  SettingSwitchCard(
+                    value: _includePublic,
+                    onChanged: (v) => setState(() => _includePublic = v),
+                    icon: Icons.public,
+                    title: 'Include public recipes',
+                    subtitle: 'Mix in main dishes from the community',
+                    notice: _thinCollectionNotice,
+                  ),
+                ],
                 const SizedBox(height: 88),
               ],
             ),
@@ -506,9 +610,15 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
   }
 }
 
-/// One row of the swipe-session participant picker: a member's username with a
-/// checkbox. The starter's own row is shown but locked — leaving yourself out
-/// of a vote you're starting isn't a thing anyone means to do.
+/// One row of the swipe-session participant picker: a member's username on a
+/// selectable card. The starter's own row is shown but locked — leaving
+/// yourself out of a vote you're starting isn't a thing anyone means to do.
+///
+/// Styled to match [DietaryOptionButton] — same filled-card treatment, radius
+/// and selected/disabled colours — so the whole settings screen reads as one
+/// family of controls rather than a grid of buttons plus a stray checkbox. Laid
+/// out as a row rather than that widget's icon-over-label column because a
+/// username is a variable-length string, not a one-word tag.
 class _ParticipantTile extends StatelessWidget {
   const _ParticipantTile({
     required this.uid,
@@ -524,18 +634,59 @@ class _ParticipantTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CheckboxListTile(
-      contentPadding: EdgeInsets.zero,
-      dense: true,
-      controlAffinity: ListTileControlAffinity.leading,
-      value: checked,
-      onChanged: locked ? null : (v) => onChanged(v ?? false),
-      title: LoadDocumentBuilder(
-        docRef: FirebaseFirestore.instance.collection('users_public').doc(uid),
-        builder: (data) => Text(
-          locked
-              ? '${(data['username'] ?? 'Member')} (you)'
-              : (data['username'] ?? 'Member').toString(),
+    final colorScheme = Theme.of(context).colorScheme;
+
+    final Color cardColor = locked
+        ? colorScheme.surfaceContainerHighest.withValues(alpha: 0.5)
+        : checked
+            ? colorScheme.primary
+            : colorScheme.surfaceContainerHighest;
+
+    final Color contentColor = locked
+        ? colorScheme.onSurface.withValues(alpha: 0.38)
+        : checked
+            ? colorScheme.onPrimary
+            : colorScheme.onSurfaceVariant;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        color: cardColor,
+        elevation: 0,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: locked ? null : () => onChanged(!checked),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+            child: Row(
+              children: [
+                Icon(Icons.person_outline, size: 22, color: contentColor),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: LoadDocumentBuilder(
+                    docRef:
+                        FirebaseFirestore.instance.collection('users_public').doc(uid),
+                    builder: (data) => Text(
+                      locked
+                          ? '${(data['username'] ?? 'Member')} (you)'
+                          : (data['username'] ?? 'Member').toString(),
+                      style: TextStyle(color: contentColor, fontSize: 14),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(
+                  checked ? Icons.check_circle : Icons.circle_outlined,
+                  size: 20,
+                  color: contentColor,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -575,6 +726,7 @@ class MealPlanOverviewPage extends StatefulWidget {
     required this.styles,
     required this.notes,
     required this.access,
+    this.includeExtra = true,
     this.initialSlots,
   });
 
@@ -587,6 +739,12 @@ class MealPlanOverviewPage extends StatefulWidget {
   final List<String> styles;
   final String notes;
   final AiAccess access;
+
+  /// Whether to ask for the complementary "Additionally?" side recipe, from the
+  /// switch on [MealPlanSettingsPage]. When false the extra is never requested,
+  /// never fetched on its own, and its section is absent from the list — no
+  /// candidate read, no schema field, no tile to dismiss.
+  final bool includeExtra;
 
   /// Slots reused verbatim, by date, from a previous uncommitted proposal for
   /// the same dietary/styles/notes (see [_MealPlanSettingsPageState._planCache]).
@@ -607,6 +765,11 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   /// shown once at the end of the list. Null until it has been generated.
   MealPlanSlot? _extra;
 
+  /// True while [_ensureExtra] is in flight. The day slots come straight from
+  /// cache on that path, so without this the page renders complete and finished
+  /// while a fetch is still running — indistinguishable from nothing happening.
+  bool _extraPending = false;
+
   /// Every recipe name surfaced anywhere in this planning session — across days,
   /// swaps, regenerates and the extra. Passed as `avoidNames` on every
   /// subsequent generation so a swap/regenerate never re-proposes something the
@@ -619,12 +782,17 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   String get _uid => FirebaseAuth.instance.currentUser!.uid;
   List<MealPlanSlot> get _activeSlots => (_slots ?? []).where((s) => !s.removed).toList();
 
+  /// Whether the extra is part of this plan. [_extra] can be non-null with the
+  /// switch off — a cached one is held onto so flipping the switch back on is
+  /// free — so every place that shows or commits it goes through here.
+  bool get _showExtra => widget.includeExtra && _extra != null;
+
   /// The day slots plus the extra (when the user hasn't disabled it) — i.e.
   /// everything that actually gets written on confirm. The extra shares its day
   /// with that day's main, so the day simply ends up with two planned recipes.
   List<MealPlanSlot> get _committableSlots => [
         ..._activeSlots,
-        if (_extra != null && !_extra!.removed) _extra!,
+        if (_showExtra && !_extra!.removed) _extra!,
       ];
 
   /// Plants the extra on one of the plan's middle days, so it lands in the
@@ -662,7 +830,15 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
       widget.days,
       (i) => DateTime(widget.startDate.year, widget.startDate.month, widget.startDate.day + i),
     );
-    final cache = {for (final s in widget.initialSlots ?? const <MealPlanSlot>[]) _dateKey(s.date): s};
+    // The extra shares its date with that day's main, so it must be pulled out
+    // before the list is keyed by date — otherwise it overwrites the main and
+    // is then treated as a day slot for the rest of the session.
+    final initial = widget.initialSlots ?? const <MealPlanSlot>[];
+    final cachedExtra = initial.where((s) => s.isExtra).firstOrNull;
+    final cache = {
+      for (final s in initial)
+        if (!s.isExtra) _dateKey(s.date): s,
+    };
     final reused = <MealPlanSlot>[];
     final missingDates = <DateTime>[];
     for (final d in dates) {
@@ -676,15 +852,26 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
     // Reused proposals count as already seen this session, so a later
     // swap/regenerate won't circle back to them.
     _remember(reused);
+    // A cached extra is restored even when the switch is off: it is kept, just
+    // not shown or committed (see [_showExtra]). Dropping it here instead would
+    // make turning the switch off and on again cost a fresh generation — the
+    // one thing the cache exists to avoid.
+    if (cachedExtra != null) {
+      _remember([cachedExtra]);
+      if (widget.includeExtra) _startBackgroundWork([cachedExtra]);
+      _extra = cachedExtra;
+    }
 
     if (missingDates.isEmpty) {
       _startBackgroundWork(reused);
       setState(() {
         _slots = reused;
         _error = null;
+        // The window may have grown or shrunk since the extra was cached.
+        if (_extra != null) _placeExtra(_extra!);
       });
-      // Every day was reused, so no generation ran — fetch the extra on its own.
-      _ensureExtra();
+      // Every day was reused and no extra was cached — fetch one on its own.
+      if (_extra == null && widget.includeExtra) _ensureExtra();
       return;
     }
 
@@ -705,7 +892,9 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         regenerateDates: missingDates,
         lockedSlots: locked,
         avoidNames: _avoidNames,
-        includeExtra: true,
+        // An extra restored from cache is already in hand — asking for another
+        // would pay for a generation and then discard one of the two.
+        includeExtra: widget.includeExtra && _extra == null,
         lang: _lang,
       );
       final slots = [...reused, ...result.slots]..sort((a, b) => a.date.compareTo(b.date));
@@ -714,7 +903,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
       if (!mounted) return;
       setState(() {
         _slots = slots;
-        final extra = result.extra;
+        final extra = result.extra ?? _extra;
         if (extra != null) {
           _remember([extra]);
           _startBackgroundWork([extra]);
@@ -731,7 +920,8 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
   /// Fetches an "Additionally?" extra on its own (no day slots), used when the
   /// initial proposal was fully served from cache so no generation ran.
   Future<void> _ensureExtra() async {
-    if (_extra != null) return;
+    if (_extra != null || !widget.includeExtra) return;
+    setState(() => _extraPending = true);
     try {
       final result = await generateMealPlan(
         groupId: widget.groupId,
@@ -748,13 +938,24 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
         lang: _lang,
       );
       final extra = result.extra;
-      if (extra == null || !mounted) return;
+      if (!mounted) return;
+      if (extra == null) {
+        // Silence here reads as "the switch does nothing": the days are all
+        // reused from cache, so an extra that never arrives leaves the screen
+        // looking exactly as it did with the switch off.
+        _snack('Could not add a side recipe this time.');
+        return;
+      }
       _remember([extra]);
       _startBackgroundWork([extra]);
       _placeExtra(extra);
       setState(() => _extra = extra);
     } catch (_) {
-      // A missing extra is non-fatal — the plan itself is unaffected.
+      // The plan itself is unaffected, but say so rather than leave the user
+      // wondering whether the switch took effect.
+      if (mounted) _snack('Could not add a side recipe this time.');
+    } finally {
+      if (mounted) setState(() => _extraPending = false);
     }
   }
 
@@ -915,7 +1116,19 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        Navigator.pop(context, _MealPlanFlowResult(slotsForCache: _slots));
+        // The extra rides along in the cached list (flagged [isExtra]) rather
+        // than in its own field: it is a MealPlanSlot like any other, and
+        // [_generateInitial] splits it back out by the flag. Still null while
+        // the first proposal is loading — caching an empty list there would
+        // throw away a perfectly good previous proposal.
+        final slots = _slots;
+        Navigator.pop(
+          context,
+          _MealPlanFlowResult(
+            slotsForCache:
+                slots == null ? null : [...slots, if (_extra != null) _extra!],
+          ),
+        );
       },
       child: Scaffold(
         appBar: AppBar(title: const Text('Your meal plan')),
@@ -940,7 +1153,7 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
                                 _publicPreloads.putIfAbsent(id, () => preloadPublicRecipe(id)),
                           ),
                         ),
-                      if (_extra != null) ...[
+                      if (_showExtra) ...[
                         const _AdditionallyHeader(),
                         _MealPlanDayTile(
                           slot: _extra!,
@@ -952,6 +1165,12 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
                           publicPreload: (id) =>
                               _publicPreloads.putIfAbsent(id, () => preloadPublicRecipe(id)),
                         ),
+                      ] else if (_extraPending) ...[
+                        // The days above came from cache and rendered instantly,
+                        // so without this the page looks finished while the
+                        // extra is still being fetched.
+                        const _AdditionallyHeader(),
+                        const _ExtraPendingTile(),
                       ],
                     ],
                   ),
@@ -965,6 +1184,44 @@ class _MealPlanOverviewPageState extends State<MealPlanOverviewPage> {
                   label: const Text('Looks good! Add to meal plan'),
                 ),
               ),
+      ),
+    );
+  }
+}
+
+/// Placeholder under the "Additionally?" header while the extra is being
+/// fetched on its own — the [_ensureExtra] path, where the day slots come from
+/// cache and so appear instantly.
+class _ExtraPendingTile extends StatelessWidget {
+  const _ExtraPendingTile();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              'Finding something extra…',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodyMedium
+                  ?.copyWith(color: colorScheme.onSurfaceVariant),
+            ),
+          ),
+        ],
       ),
     );
   }

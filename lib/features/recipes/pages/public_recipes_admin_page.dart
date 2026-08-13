@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/features/ingredients/models/ingredients.dart' show kPendingIngredient, kUnknownIngredient;
+import 'package:couple_planner/features/recipes/models/recipe_category.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
 
 /// Lists every generated public recipe (global, server-managed), newest
@@ -35,6 +36,15 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
   bool _hasMore = true;
   bool _loadingAll = false;
   String _query = '';
+
+  /// Category filter: null = all, `_kUncategorized` = only recipes that have
+  /// never been classified, otherwise one of [kRecipeCategories]. Applied
+  /// client-side over the loaded pages (like search), so selecting one pulls
+  /// in every remaining page first.
+  static const _kUncategorized = '__none__';
+  String? _categoryFilter;
+
+  bool _backfilling = false;
 
   @override
   void initState() {
@@ -120,6 +130,61 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
     }
   }
 
+  /// Runs the server-side category backfill until nothing is left to do. Each
+  /// call handles a capped batch and reports what remains, so this loops rather
+  /// than asking one invocation to chew through the whole pool.
+  Future<void> _backfillCategories() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _backfilling = true);
+    var processed = 0;
+    var failed = 0;
+    try {
+      while (true) {
+        final res = await _functions
+            .httpsCallable('recipes-backfillPublicRecipeCategories')
+            .call();
+        final data = res.data as Map;
+        final done = (data['processed'] as num?)?.toInt() ?? 0;
+        processed += done;
+        failed += (data['failed'] as num?)?.toInt() ?? 0;
+        final remaining = (data['remaining'] as num?)?.toInt() ?? 0;
+        if (!mounted) return;
+        // Stop once nothing is left — or when a run made no progress at all,
+        // which means every batch failed and retrying would just loop on the
+        // same recipes.
+        if (remaining <= 0 || done == 0) break;
+      }
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Categorised $processed recipe(s)'
+            '${failed > 0 ? ', $failed could not be classified' : ''}.',
+          ),
+        ),
+      );
+      // The loaded docs still carry the old (missing) category — reload so the
+      // list and the filter reflect what was just written.
+      if (mounted) await _reload();
+    } catch (e) {
+      if (mounted) messenger.showSnackBar(SnackBar(content: Text('Backfill failed: $e')));
+    } finally {
+      if (mounted) setState(() => _backfilling = false);
+    }
+  }
+
+  /// Drops every loaded page and starts over from the newest recipe.
+  Future<void> _reload() async {
+    setState(() {
+      _docs.clear();
+      _lastDoc = null;
+      _hasMore = true;
+      _loading = false;
+    });
+    await _loadMore();
+    // Search and the category filter both work over loaded pages only.
+    if (_query.isNotEmpty || _categoryFilter != null) await _loadAll();
+  }
+
   String _titleFor(QueryDocumentSnapshot<Map<String, dynamic>> d) {
     final data = d.data();
     final lang = LanguageService.instance.code.value;
@@ -137,11 +202,37 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
 
   @override
   Widget build(BuildContext context) {
-    final filteredDocs = _query.isEmpty
-        ? _docs
-        : _docs.where((d) => _titleFor(d).toLowerCase().contains(_query.toLowerCase())).toList();
+    final filteredDocs = _docs.where((d) {
+      if (_query.isNotEmpty &&
+          !_titleFor(d).toLowerCase().contains(_query.toLowerCase())) {
+        return false;
+      }
+      if (_categoryFilter == null) return true;
+      final category = recipeCategoryOf(d.data()['category']);
+      return _categoryFilter == _kUncategorized
+          ? category == null
+          : category == _categoryFilter;
+    }).toList();
+    // The "load more on scroll" spinner only makes sense while the full list is
+    // showing; both filters work over already-loaded pages.
+    final showLoadMore = _query.isEmpty && _categoryFilter == null && _hasMore;
     return Scaffold(
-      appBar: AppBar(title: const Text('Public recipes')),
+      appBar: AppBar(
+        title: const Text('Public recipes'),
+        actions: [
+          IconButton(
+            icon: _backfilling
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.category_outlined),
+            tooltip: 'Backfill missing categories',
+            onPressed: _backfilling ? null : _backfillCategories,
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Padding(
@@ -158,10 +249,37 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
               },
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            child: DropdownButtonFormField<String?>(
+              initialValue: _categoryFilter,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Category',
+                prefixIcon: Icon(Icons.filter_list),
+              ),
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('All categories')),
+                const DropdownMenuItem<String?>(
+                  value: _kUncategorized,
+                  child: Text('Uncategorized'),
+                ),
+                for (final key in kRecipeCategories)
+                  DropdownMenuItem<String?>(
+                    value: key,
+                    child: Text(kRecipeCategoryLabels[key] ?? key),
+                  ),
+              ],
+              onChanged: (v) {
+                setState(() => _categoryFilter = v);
+                if (v != null) _loadAll();
+              },
+            ),
+          ),
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
-              itemCount: filteredDocs.length + (_query.isEmpty && _hasMore ? 1 : 0),
+              itemCount: filteredDocs.length + (showLoadMore ? 1 : 0),
               itemBuilder: (context, i) {
                 if (i >= filteredDocs.length) {
                   return const Padding(
@@ -178,8 +296,12 @@ class _PublicRecipesAdminPageState extends State<PublicRecipesAdminPage> {
                 final dateStr = createdAt == null
                     ? null
                     : '${createdAt.day.toString().padLeft(2, '0')}.${createdAt.month.toString().padLeft(2, '0')}.${createdAt.year}';
+                final category = recipeCategoryOf(data['category']);
                 final subtitleParts = [
                   if (dateStr != null) dateStr,
+                  // Always shown, so an uncategorized recipe is visible as such
+                  // without having to filter for it.
+                  category == null ? 'Uncategorized' : recipeCategoryLabel(category),
                   if (tags.isNotEmpty) tags.join(', '),
                 ];
                 final isRegenerating = _regenerating.contains(d.id);

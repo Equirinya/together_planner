@@ -90,6 +90,9 @@ Future<({String recipeId, Future<void> imageUpload})> adoptPublicRecipeFromPrelo
     'servings': p['servings'],
     'tags': List<dynamic>.from(p['tags'] ?? const []),
     'dietary': List<dynamic>.from(p['dietary'] ?? const []),
+    // Hidden classification flag; carried straight over since it's the same
+    // recipe. Null on public recipes generated before the field existed.
+    'category': p['category'],
     if (p['languages'] != null) 'languages': List<dynamic>.from(p['languages']),
     if (p['translations'] != null) 'translations': p['translations'],
     'steps': List<dynamic>.from(p['steps'] ?? const []),

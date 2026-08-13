@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -138,7 +139,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
       data['prompt'] = s.title;
     }
     try {
-      await functions.httpsCallable('recipes-generateRecipeStaged').call(data);
+      await functions
+          .httpsCallable('recipes-generateRecipeStaged',
+              options: HttpsCallableOptions(timeout: kRecipeGenerationTimeout))
+          .call(data);
     } catch (e) {
       // Surface a hit monthly limit / plan restriction; other failures already
       // show up as the recipe's generationError state on the detail page.
@@ -581,7 +585,10 @@ mixin RecipeActionsMixin on State<RecipePage>, RecipeSuggestionsMixin {
     if (!mounted) return;
     _pushDetail(ref.id, generating: true, initialData: _seedData(''));
     try {
-      await functions.httpsCallable('recipes-generateRecipeStaged').call(<String, dynamic>{
+      await functions
+          .httpsCallable('recipes-generateRecipeStaged',
+              options: HttpsCallableOptions(timeout: kRecipeGenerationTimeout))
+          .call(<String, dynamic>{
         'groupId': widget.groupId,
         'recipeId': ref.id,
         'source': 'photo',

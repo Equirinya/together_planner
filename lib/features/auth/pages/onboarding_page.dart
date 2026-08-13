@@ -53,7 +53,7 @@ const Map<String, String> _featureBlurbs = {
   'money': 'Track and split shared expenses.',
 };
 
-enum _Step { showcase, login, details, createGroup, invite }
+enum _Step { showcase, login, name, dietary, choose, createGroup, invite }
 
 class WelcomePage extends StatefulWidget {
   const WelcomePage({super.key, required this.onFinished, this.joinMode = false});
@@ -80,9 +80,6 @@ class _WelcomePageState extends State<WelcomePage> {
   final List<String> _dietary = [];
   bool _joinOnly = false;
 
-  Timer? _dietaryTimer;
-  bool _showDietary = false;
-
   /// The group created during onboarding (new-group flow); drives the invite
   /// screen shown afterwards.
   String? _newGroupId;
@@ -107,7 +104,6 @@ class _WelcomePageState extends State<WelcomePage> {
   @override
   void dispose() {
     _authSub?.cancel();
-    _dietaryTimer?.cancel();
     _usernameCtrl.dispose();
     _groupCtrl.dispose();
     super.dispose();
@@ -122,14 +118,6 @@ class _WelcomePageState extends State<WelcomePage> {
     if (!_groupEdited) {
       final base = text.trim();
       _groupCtrl.text = base.isEmpty ? '' : "$base's Group";
-    }
-    _dietaryTimer?.cancel();
-    if (text.trim().isEmpty) {
-      _showDietary = false;
-    } else {
-      _dietaryTimer = Timer(const Duration(seconds: 1), () {
-        if (mounted) setState(() => _showDietary = true);
-      });
     }
     if (mounted) setState(() {});
   }
@@ -191,11 +179,17 @@ class _WelcomePageState extends State<WelcomePage> {
       _error = null;
       switch (step) {
         case _Step.login:
-        case _Step.details:
+        case _Step.name:
           step = _Step.showcase;
           break;
+        case _Step.dietary:
+          step = _Step.name;
+          break;
+        case _Step.choose:
+          step = _Step.dietary;
+          break;
         case _Step.createGroup:
-          step = _Step.details;
+          step = _Step.choose;
           break;
         case _Step.invite:
           // The account and group already exist; there is nothing to go back to.
@@ -207,10 +201,22 @@ class _WelcomePageState extends State<WelcomePage> {
   }
 
   void _forward() {
-    // Join mode: the only forward action is creating the (anonymous) account
-    // and letting the host open the join screen afterwards.
-    if (step == _Step.details && _joinMode && _detailsValid) {
-      _finishAccount();
+    if (_loading) return;
+    switch (step) {
+      case _Step.name:
+        if (_nameValid) setState(() => step = _Step.dietary);
+        break;
+      case _Step.dietary:
+        // Join mode: the account is all that's missing — the host opens the
+        // join screen once onboarding finishes.
+        if (_joinMode) {
+          _finishAccount();
+        } else {
+          setState(() => step = _Step.choose);
+        }
+        break;
+      default:
+        break;
     }
   }
 
@@ -222,7 +228,7 @@ class _WelcomePageState extends State<WelcomePage> {
 
   // ── validation ───────────────────────────────────────────────────────────--
 
-  bool get _detailsValid => _usernameCtrl.text.trim().length >= 3;
+  bool get _nameValid => _usernameCtrl.text.trim().length >= 3;
 
   bool get _createGroupValid => _selected.isNotEmpty;
 
@@ -384,18 +390,20 @@ class _WelcomePageState extends State<WelcomePage> {
     if (!_joinOnly) {
       final ordered = kOnboardingFeatures.where((f) => _selected.contains(f.key)).map((f) => f.key).toList();
       final groupName = _groupCtrl.text.trim().isEmpty ? "$username's Group" : _groupCtrl.text.trim();
-      final groupRef = db.collection('groups').doc();
-      groupId = groupRef.id;
-      groupRef.set({
-        'name': groupName,
-        'enabledFeatures': ordered,
-        'defaultPage': ordered.contains('recipes') ? 'recipes' : ordered.first,
-      });
-      groupRef.collection('members').doc(uid).set({
-        'role': 'admin',
-        'joinedAt': FieldValue.serverTimestamp(),
-        'lastActive': FieldValue.serverTimestamp(),
-      });
+      // Server-side (see createGroup in functions/src/userManagement.ts): the
+      // group doc and the creator's admin member doc must be written together,
+      // and the rules no longer permit a client to create either. Unlike the
+      // two fire-and-forget writes this replaced, a failure here is visible, so
+      // it's surfaced rather than leaving the user in a half-onboarded state.
+      try {
+        groupId = await createGroup(
+          name: groupName,
+          enabledFeatures: ordered,
+          defaultPage: ordered.contains('recipes') ? 'recipes' : ordered.first,
+        );
+      } catch (_) {
+        return 'Could not create your group. Please try again.';
+      }
     }
 
     _newGroupId = groupId;
@@ -440,7 +448,7 @@ class _WelcomePageState extends State<WelcomePage> {
               SafeArea(
                 child: Column(
                   children: [
-                    if (!(step == _Step.details && !_joinMode)) _logo(context),
+                    if (step != _Step.name) _logo(context),
                     Expanded(child: _content()),
                     _bottomBar(),
                   ],
@@ -477,7 +485,7 @@ class _WelcomePageState extends State<WelcomePage> {
   Widget _content() {
     switch (step) {
       case _Step.showcase:
-        return _ShowcasePage(onLogin: _goLogin, onStart: () => setState(() => step = _Step.details), joinMode: _joinMode);
+        return _ShowcasePage(onLogin: _goLogin, onStart: () => setState(() => step = _Step.name), joinMode: _joinMode);
       case _Step.login:
         return SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 16),
@@ -488,8 +496,12 @@ class _WelcomePageState extends State<WelcomePage> {
             onSubmit: _signIn,
           ),
         );
-      case _Step.details:
-        return _detailsPage();
+      case _Step.name:
+        return _namePage();
+      case _Step.dietary:
+        return _dietaryPage();
+      case _Step.choose:
+        return _choosePage();
       case _Step.createGroup:
         return _createGroupPage();
       case _Step.invite:
@@ -497,87 +509,8 @@ class _WelcomePageState extends State<WelcomePage> {
     }
   }
 
-  Widget _detailsPage() {
-    if (_joinMode) {
-      // Invite flow: only a display name is needed before signing up; the group
-      // already exists, so no group creation is shown.
-      return SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text(
-              'Choose the name the others in the group will see:',
-              style: TextStyle(color: Colors.black87, fontSize: 14),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _usernameCtrl,
-              enabled: !_loading,
-              textInputAction: TextInputAction.next,
-              autofillHints: const [AutofillHints.name],
-              decoration: const InputDecoration(
-                prefixIcon: Icon(Icons.person_outline),
-                hintText: 'Your name',
-              ),
-            ),
-            const SizedBox(height: 20),
-            _termsText(),
-          ],
-        ),
-      );
-    }
-    final showRest = _showDietary && _usernameCtrl.text.trim().isNotEmpty;
-    final nameField = Padding(
-      key: _nameFieldKey,
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: TextField(
-        controller: _usernameCtrl,
-        enabled: !_loading,
-        autofocus: true,
-        textInputAction: TextInputAction.done,
-        onSubmitted: (_) {
-          _dietaryTimer?.cancel();
-          if (_usernameCtrl.text.trim().isNotEmpty) setState(() => _showDietary = true);
-        },
-        decoration: const InputDecoration(
-          prefixIcon: Icon(Icons.person_outline),
-          hintText: 'The name others will see',
-        ),
-      ),
-    );
-    final dietarySection = Column(
-      key: const ValueKey('dietary'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const SizedBox(height: 20),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: const Text(
-            'Any dietary preferences? (optional)',
-            style: TextStyle(color: Colors.black, fontSize: 15, fontWeight: FontWeight.w600),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: DietaryPreferencesSelector(
-            value: _dietary,
-            onChanged: (v) => setState(() {
-              _dietary
-                ..clear()
-                ..addAll(v);
-            }),
-          ),
-        ),
-        const SizedBox(height: 20),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: _termsText(),
-        ),
-        const SizedBox(height: 16),
-      ],
-    );
+  /// Step 1: the display name. Vertically centred with its own logo.
+  Widget _namePage() {
     return LayoutBuilder(
       builder: (context, constraints) {
         return SingleChildScrollView(
@@ -589,18 +522,127 @@ class _WelcomePageState extends State<WelcomePage> {
               children: [
                 _logo(context),
                 const SizedBox(height: 24),
-                nameField,
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 350),
-                  curve: Curves.easeOut,
-                  alignment: Alignment.topCenter,
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 350),
-                    switchInCurve: Curves.easeOut,
-                    child: showRest ? dietarySection : const SizedBox(width: double.infinity),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: const Text(
+                    'Choose the name the others in your group will see:',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black87, fontSize: 14),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  key: _nameFieldKey,
+                  padding: const EdgeInsets.symmetric(horizontal: 32),
+                  child: TextField(
+                    controller: _usernameCtrl,
+                    enabled: !_loading,
+                    autofocus: true,
+                    textInputAction: TextInputAction.next,
+                    autofillHints: const [AutofillHints.name],
+                    onSubmitted: (_) => _forward(),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.person_outline),
+                      hintText: 'The name others will see',
+                    ),
                   ),
                 ),
               ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Step 2: optional dietary preferences.
+  Widget _dietaryPage() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    'Nice to meet you, ${_usernameCtrl.text.trim()}!',
+                    style: const TextStyle(color: Colors.black, fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Any dietary preferences? (optional)',
+                    style: TextStyle(color: Colors.black, fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  DietaryPreferencesSelector(
+                    value: _dietary,
+                    onChanged: (v) => setState(() {
+                      _dietary
+                        ..clear()
+                        ..addAll(v);
+                    }),
+                  ),
+                  const SizedBox(height: 20),
+                  _termsText(),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Step 3: create a new group or join an existing one — two large cards.
+  Widget _choosePage() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'How would you like to start?',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 20),
+                  _ChoiceCard(
+                    icon: Icons.add_circle_outline,
+                    title: 'New group',
+                    subtitle: 'Start a group and invite your friends or family.',
+                    onTap: _loading
+                        ? null
+                        : () => setState(() {
+                              _joinOnly = false;
+                              step = _Step.createGroup;
+                            }),
+                  ),
+                  const SizedBox(height: 16),
+                  _ChoiceCard(
+                    icon: Icons.login,
+                    title: 'Join group',
+                    subtitle: 'Someone already invited you? Join their group.',
+                    onTap: _loading
+                        ? null
+                        : () {
+                            setState(() => _joinOnly = true);
+                            _finishAccount();
+                          },
+                  ),
+                  const SizedBox(height: 20),
+                  _termsText(),
+                ],
+              ),
             ),
           ),
         );
@@ -781,75 +823,6 @@ class _WelcomePageState extends State<WelcomePage> {
   Widget _bottomBar() {
     if (step == _Step.showcase) return const SizedBox(height: 8);
 
-    if (step == _Step.details && !_joinMode) {
-      if (_loading) {
-        return const Padding(
-          padding: EdgeInsets.fromLTRB(8, 4, 8, 20),
-          child: Center(child: CupertinoActivityIndicator()),
-        );
-      }
-      final enabled = _detailsValid && _showDietary;
-      return Padding(
-        padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (_error != null && _error!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-                child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
-              ),
-            Row(
-              children: [
-                IconButton(
-                  onPressed: _back,
-                  icon: const Icon(Icons.arrow_back, color: Colors.black),
-                  tooltip: 'Back',
-                ),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: enabled
-                        ? () {
-                            setState(() => _joinOnly = true);
-                            _finishAccount();
-                          }
-                        : null,
-                    style: OutlinedButton.styleFrom(
-                      minimumSize: const Size.fromHeight(56),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      foregroundColor: Colors.black,
-                    ).copyWith(
-                      side: WidgetStateProperty.resolveWith(
-                            (states) => states.contains(WidgetState.disabled)
-                            ? BorderSide(color: Colors.black.withOpacity(0.12))
-                            : const BorderSide(color: Colors.black),
-                      ),
-                    ),
-                    icon: const Icon(Icons.login),
-                    label: const Text('Join group'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: enabled
-                        ? () => setState(() {
-                          _joinOnly = false;
-                          step = _Step.createGroup;
-                        })
-                        : null,
-                    icon: const Icon(Icons.add),
-                    label: const Text('New group'),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-    }
-
     if (step == _Step.createGroup) {
       final enabled = _createGroupValid && !_loading;
       return Padding(
@@ -873,7 +846,7 @@ class _WelcomePageState extends State<WelcomePage> {
                 Expanded(
                   child: FilledButton(
                     onPressed: enabled ? _finishAccount : null,
-                    child: _loading ? const CupertinoActivityIndicator() : const Text('Continue'),
+                    child: _loading ? const CupertinoActivityIndicator() : const Text("Let's plan together"),
                   ),
                 ),
               ],
@@ -893,32 +866,42 @@ class _WelcomePageState extends State<WelcomePage> {
       );
     }
 
-    final forwardVisible = step == _Step.details && _joinMode && _detailsValid;
+    // name / dietary: back arrow + a large "Continue" button.
+    // choose / login: back arrow only (the choice cards are the action).
+    final hasForward = step == _Step.name || step == _Step.dietary;
+    final forwardEnabled = !_loading && (step != _Step.name || _nameValid);
+    // Dietary is optional, so the label reflects whether anything was picked.
+    final forwardLabel = step == _Step.dietary
+        ? (_dietary.isEmpty ? 'Skip for now' : 'Save & continue')
+        : 'Continue';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 4, 8, 12),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            onPressed: _loading ? null : _back,
-            icon: const Icon(Icons.arrow_back, color: Colors.black),
-            tooltip: 'Back',
-          ),
-          const Spacer(),
-          SizedBox(
-            width: 48,
-            height: 48,
-            child: _loading
-                ? const Center(child: CupertinoActivityIndicator())
-                : AnimatedOpacity(
-              opacity: forwardVisible ? 1 : 0,
-              duration: const Duration(milliseconds: 250),
-              child: IconButton(
-                onPressed: forwardVisible ? _forward : null,
-                icon: const Icon(Icons.arrow_forward, color: Colors.black),
-                tooltip: 'Continue',
-              ),
+          if (_error != null && _error!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
             ),
+          Row(
+            children: [
+              IconButton(
+                onPressed: _loading ? null : _back,
+                icon: const Icon(Icons.arrow_back, color: Colors.black),
+                tooltip: 'Back',
+              ),
+              if (hasForward)
+                Expanded(
+                  child: FilledButton(
+                    onPressed: forwardEnabled ? _forward : null,
+                    child: _loading ? const CupertinoActivityIndicator() : Text(forwardLabel),
+                  ),
+                )
+              else
+                const Spacer(),
+            ],
           ),
         ],
       ),
@@ -953,6 +936,70 @@ ThemeData onboardingTheme() {
       ),
     ),
   );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Big glassy choice card used on the "new group / join group" step.
+// ───────────────────────────────────────────────────────────────────────────
+
+class _ChoiceCard extends StatelessWidget {
+  const _ChoiceCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null;
+    return Opacity(
+      opacity: enabled ? 1 : 0.5,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Material(
+            color: Colors.white.withOpacity(0.30),
+            child: InkWell(
+              onTap: onTap,
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 150),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: Colors.white.withOpacity(0.5), width: 1.5),
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, size: 40, color: Colors.black87),
+                    const SizedBox(height: 10),
+                    Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 13, color: Colors.black54),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────

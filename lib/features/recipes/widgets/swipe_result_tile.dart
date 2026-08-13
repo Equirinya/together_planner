@@ -29,6 +29,28 @@ const double _kScoreBarWidth = 76;
 /// and "7/10" was the useful part anyway.
 const int _kMaxParticipantsForAvatars = 6;
 
+/// A stable colour for [name], so two people aren't told apart by an initial
+/// alone.
+///
+/// Hashes the **whole** name rather than the letter shown: "Anna" and "Alex"
+/// both render an A, and giving them the same swatch defeats the point of
+/// showing faces at all. Saturation and lightness are fixed so every swatch
+/// carries the same visual weight and the on-colour text stays legible; only
+/// the hue varies, and it's nudged brighter in dark mode.
+Color avatarColorFor(String name, Brightness brightness) {
+  var hash = 0;
+  for (final unit in name.trim().toLowerCase().codeUnits) {
+    hash = (hash * 31 + unit) & 0x7fffffff;
+  }
+  final hue = (hash % 360).toDouble();
+  return HSLColor.fromAHSL(
+    1,
+    hue,
+    brightness == Brightness.dark ? 0.45 : 0.55,
+    brightness == Brightness.dark ? 0.45 : 0.72,
+  ).toColor();
+}
+
 /// One recipe in the results, wherever it currently sits.
 ///
 /// Knows nothing about days: the date lives on the [SwipeDaySlot] this may be
@@ -398,6 +420,13 @@ class _MemberAvatar extends StatelessWidget {
       builder: (data) {
         final name = (data['username'] ?? '?').toString();
         final initial = name.isEmpty ? '?' : name.characters.first.toUpperCase();
+        final background = avatarColorFor(name, colorScheme.brightness);
+        // Contrast against the generated swatch rather than a theme pair, since
+        // the hue is arbitrary.
+        final foreground = ThemeData.estimateBrightnessForColor(background) ==
+                Brightness.dark
+            ? Colors.white
+            : Colors.black87;
         return Tooltip(
           message: loved ? '$name loved this' : '$name liked this',
           child: Container(
@@ -407,10 +436,14 @@ class _MemberAvatar extends StatelessWidget {
             ),
             child: CircleAvatar(
               radius: loved ? 10 : 11,
-              backgroundColor: colorScheme.primaryContainer,
+              backgroundColor: background,
               child: Text(
                 initial,
-                style: TextStyle(fontSize: 10, color: colorScheme.onPrimaryContainer),
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: foreground,
+                ),
               ),
             ),
           ),

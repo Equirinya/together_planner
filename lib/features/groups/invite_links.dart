@@ -68,6 +68,31 @@ Future<Map<String, dynamic>> previewInvite(String groupId, String inviteId) asyn
   return Map<String, dynamic>.from(res.data as Map);
 }
 
+/// Creates a group with the caller as its first admin and returns the new
+/// group's id.
+///
+/// Server-side because the group doc and the creator's member doc have to be
+/// written together and neither may be client-controlled: the security rules
+/// say `allow create: if false` for both. See createGroup in
+/// firebase/functions/src/userManagement.ts for why.
+Future<String> createGroup({
+  required String name,
+  required List<String> enabledFeatures,
+  String? defaultPage,
+}) async {
+  final res = await _functions.httpsCallable('userManagement-createGroup').call(<String, dynamic>{
+    'name': name,
+    'enabledFeatures': enabledFeatures,
+    if (defaultPage != null) 'defaultPage': defaultPage,
+  });
+  final data = res.data;
+  final groupId = (data is Map) ? data['groupId'] : null;
+  if (groupId is! String || groupId.isEmpty) {
+    throw StateError('createGroup returned no group id');
+  }
+  return groupId;
+}
+
 Future<void> joinGroupViaInvite(String groupId, String inviteId) async {
   await _functions
       .httpsCallable('userManagement-joinGroup')

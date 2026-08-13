@@ -645,6 +645,11 @@ class _SuggestionsList extends StatelessWidget {
           ),
         for (final s in suggestions)
           _SuggestionTile(
+            // Identity-based key: without it the tile's ink highlight stays
+            // with the element at that index, so after a tap replaces the
+            // result set the fading splash appears on whatever suggestion
+            // moved into that slot.
+            key: ValueKey('s|${s.docId ?? ''}|${_suggestionKey(s)}'),
             suggestion: s,
             lang: lang,
             onTap: () => onTap(s),
@@ -652,6 +657,7 @@ class _SuggestionsList extends StatelessWidget {
           ),
         if (effectiveFallback != null)
           _SuggestionTile(
+            key: ValueKey('f|${_suggestionKey(effectiveFallback)}'),
             suggestion: effectiveFallback,
             lang: lang,
             onTap: () => onTap(effectiveFallback),
@@ -669,6 +675,7 @@ class _SuggestionsList extends StatelessWidget {
 
 class _SuggestionTile extends StatelessWidget {
   const _SuggestionTile({
+    super.key,
     required this.suggestion,
     required this.lang,
     required this.onTap,
