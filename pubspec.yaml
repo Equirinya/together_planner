@@ -63,7 +63,12 @@ dependencies:
   # Deep link into the OS settings when the user has blocked notifications.
   # Android lands on the app's notification screen directly; iOS can only open
   # the app's settings root (Apple has no public URL for the sub-page).
-  app_settings: ^8.0.3
+  # Pinned to 7.x on purpose: 8.0.0 dropped CocoaPods and went SPM-only, and its
+  # ios/app_settings/Package.swift declares .iOS("12.0") while depending on
+  # FlutterFramework, which requires iOS 13+. That makes every iOS archive fail
+  # with "The package product 'FlutterFramework' requires minimum platform
+  # version 13.0 [...] but this target supports 12.0". Unfixed as of 8.0.3.
+  app_settings: ^7.0.0
   sensors_plus: ^7.0.0
   app_links: ^6.4.0
   share_plus: ^13.1.0
