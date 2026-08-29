@@ -49,5 +49,13 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+
+    # Some plugin podspecs declare a lower deployment target than the app
+    # (e.g. intelligence -> ios 16.0). Their transitive dependencies
+    # (SQLite.swift requires iOS 17) then fail to compile. Force every pod
+    # to the same deployment target as the app.
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '17.0'
+    end
   end
 end
