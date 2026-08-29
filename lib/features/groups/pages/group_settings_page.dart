@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:couple_planner/features/groups/invite_links.dart' as invites;
 import 'package:couple_planner/core/widgets/load_builders.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart' show kOnboardingFeatures, FeatureSpec;
+import 'package:couple_planner/features/money/services/money_format.dart';
 
 /// Shows the invite-type picker and, if confirmed, creates and shares the link.
 /// Can be called from any page that knows the [groupId].
@@ -213,6 +214,11 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
   List<String> get _enabledFeatures =>
       ((_group?['enabledFeatures'] as List?) ?? const []).map((e) => e.toString()).toList();
 
+  /// Currency for the money feature. Absent on groups created before it
+  /// existed, and on anybody who never picked one — MoneyFormat falls back to
+  /// the same default.
+  String get _currency => (_group?['currency'] as String?) ?? 'EUR';
+
   // ── actions ──────────────────────────────────────────────────────────────--
 
   Future<void> _setDefaultPage(String key) => _groupRef.update({'defaultPage': key});
@@ -239,6 +245,63 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
   }
 
   Future<void> _setBoolSetting(String field, bool value) => _groupRef.update({field: value});
+
+  /// Picks the group's money currency. Admin-only, and confirmed, because
+  /// changing it re-labels every past amount without converting any of them.
+  Future<void> _pickCurrency() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('Group currency',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+            ),
+            for (final code in MoneyFormat.common)
+              ListTile(
+                title: Text('$code  ${MoneyFormat(code).symbol}'),
+                trailing: code == _currency ? const Icon(Icons.check) : null,
+                onTap: () => Navigator.of(context).pop(code),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || picked == _currency) return;
+    if (!mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Change the currency?'),
+        content: Text(
+          'Existing amounts are not converted. They will simply be shown in '
+          '$picked from now on.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Change'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _groupRef.update({'currency': picked});
+    } catch (_) {
+      _snack('Could not change the currency.');
+    }
+  }
 
   Future<void> _renameGroup() async {
     final controller = TextEditingController(text: (_group?['name'] ?? '').toString());
@@ -390,6 +453,7 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
       body: ListView(
         children: [
           ..._buildFeatures(),
+          ..._buildMoney(),
           ..._buildInvites(),
           if (_isAdmin) ..._buildPermissions(),
           ..._buildMembers(),
@@ -446,6 +510,28 @@ class _GroupSettingsPageState extends State<GroupSettingsPage> {
           child: Text('Only admins can change features in this group.', style: TextStyle(fontSize: 13)),
         ),
       for (final f in kOnboardingFeatures) _featureTile(f),
+    ];
+  }
+
+  /// Only shown when the group actually has the money feature on — an unused
+  /// currency setting is just noise for a group that only shares a to-do list.
+  List<Widget> _buildMoney() {
+    if (!_enabledFeatures.contains('money')) return const [];
+    return [
+      const _SectionHeader('Money'),
+      ListTile(
+        leading: const Icon(Icons.payments_outlined),
+        title: const Text('Currency'),
+        subtitle: Text('$_currency  ${MoneyFormat(_currency).symbol}'),
+        enabled: _isAdmin && !_busy,
+        onTap: _pickCurrency,
+      ),
+      if (!_isAdmin)
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: Text('Only admins can change the currency.',
+              style: TextStyle(fontSize: 13)),
+        ),
     ];
   }
 

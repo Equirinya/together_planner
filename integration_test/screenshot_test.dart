@@ -6,7 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'package:couple_planner/main.dart' as app;
+import 'package:couple_planner/features/recipes/pages/swipe_to_plan_flow.dart'
+    show SwipeToPlanFlow;
+import 'package:couple_planner/features/recipes/services/swipe_session_service.dart'
+    show cancelSwipeSession, fetchSwipeSession;
 import 'package:couple_planner/features/recipes/widgets/recipe_card.dart' show RecipeCard;
+import 'package:couple_planner/features/recipes/widgets/swipe_card.dart' show SwipeCardView;
 
 /// Screenshot test: launch → onboarding → login → every screenshot-worthy page.
 ///
@@ -219,7 +224,102 @@ void main() {
       await _pumpFor(tester, const Duration(seconds: 2));
     }
 
-    // ── 9. More tab ─────────────────────────────────────────────────────────
+    // ── 9. Swipe to Plan ────────────────────────────────────────────────────
+    // Opens the setup step from the planner tile, starts a real session, casts
+    // a few verdicts and captures the deck. The session is cancelled again on
+    // the way out: an open one would sit in the group until it expires, and the
+    // next run would find the tile pointing straight at the deck instead of at
+    // the setup page this section screenshots.
+    _section('swipe to plan');
+    final swipeTile = _firstPresent(_swipeTileLabels);
+    if (swipeTile == null) {
+      debugPrint('skipping: no Swipe to Plan tile on the recipe page. '
+          'On screen: ${_visibleText()}');
+    } else {
+      await tester.tap(swipeTile.first);
+      await _pumpFor(tester, const Duration(seconds: 3));
+
+      // 9a. Setup step. Missing when a session was already running, since the
+      // tile then jumps past it into whichever step the user belongs on.
+      final startSwiping = find.widgetWithText(FilledButton, 'Start swiping');
+      if (startSwiping.evaluate().isEmpty) {
+        debugPrint('note: no swipe setup page — a session is probably already '
+            'open. On screen: ${_visibleText()}');
+      } else {
+        await _screenshot('${_label}_swipe_setup');
+        await tester.tap(startSwiping);
+        await _pumpFor(tester, const Duration(seconds: 2));
+      }
+
+      // 9b. The deck. Opening a session builds it server-side out of the
+      // group's recipes (plus public ones), so this is a cloud-function wait,
+      // not a render wait.
+      SwipeToPlanFlow? flow;
+      if (!await _pollFor(tester, find.text('Swipe up to love it'),
+          timeout: const Duration(seconds: 120))) {
+        debugPrint('skipping the swipe screenshots: the deck never appeared. '
+            'On screen: ${_visibleText()}');
+      } else {
+        // Grab the flow while it is mounted: its groupDoc and sessionId are the
+        // only handle the test has on the session it just created.
+        final flowFinder = find.byType(SwipeToPlanFlow);
+        if (flowFinder.evaluate().isNotEmpty) {
+          flow = tester.widget<SwipeToPlanFlow>(flowFinder.first);
+        }
+        await _pumpFor(tester, const Duration(seconds: 10)); // card photos
+
+        // A few real verdicts, so the progress bar and the counter have
+        // something to show. Routed through the buttons rather than gestures
+        // because those animate the card away on their own.
+        for (final tooltip in const ['Yes', 'No', 'Yes']) {
+          if (find.text('Swipe up to love it').evaluate().isEmpty) break;
+          await _tapIfPresent(tester, find.byTooltip(tooltip),
+              describe: '"$tooltip" swipe button');
+          await _pumpFor(tester, const Duration(milliseconds: 1200));
+        }
+
+        // The shot itself is taken mid-drag: at rest the deck doesn't show what
+        // the gesture does, and the verdict badge is the whole point of the
+        // screen. The drag stops short of kSwipeThresholdPx (100) and returns
+        // to centre before releasing, so it reads as a swipe without casting
+        // one — the card is put back by `onSwipeCancelled`.
+        final cards = find.byType(SwipeCardView);
+        if (cards.evaluate().isEmpty) {
+          debugPrint('skipping the swipe screenshot: no cards left in the deck.');
+        } else {
+          final origin = tester.getCenter(cards.first);
+          final gesture = await tester.startGesture(origin);
+          for (var i = 1; i <= 5; i++) {
+            await gesture.moveTo(origin + Offset(14.0 * i, -3.0 * i));
+            await _pumpFor(tester, const Duration(milliseconds: 60));
+          }
+          await _pumpFor(tester, const Duration(milliseconds: 600));
+          await _screenshot('${_label}_swipe');
+          await gesture.moveTo(origin);
+          await _pumpFor(tester, const Duration(milliseconds: 200));
+          await gesture.up();
+          await _pumpFor(tester, const Duration(seconds: 1));
+        }
+      }
+
+      await tester.pageBack(); // → recipe grid
+      await _pumpFor(tester, const Duration(seconds: 2));
+
+      if (flow == null) {
+        debugPrint('note: no swipe session handle to clean up.');
+      } else {
+        try {
+          final session = await fetchSwipeSession(flow.groupDoc, flow.sessionId);
+          if (session != null) await cancelSwipeSession(session);
+          debugPrint('cancelled swipe session ${flow.sessionId}.');
+        } catch (e) {
+          debugPrint('note: could not cancel the swipe session '
+              '${flow.sessionId}: $e');
+        }
+      }
+    }
+
+    // ── 10. More tab ────────────────────────────────────────────────────────
     _section('more tab');
     if (!await _tapNav(tester, Icons.menu, 'more tab')) {
       debugPrint('skipping the rest: no More tab. '
@@ -229,7 +329,7 @@ void main() {
     await _pumpFor(tester, const Duration(seconds: 2));
     await _screenshot('${_label}_more');
 
-    // ── 10. Group settings ──────────────────────────────────────────────────
+    // ── 11. Group settings ──────────────────────────────────────────────────
     _section('group settings');
     if (await _tapIfPresent(tester, find.byIcon(Icons.settings_outlined),
         describe: 'group settings button')) {
@@ -239,7 +339,7 @@ void main() {
       await _pumpFor(tester, const Duration(seconds: 2));
     }
 
-    // ── 11. Dietary preferences ─────────────────────────────────────────────
+    // ── 12. Dietary preferences ─────────────────────────────────────────────
     _section('dietary preferences');
     if (await _tapIfPresent(tester, find.text('Dietary preferences'),
         describe: 'dietary preferences tile')) {
@@ -249,7 +349,7 @@ void main() {
       await _pumpFor(tester, const Duration(seconds: 2));
     }
 
-    // ── 12. New group page ──────────────────────────────────────────────────
+    // ── 13. New group page ──────────────────────────────────────────────────
     // Opened for the screenshot only — no group is created.
     _section('new group');
     if (await _tapIfPresent(tester,
@@ -289,6 +389,26 @@ Future<bool> _dismissInterstitials(WidgetTester tester) async {
     return true;
   }
   return false;
+}
+
+/// Every label the Swipe to Plan half of the planner tile can carry, in the
+/// order they are looked for. Which one is showing depends on the group's
+/// session state: normally there is none and the tile invites you to start one,
+/// but a session left behind by an earlier run (or by a real member) relabels
+/// it and skips the setup page. See `_PlannerTilesState._swipeLabel`.
+const _swipeTileLabels = <String>[
+  'Swipe to Plan',
+  'Your turn to swipe',
+  'Results are in',
+];
+
+/// The first of [texts] currently on screen, or null if none of them is.
+Finder? _firstPresent(List<String> texts) {
+  for (final text in texts) {
+    final finder = find.text(text);
+    if (finder.evaluate().isNotEmpty) return finder;
+  }
+  return null;
 }
 
 /// Sign-in failures rendered by AuthForm. Waiting for the home screen aborts on
@@ -359,6 +479,22 @@ Future<void> _waitFor(
   await _screenshotOrLog('${_label}_FAILURE');
   fail('Timed out after ${timeout.inSeconds}s waiting for $describe.\n'
       'On screen: ${_visibleText()}');
+}
+
+/// Like [_waitFor], but reports whether [finder] turned up instead of failing
+/// the run when it didn't — for optional steps whose absence is a skip, not a
+/// broken app.
+Future<bool> _pollFor(
+  WidgetTester tester,
+  Finder finder, {
+  Duration timeout = const Duration(seconds: 30),
+}) async {
+  final sw = Stopwatch()..start();
+  while (sw.elapsed < timeout) {
+    if (finder.evaluate().isNotEmpty) return true;
+    await tester.pump(const Duration(milliseconds: 16));
+  }
+  return false;
 }
 
 /// Waits until [finder] has matched continuously for [stableFor], so a widget

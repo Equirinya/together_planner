@@ -33,7 +33,7 @@ const List<FeatureSpec> kOnboardingFeatures = [
   FeatureSpec('recipes', Icons.restaurant_menu, 'Recipes', true),
   FeatureSpec('todos', Icons.checklist, "To-Do's", false),
   FeatureSpec('calendar', Icons.calendar_month, 'Calendar', false),
-  FeatureSpec('money', Icons.account_balance_wallet, 'Money Splitting', false),
+  FeatureSpec('money', Icons.account_balance_wallet, 'Money Splitting', true),
 ];
 
 class FeatureSpec {

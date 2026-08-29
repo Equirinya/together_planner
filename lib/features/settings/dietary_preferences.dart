@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 
 /// Preset dietary preference labels. Stored as-is in users/{uid}.dietaryPreferences
 /// alongside any free-text entries the user adds.

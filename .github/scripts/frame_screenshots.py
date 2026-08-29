@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Turn raw simulator screenshots into App Store / Play Store marketing images.
 
-For every PNG in the screenshots folder it builds a polished, store-ready frame:
+For every captioned page (see CAPTIONS — anything else is left as a raw
+capture) it builds a polished, store-ready frame:
   * a rich four-colour mesh gradient (the app's onboarding palette) that flows
     continuously across the set of pages for each device,
   * the screenshot with rounded corners, a soft shadow and a slight tilt,
@@ -72,9 +73,13 @@ MESH_BLOBS = (
 DARK_WASH = 0.12
 
 # The pages, in the order they should flow across the gradient.
-PAGE_ORDER = ["recipe", "shopping_list", "smart_meal_plan", "recipe_detail"]
+PAGE_ORDER = ["recipe", "swipe", "shopping_list", "smart_meal_plan", "recipe_detail"]
 
-# headline + subtitle per page.
+# headline + subtitle per page. This doubles as the list of pages worth framing:
+# a screenshot with no caption here is kept as a raw capture and skipped (see
+# main()). The test takes more screenshots than the stores should see —
+# settings pages, the swipe setup form, a failure capture — and a store image
+# without a headline is just a screenshot on a gradient.
 CAPTIONS = {
     "shopping_list": (
         "In sync, every aisle",
@@ -88,6 +93,11 @@ CAPTIONS = {
     "smart_meal_plan": (
         "Smart meal planner",
         "A balanced weekly plan tailored to your tastes, at the tap of a button.",
+    ),
+    "swipe": (
+        "Swipe, and it's decided",
+        "Everyone swipes through the same recipes — the plan builds itself out "
+        "of what you all liked.",
     ),
     "recipe_detail": (
         "All your recipes in one place",
@@ -246,7 +256,7 @@ def _logo_row(canvas, width, top, logo):
 
 def _caption_metrics(canvas, width, page, max_w, gap):
     draw = ImageDraw.Draw(canvas)
-    headline, subtitle = CAPTIONS.get(page, (page.replace("_", " ").title(), ""))
+    headline, subtitle = CAPTIONS[page]
     hf = _font("bold", round(width * 0.072))
     sf = _font("medium", round(width * 0.036))
     hlines = _wrap(draw, headline, hf, max_w)
@@ -334,7 +344,10 @@ def _compose(page, shot, gradient_slice, width, height, layout, logo):
 def main():
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("screenshots")
     out = root / "framed"
-    sources = [p for p in sorted(root.glob("*.png")) if p.parent == root]
+    sources = [
+        p for p in sorted(root.glob("*.png"))
+        if p.parent == root and _page_of(p.stem) in CAPTIONS
+    ]
     if not sources:
         print("No screenshots found in", root)
         return

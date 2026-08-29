@@ -27,6 +27,7 @@ import 'package:couple_planner/features/recipes/services/recipe_photos.dart';
 import 'package:couple_planner/features/groups/invite_links.dart';
 import 'package:couple_planner/features/auth/pages/onboarding_page.dart';
 import 'package:couple_planner/features/shopping_list/pages/shopping_list_page.dart';
+import 'package:couple_planner/features/money/pages/money_page.dart';
 import 'package:couple_planner/features/groups/pages/join_group_page.dart';
 import 'package:couple_planner/features/groups/pages/group_overview_page.dart';
 import 'package:couple_planner/features/groups/pages/create_group_page.dart';
@@ -1499,8 +1500,7 @@ class _HomePageState extends State<HomePage> {
         // Replace with your real CalendarPage when ready
         return const _PlaceholderPage(label: 'Calendar');
       case 'money':
-        // Replace with your real MoneyPage when ready
-        return const _PlaceholderPage(label: 'Money splitting');
+        return MoneyPage(groupId: _selectedGroup!);
       default:
         return const SizedBox.shrink();
     }

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 
 import 'package:couple_planner/features/recipes/services/swipe_session_service.dart';
 import 'package:couple_planner/features/recipes/widgets/meal_plan_mesh.dart';
