@@ -10,6 +10,7 @@ import 'package:couple_planner/features/money/models/money_category.dart';
 import 'package:couple_planner/features/money/models/money_entry.dart';
 import 'package:couple_planner/features/money/models/split_mode.dart';
 import 'package:couple_planner/features/money/services/split_calculator.dart';
+import 'package:couple_planner/features/money/widgets/money_ui.dart';
 
 /// Create or edit one expense.
 ///
@@ -61,6 +62,14 @@ class _AddExpensePageState extends State<AddExpensePage> {
   String? _imagePath;
   bool _saving = false;
 
+  /// Whether the user has edited the amount themselves. An expense opened for
+  /// editing starts with one filled in, so it counts as touched from the off.
+  bool _amountEdited = false;
+
+  /// Set by the first save attempt. From then on the form says what is wrong,
+  /// however little has been filled in.
+  bool _submitted = false;
+
   MoneyContext get ctx => widget.ctx;
 
   bool get _isEdit => widget.entry != null;
@@ -93,6 +102,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
       _imagePath = entry.imagePath;
       _selected.addAll(entry.owes.keys);
       _multiPayer = entry.paidBy.length > 1;
+      _amountEdited = true;
       _payer = entry.paidBy.keys.isEmpty ? ctx.myUid : entry.paidBy.keys.first;
       for (final e in entry.paidBy.entries) {
         _payerCtrls[e.key] = TextEditingController(text: ctx.format.toInput(e.value));
@@ -103,7 +113,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
     } else {
       _selected.addAll(_people);
     }
-    _amountCtrl.addListener(() => setState(() {}));
+    _amountCtrl.addListener(_onAmountChanged);
   }
 
   @override
@@ -120,6 +130,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
     }
     super.dispose();
   }
+
+  /// Rebuilds for the live preview of the split.
+  void _onAmountChanged() => setState(() {});
 
   // ── derived ───────────────────────────────────────────────────────────────
 
@@ -172,24 +185,17 @@ class _AddExpensePageState extends State<AddExpensePage> {
   TextEditingController _ctrlFor(String id) =>
       _shareCtrls.putIfAbsent(id, () => TextEditingController());
 
-  /// Whether the user has started filling the form in. Used to hold back the
-  /// validation line until there is actually something to correct.
-  bool get _touched =>
-      _descriptionCtrl.text.trim().isNotEmpty || _amountCtrl.text.trim().isNotEmpty;
-
-  String _dateLabel() {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    final now = DateTime.now();
-    final day = DateTime(_date.year, _date.month, _date.day);
-    final today = DateTime(now.year, now.month, now.day);
-    final diff = today.difference(day).inDays;
-    if (diff == 0) return 'Today';
-    if (diff == 1) return 'Yesterday';
-    final label = '${_date.day} ${months[_date.month - 1]}';
-    return _date.year == now.year ? label : '$label ${_date.year}';
+  /// Whether to show the reason the form cannot be saved yet.
+  ///
+  /// Naming a field the user has not reached is nagging, not helping: typing a
+  /// description used to be enough to be told off for the empty amount, before
+  /// there was any chance to fill it in. So the line stays quiet until either
+  /// they have actually been in both fields, or they have asked to save and
+  /// deserve an answer.
+  bool get _showProblem {
+    if (_submitted) return true;
+    if (_descriptionCtrl.text.trim().isEmpty) return false;
+    return _amountEdited;
   }
 
   /// Null when the form can be saved; otherwise the reason it cannot.
@@ -203,10 +209,14 @@ class _AddExpensePageState extends State<AddExpensePage> {
       paid += v;
     }
     if (paid != _amount) {
-      final off = paid - _amount;
-      return off > 0
-          ? 'The payers add up to ${ctx.format.formatAbs(off)} too much.'
-          : '${ctx.format.formatAbs(off)} of the payment is unaccounted for.';
+      // Naming the gap alone ("2,40 unaccounted for") makes the user do the
+      // arithmetic to find out what they actually typed. Show the running
+      // total against the expense total and the fix is obvious.
+      return paid > _amount
+          ? 'The payers add up to ${ctx.format.format(paid)}, '
+              'more than the ${ctx.format.format(_amount)} total.'
+          : 'The payers add up to ${ctx.format.format(paid)} '
+              'of ${ctx.format.format(_amount)}.';
     }
 
     final input = _splitInput;
@@ -269,17 +279,14 @@ class _AddExpensePageState extends State<AddExpensePage> {
         for (final id in ids) {
           _ctrlFor(id).text = (even[id]! / 100).toStringAsFixed(2);
         }
+      // Money fields start empty rather than at 0,00. A pre-filled amount is
+      // noise you have to clear, and tapping into one lands the caret in the
+      // middle of it, which is exactly the case that is awkward to correct.
+      // Empty reads as nothing assigned yet, which is the truth.
       case SplitMode.exact:
-        final even = splitByWeights(
-          _amount > 0 ? _amount : 0,
-          {for (final id in ids) id: 1},
-        );
-        for (final id in ids) {
-          _ctrlFor(id).text = ctx.format.toInput(even[id]!);
-        }
       case SplitMode.adjustment:
         for (final id in ids) {
-          _ctrlFor(id).text = ctx.format.toInput(0);
+          _ctrlFor(id).clear();
         }
       case SplitMode.equal:
       case SplitMode.settlement:
@@ -290,11 +297,10 @@ class _AddExpensePageState extends State<AddExpensePage> {
   void _toggleMultiPayer(bool value) {
     setState(() {
       _multiPayer = value;
-      if (value) {
-        final controller =
-            _payerCtrls.putIfAbsent(_payer, () => TextEditingController());
-        controller.text = ctx.format.toInput(_amount);
-      }
+      // Deliberately no pre-filled total on the first payer: it would be one
+      // more amount to tap into and correct. The counter under the rows says
+      // how much is still unaccounted for.
+      if (value) _payerCtrls.putIfAbsent(_payer, () => TextEditingController());
     });
   }
 
@@ -343,9 +349,10 @@ class _AddExpensePageState extends State<AddExpensePage> {
   }
 
   Future<void> _save() async {
-    final problem = _problem;
-    if (problem != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(problem)));
+    if (_problem != null) {
+      // No snackbar: the reason appears in the bar directly above the button,
+      // which is where the user is already looking.
+      setState(() => _submitted = true);
       return;
     }
     setState(() => _saving = true);
@@ -407,9 +414,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 16),
               children: [
-          _hero(),
-          _section('PAID BY', _payerSection()),
-          _section('SPLIT', [
+                _hero(),
+                MoneySection('PAID BY', children: _payerSection()),
+                MoneySection('SPLIT', children: [
             SizedBox(
               width: double.infinity,
               child: SegmentedButton<SplitMode>(
@@ -440,14 +447,14 @@ class _AddExpensePageState extends State<AddExpensePage> {
             ),
             for (final id in _people) _splitRow(id, preview),
           ]),
-          _section('DETAILS', [
+                MoneySection('DETAILS', children: [
             TextField(
               controller: _noteCtrl,
               maxLines: 3,
               minLines: 1,
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(
-                hintText: 'Note, anything worth remembering',
+                hintText: 'Note',
               ),
             ),
             const SizedBox(height: 12),
@@ -480,143 +487,99 @@ class _AddExpensePageState extends State<AddExpensePage> {
           hintStyle: hintStyle,
         );
 
-    final titleStyle =
-        theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600);
-    final amountStyle = theme.textTheme.displaySmall
-        ?.copyWith(fontWeight: FontWeight.w700, color: scheme.primary);
+    final titleStyle = moneyHeroTitleStyle(context);
+    final amountStyle = moneyHeroAmountStyle(context);
 
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 26, 20, 18),
-        child: Column(
-          children: [
-            TextField(
-              controller: _descriptionCtrl,
-              // Straight into typing on a new expense; editing an existing one
-              // opens without the keyboard covering half the form.
-              autofocus: !_isEdit,
-              textAlign: TextAlign.center,
-              textCapitalization: TextCapitalization.sentences,
-              textInputAction: TextInputAction.next,
-              onSubmitted: (_) => _amountFocus.requestFocus(),
-              style: titleStyle,
-              decoration: bare(
-                'What was it?',
-                titleStyle?.copyWith(color: scheme.outlineVariant),
-              ),
-              onChanged: (_) => setState(() {}),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _amountCtrl,
-              focusNode: _amountFocus,
-              textAlign: TextAlign.center,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              textInputAction: TextInputAction.done,
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))
-              ],
-              style: amountStyle,
-              decoration: bare(
-                ctx.format.toInput(0),
-                amountStyle?.copyWith(color: scheme.outlineVariant),
-              ).copyWith(
-                prefixText: '${ctx.format.symbol} ',
-                prefixStyle: theme.textTheme.titleLarge
-                    ?.copyWith(color: scheme.outline, fontWeight: FontWeight.w500),
-              ),
-            ),
-            const SizedBox(height: 20),
-            // Date and category are attributes of the expense, not questions of
-            // their own, so they sit here as quiet chips instead of taking up a
-            // row of full-width buttons.
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [_dateChip(), _categoryChip()],
-            ),
-          ],
+    return MoneyHero(
+      children: [
+        TextField(
+          controller: _descriptionCtrl,
+          // Straight into typing on a new expense; editing an existing one
+          // opens without the keyboard covering half the form.
+          autofocus: !_isEdit,
+          textAlign: TextAlign.center,
+          textCapitalization: TextCapitalization.sentences,
+          textInputAction: TextInputAction.next,
+          onSubmitted: (_) => _amountFocus.requestFocus(),
+          style: titleStyle,
+          decoration: bare(
+            'What was it?',
+            titleStyle?.copyWith(color: scheme.outlineVariant),
+          ),
+          onChanged: (_) => setState(() {}),
         ),
-      ),
-    );
-  }
-
-  /// One titled block. The label is small and quiet: it orients, it does not
-  /// compete.
-  Widget _section(String title, List<Widget> children) {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1.1,
-                  ),
-            ),
-            const SizedBox(height: 10),
-            ...children,
-          ],
+        const SizedBox(height: 16),
+        MoneyAmountField(
+          controller: _amountCtrl,
+          format: ctx.format,
+          focusNode: _amountFocus,
+          textAlign: TextAlign.center,
+          textInputAction: TextInputAction.done,
+          style: amountStyle,
+          onChanged: (_) {
+            if (!_amountEdited) setState(() => _amountEdited = true);
+          },
+          decoration: bare(
+            ctx.format.toInput(0),
+            amountStyle?.copyWith(color: scheme.outlineVariant),
+          ).copyWith(
+            prefixText: '${ctx.format.symbol} ',
+            prefixStyle: theme.textTheme.titleLarge
+                ?.copyWith(color: scheme.outline, fontWeight: FontWeight.w500),
+          ),
         ),
-      ),
+        const SizedBox(height: 20),
+        // Date and category are attributes of the expense, not questions of
+        // their own, so they sit here as quiet chips instead of taking up a
+        // row of full-width buttons.
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          alignment: WrapAlignment.center,
+          children: [_dateChip(), _categoryChip()],
+        ),
+      ],
     );
   }
 
   Widget _actionBar(String? problem) {
     final scheme = Theme.of(context).colorScheme;
     final blocked = problem != null;
-    return Container(
-      decoration: BoxDecoration(
-        color: scheme.surface,
-        border: Border(top: BorderSide(color: scheme.outlineVariant)),
-      ),
-      child: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Shown only once there is something to correct, so a blank form
-            // is not greeted with a complaint.
-            if (blocked && _touched)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Text(
-                  problem,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12.5, color: scheme.error),
-                ),
-              ),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: FilledButton(
-                onPressed: (_saving || blocked) ? null : _save,
-                child: _saving
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(_isEdit ? 'Save changes' : 'Add expense'),
+    return MoneyActionBar(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (blocked && _showProblem)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                problem,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: scheme.error),
               ),
             ),
-          ],
-        ),
+          SizedBox(
+            width: double.infinity,
+            height: 52,
+            child: FilledButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(_isEdit ? 'Save changes' : 'Add expense'),
+            ),
+          ),
+        ],
       ),
     );
   }
 
   Widget _dateChip() => ActionChip(
         avatar: const Icon(Icons.event_outlined, size: 18),
-        label: Text(_dateLabel()),
+        label: Text(moneyDateLabel(_date)),
         onPressed: _pickDate,
       );
 
@@ -683,15 +646,11 @@ class _AddExpensePageState extends State<AddExpensePage> {
             title: Text(ctx.nameFor(id)),
             trailing: SizedBox(
               width: 110,
-              child: TextField(
+              child: MoneyAmountField(
                 controller:
                     _payerCtrls.putIfAbsent(id, () => TextEditingController()),
+                format: ctx.format,
                 textAlign: TextAlign.end,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))
-                ],
                 decoration: InputDecoration(prefixText: '${ctx.format.symbol} '),
                 onChanged: (_) => setState(() {}),
               ),
@@ -702,8 +661,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
           child: Text(
             paid == _amount
                 ? 'Payers add up.'
-                : '${ctx.format.formatAbs(_amount - paid)} '
-                    '${paid > _amount ? 'too much' : 'still unassigned'}',
+                : '${ctx.format.format(paid)} of ${ctx.format.format(_amount)}',
             style: TextStyle(
               fontSize: 12.5,
               color: paid == _amount
@@ -730,30 +688,42 @@ class _AddExpensePageState extends State<AddExpensePage> {
 
     Widget? trailing;
     if (selected && _mode != SplitMode.equal) {
+      final decoration = InputDecoration(
+        prefixText: _mode == SplitMode.percent ? null : '${ctx.format.symbol} ',
+        suffixText: _mode == SplitMode.percent
+            ? '%'
+            : (_mode == SplitMode.shares ? 'x' : null),
+      );
       trailing = SizedBox(
         width: 110,
-        child: TextField(
-          controller: _ctrlFor(id),
-          textAlign: TextAlign.end,
-          keyboardType: TextInputType.numberWithOptions(
-            decimal: _mode != SplitMode.shares,
-            signed: _mode == SplitMode.adjustment,
-          ),
-          inputFormatters: [
-            FilteringTextInputFormatter.allow(
-              _mode == SplitMode.adjustment
-                  ? RegExp(r'[0-9.,-]')
-                  : RegExp(r'[0-9.,]'),
-            ),
-          ],
-          decoration: InputDecoration(
-            prefixText: _mode == SplitMode.percent ? null : '${ctx.format.symbol} ',
-            suffixText: _mode == SplitMode.percent
-                ? '%'
-                : (_mode == SplitMode.shares ? 'x' : null),
-          ),
-          onChanged: (_) => setState(() {}),
-        ),
+        // Exact amounts are money and fill from the right like the total does.
+        // Shares are plain integers and percentages want a typed decimal
+        // point, so those stay ordinary fields.
+        child: _mode == SplitMode.exact
+            ? MoneyAmountField(
+                controller: _ctrlFor(id),
+                format: ctx.format,
+                textAlign: TextAlign.end,
+                decoration: decoration,
+                onChanged: (_) => setState(() {}),
+              )
+            : TextField(
+                controller: _ctrlFor(id),
+                textAlign: TextAlign.end,
+                keyboardType: TextInputType.numberWithOptions(
+                  decimal: _mode != SplitMode.shares,
+                  signed: _mode == SplitMode.adjustment,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(
+                    _mode == SplitMode.adjustment
+                        ? RegExp(r'[0-9.,-]')
+                        : RegExp(r'[0-9.,]'),
+                  ),
+                ],
+                decoration: decoration,
+                onChanged: (_) => setState(() {}),
+              ),
       );
     }
 
@@ -766,8 +736,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
         setState(() {
           if (value == true) {
             _selected.add(id);
-            if (_mode != SplitMode.equal && _ctrlFor(id).text.isEmpty) {
-              _ctrlFor(id).text = _mode == SplitMode.shares ? '1' : '0';
+            // A weight of 1 is a meaningful default; an amount of zero is not.
+            if (_mode == SplitMode.shares && _ctrlFor(id).text.isEmpty) {
+              _ctrlFor(id).text = '1';
             }
           } else {
             _selected.remove(id);

@@ -143,6 +143,10 @@ somebody outside the group. Claiming is the guarded part:
 
 - you may only ever point a placeholder at **yourself**, and only while nobody
   has claimed it;
+- you may clear a claim that is already **yours**. Without that, claiming was a
+  one-way door for anybody but an admin, since the rule above only matches
+  while `claimedBy` is null: the person who picked the wrong name was the one
+  person who could not put it back;
 - admins may re-assign or clear a claim (the fix for a mis-claim);
 - `claimedBy` must always name an **active full member**, which is what keeps
   resolution one hop deep;
@@ -344,9 +348,18 @@ A banner rather than a modal on join, deliberately: no new navigation plumbing
 in `main.dart` or `join_group_page.dart`, it survives being dismissed by
 accident, and it comes back when a *new* placeholder is added.
 
-**Admin override.** The People screen lets an admin link a placeholder to any
-member, unlink it, rename or archive it. Unlink is a plain `claimedBy: null`
-write — reversible precisely because claiming never rewrote anything.
+**Undoing it.** A linked placeholder stops being a person in its own right, so
+the People screen folds it onto the member it points at: `resolve()` already
+makes every balance and expense say that member's name, and listing it twice
+just shows the same human twice. It is shown on **your own row only**, where you
+can unlink it. Admins additionally see everyone's, since they are the ones who
+repair a claim somebody else made by mistake. Unlink is a plain
+`claimedBy: null` write, reversible precisely because claiming never rewrote
+anything.
+
+A placeholder whose claimer has since **left the group** keeps a row of its own
+in the unlinked list, marked as such. Otherwise it would be folded onto a member
+row that no longer exists and could never be reached again.
 
 | Edge case | Behaviour |
 |---|---|

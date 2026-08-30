@@ -5,6 +5,7 @@ import 'package:couple_planner/features/money/money_context.dart';
 import 'package:couple_planner/features/money/pages/person_detail_page.dart';
 import 'package:couple_planner/features/money/services/balance_engine.dart';
 import 'package:couple_planner/features/money/services/settlement_solver.dart';
+import 'package:couple_planner/features/money/widgets/money_ui.dart';
 
 /// Shows the shortest set of payments that clears every balance, and lets a
 /// payment be recorded once it has actually happened.
@@ -133,7 +134,7 @@ class _SettleUpPageState extends State<SettleUpPage> {
           else ...[
             // No sentence restating the plan: the cards below already say how
             // many payments there are and who makes them.
-            const _Header('Payments'),
+            const MoneyListHeader('PAYMENTS'),
             SwitchListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
               visualDensity: VisualDensity.compact,
@@ -169,11 +170,11 @@ class _SettleUpPageState extends State<SettleUpPage> {
     final open = ctx.ledger.openIdentities;
     if (open.isEmpty) return const [];
     return [
-      const _Header('Balances'),
+      const MoneyListHeader('BALANCES'),
       for (final id in open)
         ListTile(
           leading: CircleAvatar(
-            child: Text(_initial(ctx.directory.properNameFor(id))),
+            child: Text(moneyInitial(ctx.directory.properNameFor(id))),
           ),
           title: Text(ctx.directory.properNameFor(id)),
           subtitle: ctx.directory.isFormer(id)
@@ -486,26 +487,3 @@ class _ManualPaymentDialogState extends State<_ManualPaymentDialog> {
     );
   }
 }
-
-class _Header extends StatelessWidget {
-  const _Header(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      child: Text(
-        title,
-        style: Theme.of(context)
-            .textTheme
-            .titleSmall
-            ?.copyWith(fontWeight: FontWeight.w700),
-      ),
-    );
-  }
-}
-
-String _initial(String name) =>
-    name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();

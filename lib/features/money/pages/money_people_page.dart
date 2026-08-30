@@ -59,37 +59,10 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
     }
   }
 
-  Future<String?> _askName({String initial = ''}) async {
-    final controller = TextEditingController(text: initial);
-    try {
-      return await _nameDialog(controller, initial);
-    } finally {
-      controller.dispose();
-    }
-  }
-
-  Future<String?> _nameDialog(TextEditingController controller, String initial) {
+  Future<String?> _askName({String initial = ''}) {
     return showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(initial.isEmpty ? 'Add a person' : 'Rename'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(labelText: 'Name'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+      builder: (context) => _NameDialog(initial: initial),
     );
   }
 
@@ -126,8 +99,37 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
 
   @override
   Widget build(BuildContext context) {
-    final ghosts = List<MoneyPerson>.of(_people ?? ctx.directory.people)
+    final all = List<MoneyPerson>.of(_people ?? ctx.directory.people)
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+    // Once a placeholder is linked, it stops being a person in its own right:
+    // resolve() folds it onto the member, so every balance, expense and
+    // settle-up line already says the member's name. Listing it separately
+    // just shows the same human twice.
+    //
+    // It cannot simply disappear, though, or a wrong link could never be
+    // undone. So it moves onto the member it points at, and keeps its own row
+    // only when its claimer is no longer in the group, which would otherwise
+    // strand it with no way back.
+    final linkedTo = <String, List<MoneyPerson>>{};
+    for (final person in all) {
+      final claimer = person.claimedBy;
+      if (claimer != null && ctx.directory.memberUids.contains(claimer)) {
+        (linkedTo[claimer] ??= <MoneyPerson>[]).add(person);
+      }
+    }
+    final ghosts = all
+        .where((p) => !linkedTo.values.any((list) => list.contains(p)))
+        .toList();
+
+    // Your alias is your business. It shows on your own row so you can undo a
+    // wrong pick, and nobody else has to see that Ben is also "Ben's flatmate".
+    // Admins still see everyone's, because they are the ones who repair a
+    // claim somebody else made by mistake.
+    List<MoneyPerson> visibleLinks(String uid) =>
+        (uid == ctx.myUid || ctx.isAdmin)
+            ? (linkedTo[uid] ?? const <MoneyPerson>[])
+            : const <MoneyPerson>[];
 
     return Scaffold(
       appBar: AppBar(title: const Text('People')),
@@ -141,12 +143,7 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
         children: [
           const _Header('Members'),
           for (final uid in ctx.directory.memberUids)
-            ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-              title: Text(ctx.directory.properNameFor(uid)),
-              subtitle: uid == ctx.myUid ? const Text('you') : null,
-              trailing: Text(ctx.format.format(ctx.netFor(uid))),
-            ),
+            _memberTile(uid, visibleLinks(uid)),
           const _Header('Not in the group yet'),
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -168,13 +165,51 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
     );
   }
 
+  Widget _memberTile(String uid, List<MoneyPerson> linked) {
+    final notes = <String>[
+      if (uid == ctx.myUid) 'you',
+      if (linked.isNotEmpty) 'also added as ${linked.map((p) => p.name).join(', ')}',
+    ];
+
+    return ListTile(
+      leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+      title: Text(ctx.directory.properNameFor(uid)),
+      subtitle: notes.isEmpty
+          ? null
+          : Text(notes.join(' · '), style: const TextStyle(fontSize: 12)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(ctx.format.format(ctx.netFor(uid))),
+          if (linked.isNotEmpty)
+            PopupMenuButton<String>(
+              enabled: !_busy,
+              tooltip: 'Unlink',
+              onSelected: (personId) => _run(
+                () => ctx.repo.setPersonClaim(personId, null),
+                'Could not unlink that person.',
+              ),
+              itemBuilder: (context) => [
+                for (final person in linked)
+                  PopupMenuItem(
+                    value: person.id,
+                    child: Text('Unlink ${person.name}'),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _personTile(MoneyPerson person) {
-    final claimedName =
-        person.isClaimed ? ctx.directory.properNameFor(person.claimedBy!) : null;
+    // Anything reaching here is unlinked, or linked to somebody who has since
+    // left the group.
+    final stranded = person.isClaimed;
 
     return ListTile(
       leading: CircleAvatar(
-        child: Icon(person.isClaimed ? Icons.link : Icons.person_outline),
+        child: Icon(stranded ? Icons.link_off : Icons.person_outline),
       ),
       title: Text(
         person.name,
@@ -183,8 +218,8 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
         ),
       ),
       subtitle: Text(
-        claimedName != null
-            ? 'linked to $claimedName'
+        stranded
+            ? 'linked to someone who left the group'
             : (person.archived ? 'archived' : 'not linked to an account'),
         style: const TextStyle(fontSize: 12),
       ),
@@ -214,7 +249,7 @@ class _MoneyPeoplePageState extends State<MoneyPeoplePage> {
             value: 'archive',
             child: Text(person.archived ? 'Unarchive' : 'Archive'),
           ),
-          if (!person.isClaimed)
+          if (!stranded)
             const PopupMenuItem(value: 'claim', child: Text("That's me")),
           if (ctx.isAdmin)
             const PopupMenuItem(value: 'link', child: Text('Link to a member…')),
@@ -240,6 +275,56 @@ class _Header extends StatelessWidget {
             .titleSmall
             ?.copyWith(fontWeight: FontWeight.w700),
       ),
+    );
+  }
+}
+
+/// Asks for a name.
+///
+/// Owns its own controller on purpose. Creating one in the caller and
+/// disposing it once `showDialog` completes tears it out from under a
+/// TextField that is still mounted for the dialog's exit animation, which
+/// crashes the element teardown.
+class _NameDialog extends StatefulWidget {
+  const _NameDialog({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_NameDialog> createState() => _NameDialogState();
+}
+
+class _NameDialogState extends State<_NameDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.of(context).pop(_controller.text.trim());
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.initial.isEmpty ? 'Add a person' : 'Rename'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.words,
+        textInputAction: TextInputAction.done,
+        onSubmitted: (_) => _submit(),
+        decoration: const InputDecoration(hintText: 'Name'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Save')),
+      ],
     );
   }
 }

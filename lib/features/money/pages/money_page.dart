@@ -16,6 +16,7 @@ import 'package:couple_planner/features/money/pages/settle_up_page.dart';
 import 'package:couple_planner/features/money/services/balance_engine.dart';
 import 'package:couple_planner/features/money/services/money_format.dart';
 import 'package:couple_planner/features/money/services/money_repository.dart';
+import 'package:couple_planner/features/money/widgets/money_ui.dart';
 
 /// The Money tab: a summary of where everyone stands, plus the group's
 /// activity. Every other money screen is pushed from here.
@@ -356,7 +357,7 @@ class _MoneyPageState extends State<MoneyPage> {
       ];
     }
 
-    final widgets = <Widget>[const _SectionHeader('Activity')];
+    final widgets = <Widget>[const MoneyListHeader('ACTIVITY')];
     String? lastMonth;
     for (final entry in ctx.entries) {
       final month = _monthLabel(entry.date);
@@ -381,6 +382,7 @@ class _MoneyPageState extends State<MoneyPage> {
     final scheme = Theme.of(context).colorScheme;
     final settlement = entry.type == MoneyEntryType.settlement;
     final mine = ctx.myShareOf(entry);
+    final involved = ctx.involvesMe(entry);
 
     String title;
     if (settlement) {
@@ -392,7 +394,7 @@ class _MoneyPageState extends State<MoneyPage> {
     }
 
     final String subtitle;
-    if (!ctx.involvesMe(entry)) {
+    if (!involved) {
       subtitle = 'not involving you';
     } else if (settlement) {
       subtitle = mine > 0 ? 'you paid' : 'you received';
@@ -404,7 +406,12 @@ class _MoneyPageState extends State<MoneyPage> {
       subtitle = 'your share is nothing';
     }
 
-    return ListTile(
+    // Somebody else's expense still belongs in the group's history, and is
+    // still worth opening, but it should not read as something that concerns
+    // you. Dimming the whole row says that without hiding anything.
+    return Opacity(
+      opacity: involved ? 1 : 0.45,
+      child: ListTile(
       leading: CircleAvatar(
         backgroundColor: settlement ? scheme.tertiaryContainer : scheme.secondaryContainer,
         foregroundColor: settlement ? scheme.onTertiaryContainer : scheme.onSecondaryContainer,
@@ -423,37 +430,18 @@ class _MoneyPageState extends State<MoneyPage> {
             ),
         ],
       ),
-      subtitle: Text('${_dayLabel(entry.date)} · $subtitle'),
+      subtitle: Text('${moneyDateLabel(entry.date)} · $subtitle'),
       trailing: Text(
         ctx.format.format(entry.amount),
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       onTap: () => _open(EntryDetailPage(ctx: ctx, entry: entry)),
+      ),
     );
   }
 }
 
 // ── shared bits ─────────────────────────────────────────────────────────────
-
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
-      child: Text(
-        title,
-        style: Theme.of(context)
-            .textTheme
-            .titleSmall
-            ?.copyWith(fontWeight: FontWeight.w700),
-      ),
-    );
-  }
-}
 
 const List<String> _months = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -464,15 +452,4 @@ String _monthLabel(DateTime date) {
   final now = DateTime.now();
   final name = _months[date.month - 1];
   return date.year == now.year ? name : '$name ${date.year}';
-}
-
-/// "Today", "Yesterday", or "5 Mar".
-String _dayLabel(DateTime date) {
-  final now = DateTime.now();
-  final day = DateTime(date.year, date.month, date.day);
-  final today = DateTime(now.year, now.month, now.day);
-  final diff = today.difference(day).inDays;
-  if (diff == 0) return 'Today';
-  if (diff == 1) return 'Yesterday';
-  return '${date.day} ${_months[date.month - 1].substring(0, 3)}';
 }

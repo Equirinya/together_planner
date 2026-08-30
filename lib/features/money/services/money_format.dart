@@ -60,7 +60,10 @@ class MoneyFormat {
   String format(int minorUnits, {bool signed = false}) {
     final negative = minorUnits < 0;
     final digits = _digits(minorUnits.abs());
-    final body = _suffix ? '$digits $symbol' : '$symbol$digits';
+    // A non-breaking space, so an amount never wraps away from its symbol.
+    // Written as an escape on purpose: a literal one here is invisible in
+    // the source and silently breaks anything comparing the output.
+    final body = _suffix ? '$digits\u00A0$symbol' : '$symbol$digits';
     if (negative) return '-$body';
     if (signed) return '+$body';
     return body;
