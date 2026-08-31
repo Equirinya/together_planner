@@ -357,29 +357,28 @@ class _MoneyPageState extends State<MoneyPage> {
       ];
     }
 
+    // A header per day rather than per month: the day label already names the
+    // month (and the year, once it is not this one), so a month header on top
+    // of it would say the same thing twice. Naming the day here is also what
+    // lets every row drop the date from its subtitle.
     final widgets = <Widget>[const MoneyListHeader('ACTIVITY')];
-    String? lastMonth;
     DateTime? lastDay;
     for (final entry in ctx.entries) {
-      final month = _monthLabel(entry.date);
       final day = DateTime(entry.date.year, entry.date.month, entry.date.day);
-      if (month != lastMonth) {
-        lastMonth = month;
+      if (day != lastDay) {
+        lastDay = day;
         widgets.add(Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-          child: Text(month,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: Theme.of(context).colorScheme.outline,
-              )),
+          child: Text(
+            moneyDateLabel(entry.date),
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Theme.of(context).colorScheme.outline,
+            ),
+          ),
         ));
-      } else if (lastDay != null && day != lastDay) {
-        // A day is a natural unit of "what did we spend on"; a gap says so
-        // without a header repeating a date the rows already carry.
-        widgets.add(const SizedBox(height: 14));
       }
-      lastDay = day;
       widgets.add(_entryTile(ctx, entry));
     }
     return widgets;
@@ -440,7 +439,7 @@ class _MoneyPageState extends State<MoneyPage> {
             ),
         ],
       ),
-      subtitle: Text('${moneyDateLabel(entry.date)} · $subtitle'),
+      subtitle: Text(subtitle),
       trailing: Text(
         ctx.format.format(entry.amount),
         style: const TextStyle(fontWeight: FontWeight.w600),
@@ -449,17 +448,4 @@ class _MoneyPageState extends State<MoneyPage> {
       ),
     );
   }
-}
-
-// ── shared bits ─────────────────────────────────────────────────────────────
-
-const List<String> _months = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
-
-String _monthLabel(DateTime date) {
-  final now = DateTime.now();
-  final name = _months[date.month - 1];
-  return date.year == now.year ? name : '$name ${date.year}';
 }

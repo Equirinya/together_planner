@@ -663,22 +663,20 @@ class _AddExpensePageState extends State<AddExpensePage> {
                 label: Text(ctx.nameFor(id)),
                 selected: _payer == id,
                 onSelected: (_) => setState(() => _payer = id),
-                // A chip defaults to padding itself out to a 48dp tap target,
-                // which is invisible but doubles the gap between wrapped rows.
-                // Shrinking that back makes runSpacing mean what it says, and
-                // the row of names much shorter when it wraps.
+                // Only the invisible part is trimmed: a chip pads itself out
+                // to a 48dp tap target, which does not show but doubles the
+                // gap between wrapped rows. The chip keeps its normal size;
+                // dropping this is what makes runSpacing mean what it says.
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               ),
           ],
         )
       else ...[
         for (final id in _people)
           Padding(
-            // Adjacent filled fields with nothing between them read as one
-            // control, so every row keeps a little air around it.
-            padding: const EdgeInsets.symmetric(vertical: 4),
+            // Just enough that adjacent filled fields do not read as one
+            // control. Any more and the list starts to sprawl.
+            padding: const EdgeInsets.symmetric(vertical: 2),
             child: Row(
               children: [
                 Expanded(child: Text(ctx.nameFor(id))),
@@ -718,7 +716,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
       ],
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
-        visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
+        visualDensity: VisualDensity.compact,
         dense: true,
         materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         title: const Text('Several people paid', style: TextStyle(fontSize: 14)),
@@ -783,7 +781,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: CheckboxListTile(
       contentPadding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
