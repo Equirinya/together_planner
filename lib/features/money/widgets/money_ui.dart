@@ -125,6 +125,11 @@ class MoneyActionBar extends StatelessWidget {
   }
 }
 
+/// Renders a share multiplier: 2 as "2", 1.5 as "1.5".
+String formatShareCount(num value) => value == value.roundToDouble()
+    ? value.round().toString()
+    : value.toString();
+
 String moneyInitial(String name) =>
     name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
 

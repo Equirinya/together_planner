@@ -359,8 +359,10 @@ class _MoneyPageState extends State<MoneyPage> {
 
     final widgets = <Widget>[const MoneyListHeader('ACTIVITY')];
     String? lastMonth;
+    DateTime? lastDay;
     for (final entry in ctx.entries) {
       final month = _monthLabel(entry.date);
+      final day = DateTime(entry.date.year, entry.date.month, entry.date.day);
       if (month != lastMonth) {
         lastMonth = month;
         widgets.add(Padding(
@@ -372,7 +374,12 @@ class _MoneyPageState extends State<MoneyPage> {
                 color: Theme.of(context).colorScheme.outline,
               )),
         ));
+      } else if (lastDay != null && day != lastDay) {
+        // A day is a natural unit of "what did we spend on"; a gap says so
+        // without a header repeating a date the rows already carry.
+        widgets.add(const SizedBox(height: 14));
       }
+      lastDay = day;
       widgets.add(_entryTile(ctx, entry));
     }
     return widgets;
@@ -401,9 +408,12 @@ class _MoneyPageState extends State<MoneyPage> {
     } else if (mine > 0) {
       subtitle = 'you lent ${ctx.format.formatAbs(mine)}';
     } else if (mine < 0) {
-      subtitle = 'your share ${ctx.format.formatAbs(mine)}';
+      // Not "your share": this is what the entry did to your balance, which is
+      // your share minus whatever you put in. Someone who paid half of a bill
+      // they are splitting has a share, but owes nothing for it.
+      subtitle = 'you owe ${ctx.format.formatAbs(mine)}';
     } else {
-      subtitle = 'your share is nothing';
+      subtitle = 'you paid your share';
     }
 
     // Somebody else's expense still belongs in the group's history, and is

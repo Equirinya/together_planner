@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_material_design_icons/flutter_material_design_icons.dart';
 
 import 'package:couple_planner/features/money/money_context.dart';
 import 'package:couple_planner/features/money/pages/person_detail_page.dart';
@@ -203,17 +204,29 @@ class _SettleUpPageState extends State<SettleUpPage> {
     final from = ctx.directory.properNameFor(payment.from);
     final to = ctx.directory.properNameFor(payment.to);
     final youPay = payment.from == ctx.myUid;
+    final youReceive = payment.to == ctx.myUid;
+
+    // The plain up/down arrows read as sorting rather than money, and the old
+    // either/or gave a payment between two other people a "money coming in"
+    // arrow as though it involved them. A banknote with an arrow leaving or
+    // arriving says what a settle-up payment actually is; one that is nobody's
+    // business but the other two gets the neutral transfer glyph.
+    final icon = youPay
+        ? MdiIcons.bankTransferOut
+        : youReceive
+            ? MdiIcons.bankTransferIn
+            : MdiIcons.bankTransfer;
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       child: Column(
         children: [
           ListTile(
-            leading: CircleAvatar(
-              child: Icon(youPay ? Icons.arrow_upward : Icons.arrow_downward),
-            ),
+            leading: CircleAvatar(child: Icon(icon)),
             title: Text(
-              youPay ? 'You pay $to' : (payment.to == ctx.myUid ? '$from pays you' : '$from pays $to'),
+              youPay
+                  ? 'You pay $to'
+                  : (youReceive ? '$from pays you' : '$from pays $to'),
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             trailing: Text(

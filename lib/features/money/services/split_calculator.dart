@@ -8,6 +8,12 @@ const int kMaxMoneyAmount = 100000000000;
 /// Largest weight / share / percent-in-basis-points a single person may carry.
 const int kMaxWeight = 1000000;
 
+/// Shares are a plain multiplier and may be fractional: "this person counts
+/// 1.5". Weights have to be whole numbers, so a share is carried internally as
+/// thousandths. Scaling every weight by the same factor leaves the split
+/// itself untouched, so this costs nothing but makes 1.5 mean what it says.
+const int kShareScale = 1000;
+
 /// 32-bit FNV-1a. Used only to break ties deterministically when handing out
 /// leftover minor units, so every device produces the same split from the same
 /// document while the "extra cent" still moves around between expenses.
@@ -109,9 +115,15 @@ Map<String, int> resolveShares({
       return splitByWeights(amount, weights, seed: seed);
 
     case SplitMode.shares:
+      // Scaled, so a fractional multiplier survives the trip to integers.
+      final shares = <String, int>{
+        for (final e in input.entries)
+          if (e.value > 0) e.key: (e.value * kShareScale).round(),
+      }..removeWhere((_, weight) => weight <= 0);
+      return splitByWeights(amount, shares, seed: seed);
+
     case SplitMode.percent:
-      // Shares are plain weights; percentages are weights expressed in basis
-      // points. Identical arithmetic, so identical rounding behaviour.
+      // Percentages are already whole numbers: basis points.
       final weights = <String, int>{
         for (final e in input.entries)
           if (e.value > 0) e.key: e.value.round(),
@@ -163,13 +175,17 @@ String? validateSplit({
       return null;
 
     case SplitMode.shares:
-      var total = 0;
+      // Summed as a double: rounding each share first would read 0.4 and 0.6
+      // as 0 and 1, and could round a perfectly good split away to nothing.
+      var total = 0.0;
       for (final v in input.values) {
         if (v < 0) return 'Shares cannot be negative.';
         if (v > kMaxWeight) return 'That is too many shares.';
-        total += v.round();
+        total += v.toDouble();
       }
-      if (total <= 0) return 'Give at least one person a share.';
+      if ((total * kShareScale).round() <= 0) {
+        return 'Give at least one person a share.';
+      }
       return null;
 
     case SplitMode.percent:

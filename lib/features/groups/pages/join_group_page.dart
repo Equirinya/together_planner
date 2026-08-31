@@ -175,10 +175,25 @@ class _JoinGroupPageState extends State<JoinGroupPage> {
                         runSpacing: 8,
                         children: [
                           for (final key in features)
-                            Chip(
-                              backgroundColor: Colors.white.withValues(alpha: 0.15),
-                              avatar: Icon(_featureFor(key).icon, size: 18, color: Colors.white),
-                              label: Text(_featureFor(key).label, style: const TextStyle(color: Colors.white)),
+                            // Not a Chip: Chip paints an opaque `canvasColor`
+                            // Material underneath its `backgroundColor`, so a
+                            // translucent background comes out solid white on
+                            // this dark hero background.
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(_featureFor(key).icon, size: 18, color: Colors.white),
+                                  const SizedBox(width: 6),
+                                  Text(_featureFor(key).label, style: const TextStyle(color: Colors.white)),
+                                ],
+                              ),
                             ),
                         ],
                       ),

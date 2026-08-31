@@ -285,7 +285,7 @@ class EntryDetailPage extends StatelessWidget {
       return mine > 0 ? 'You paid this' : 'You received this';
     }
     if (mine > 0) return 'You lent ${ctx.format.formatAbs(mine)}';
-    if (mine < 0) return 'Your share is ${ctx.format.formatAbs(mine)}';
+    if (mine < 0) return 'You owe ${ctx.format.formatAbs(mine)}';
     return 'You paid exactly your share';
   }
 
@@ -296,7 +296,7 @@ class EntryDetailPage extends StatelessWidget {
     if (raw == null) return '';
     switch (entry.splitMode) {
       case SplitMode.shares:
-        return '${raw.round()} share${raw.round() == 1 ? '' : 's'}';
+        return '${formatShareCount(raw)} share${raw == 1 ? '' : 's'}';
       case SplitMode.percent:
         return '${(raw / 100).toStringAsFixed(2)}%';
       case SplitMode.adjustment:

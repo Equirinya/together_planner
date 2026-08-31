@@ -37,6 +37,14 @@ class _AddExpensePageState extends State<AddExpensePage> {
   final _amountCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
 
+  /// Watched so the category can be guessed from the description the moment
+  /// the user moves on, whether by pressing "next" or by tapping the amount.
+  final _descriptionFocus = FocusNode();
+
+  /// Set once the user opens the category picker. An explicit choice, even a
+  /// choice of "no category", is never overwritten by a guess.
+  bool _categoryTouched = false;
+
   /// So pressing the keyboard's "next" on the description jumps straight to
   /// the amount — the two fields are always filled in together.
   final _amountFocus = FocusNode();
@@ -114,6 +122,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
       _selected.addAll(_people);
     }
     _amountCtrl.addListener(_onAmountChanged);
+    _descriptionFocus.addListener(_onDescriptionFocusChange);
   }
 
   @override
@@ -122,6 +131,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
     _amountCtrl.dispose();
     _noteCtrl.dispose();
     _amountFocus.dispose();
+    _descriptionFocus.dispose();
     for (final c in _shareCtrls.values) {
       c.dispose();
     }
@@ -133,6 +143,19 @@ class _AddExpensePageState extends State<AddExpensePage> {
 
   /// Rebuilds for the live preview of the split.
   void _onAmountChanged() => setState(() {});
+
+  /// Fills the category in from the description as the user moves on.
+  ///
+  /// On losing focus rather than on every keystroke: guessing while somebody
+  /// is still typing means the chip flickers between categories as the word
+  /// grows. It only ever fills an empty category, and never once the user has
+  /// been in the picker themselves.
+  void _onDescriptionFocusChange() {
+    if (_descriptionFocus.hasFocus || !mounted) return;
+    if (_categoryTouched || _category != null) return;
+    final guess = guessMoneyCategory(_descriptionCtrl.text);
+    if (guess != null) setState(() => _category = guess);
+  }
 
   // ── derived ───────────────────────────────────────────────────────────────
 
@@ -146,7 +169,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
       case SplitMode.adjustment:
         return ctx.format.toInput(value.round());
       default:
-        return value.round().toString();
+        return formatShareCount(value);
     }
   }
 
@@ -158,7 +181,8 @@ class _AddExpensePageState extends State<AddExpensePage> {
         case SplitMode.equal:
           out[id] = 1;
         case SplitMode.shares:
-          out[id] = int.tryParse(_ctrlFor(id).text.trim()) ?? 0;
+          out[id] =
+              double.tryParse(_ctrlFor(id).text.trim().replaceAll(',', '.')) ?? 0;
         case SplitMode.percent:
           final text = _ctrlFor(id).text.trim().replaceAll(',', '.');
           out[id] = ((double.tryParse(text) ?? 0) * 100).round();
@@ -494,6 +518,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
       children: [
         TextField(
           controller: _descriptionCtrl,
+          focusNode: _descriptionFocus,
           // Straight into typing on a new expense; editing an existing one
           // opens without the keyboard covering half the form.
           autofocus: !_isEdit,
@@ -615,7 +640,10 @@ class _AddExpensePageState extends State<AddExpensePage> {
       ),
     );
     if (picked == null || !mounted) return;
-    setState(() => _category = picked.isEmpty ? null : picked);
+    setState(() {
+      _category = picked.isEmpty ? null : picked;
+      _categoryTouched = true;
+    });
   }
 
   List<Widget> _payerSection() {
@@ -628,32 +656,49 @@ class _AddExpensePageState extends State<AddExpensePage> {
       if (!_multiPayer)
         Wrap(
           spacing: 8,
-          runSpacing: 4,
+          runSpacing: 6,
           children: [
             for (final id in _people)
               ChoiceChip(
                 label: Text(ctx.nameFor(id)),
                 selected: _payer == id,
                 onSelected: (_) => setState(() => _payer = id),
+                // A chip defaults to padding itself out to a 48dp tap target,
+                // which is invisible but doubles the gap between wrapped rows.
+                // Shrinking that back makes runSpacing mean what it says, and
+                // the row of names much shorter when it wraps.
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               ),
           ],
         )
       else ...[
         for (final id in _people)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-            title: Text(ctx.nameFor(id)),
-            trailing: SizedBox(
-              width: 110,
-              child: MoneyAmountField(
-                controller:
-                    _payerCtrls.putIfAbsent(id, () => TextEditingController()),
-                format: ctx.format,
-                textAlign: TextAlign.end,
-                decoration: InputDecoration(prefixText: '${ctx.format.symbol} '),
-                onChanged: (_) => setState(() {}),
-              ),
+          Padding(
+            // Adjacent filled fields with nothing between them read as one
+            // control, so every row keeps a little air around it.
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                Expanded(child: Text(ctx.nameFor(id))),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 124,
+                  child: MoneyAmountField(
+                    controller: _payerCtrls.putIfAbsent(
+                        id, () => TextEditingController()),
+                    format: ctx.format,
+                    textAlign: TextAlign.end,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      prefixText: '${ctx.format.symbol} ',
+                      hintText: ctx.format.toInput(0),
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                ),
+              ],
             ),
           ),
         Padding(
@@ -673,8 +718,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
       ],
       SwitchListTile(
         contentPadding: EdgeInsets.zero,
-        visualDensity: VisualDensity.compact,
+        visualDensity: const VisualDensity(horizontal: -4, vertical: -4),
         dense: true,
+        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
         title: const Text('Several people paid', style: TextStyle(fontSize: 14)),
         value: _multiPayer,
         onChanged: _toggleMultiPayer,
@@ -688,14 +734,21 @@ class _AddExpensePageState extends State<AddExpensePage> {
 
     Widget? trailing;
     if (selected && _mode != SplitMode.equal) {
+      // Only exact amounts and adjustments are money. A share is a bare
+      // multiplier and a percentage is a percentage, so neither carries the
+      // currency symbol.
+      final isMoney =
+          _mode == SplitMode.exact || _mode == SplitMode.adjustment;
       final decoration = InputDecoration(
-        prefixText: _mode == SplitMode.percent ? null : '${ctx.format.symbol} ',
+        isDense: true,
+        prefixText: isMoney ? '${ctx.format.symbol} ' : null,
         suffixText: _mode == SplitMode.percent
             ? '%'
-            : (_mode == SplitMode.shares ? 'x' : null),
+            : (_mode == SplitMode.shares ? '\u00D7' : null),
+        hintText: isMoney ? ctx.format.toInput(0) : '0',
       );
       trailing = SizedBox(
-        width: 110,
+        width: 124,
         // Exact amounts are money and fill from the right like the total does.
         // Shares are plain integers and percentages want a typed decimal
         // point, so those stay ordinary fields.
@@ -711,7 +764,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
                 controller: _ctrlFor(id),
                 textAlign: TextAlign.end,
                 keyboardType: TextInputType.numberWithOptions(
-                  decimal: _mode != SplitMode.shares,
+                  // Shares reach here too, and 1.5 of them is a fair thing to
+                  // want.
+                  decimal: true,
                   signed: _mode == SplitMode.adjustment,
                 ),
                 inputFormatters: [
@@ -727,7 +782,9 @@ class _AddExpensePageState extends State<AddExpensePage> {
       );
     }
 
-    return CheckboxListTile(
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: CheckboxListTile(
       contentPadding: EdgeInsets.zero,
       visualDensity: VisualDensity.compact,
       controlAffinity: ListTileControlAffinity.leading,
@@ -751,6 +808,7 @@ class _AddExpensePageState extends State<AddExpensePage> {
           : Text('pays ${ctx.format.format(share)}',
               style: const TextStyle(fontSize: 12.5)),
       secondary: trailing,
+      ),
     );
   }
 

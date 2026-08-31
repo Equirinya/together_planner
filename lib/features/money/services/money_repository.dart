@@ -33,7 +33,7 @@ class MoneyRepository {
   Stream<List<MoneyEntry>> watchEntries() => entriesRef
       .orderBy('date', descending: true)
       .snapshots()
-      .map((snap) => snap.docs.map(entryFromDoc).toList());
+      .map((snap) => sortMoneyEntriesForDisplay(snap.docs.map(entryFromDoc).toList()));
 
   Stream<List<MoneyPerson>> watchPeople() => peopleRef
       .snapshots()
@@ -86,7 +86,7 @@ class MoneyRepository {
       'description': description,
       'amount': amount,
       'currency': currency,
-      'date': Timestamp.fromDate(date),
+      'date': Timestamp.fromDate(moneyDayOf(date)),
       'paidBy': paidBy,
       'splitMode': splitMode.key,
       'splitInput': splitInput.map((k, v) => MapEntry(k, v)),
@@ -132,7 +132,7 @@ class MoneyRepository {
       'description': '',
       'amount': amount,
       'currency': currency,
-      'date': Timestamp.fromDate(date),
+      'date': Timestamp.fromDate(moneyDayOf(date)),
       'paidBy': {from: amount},
       'splitMode': SplitMode.settlement.key,
       'splitInput': {to: amount},

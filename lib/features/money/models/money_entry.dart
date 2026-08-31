@@ -154,3 +154,38 @@ class MoneyEntry {
     );
   }
 }
+
+/// The day an entry belongs to.
+///
+/// `date` answers "when did this happen", which is a day and not a moment: the
+/// date picker hands back midnight, while an expense entered without touching
+/// the picker carries the current time. Comparing days rather than timestamps
+/// keeps those two the same thing.
+DateTime moneyDayOf(DateTime date) =>
+    DateTime(date.year, date.month, date.day);
+
+/// Orders entries for the activity list: newest day first, and within a day,
+/// most recently entered first.
+///
+/// Ordering on the raw timestamp alone put an expense dated through the picker
+/// at midnight, which sorted it *below* everything else recorded that day:
+/// choosing "yesterday" quietly made it yesterday's oldest entry instead of
+/// its newest. Days are compared as days and `createdAt` breaks the tie, so a
+/// backdated expense lands at the top of the day it names.
+List<MoneyEntry> sortMoneyEntriesForDisplay(List<MoneyEntry> entries) {
+  entries.sort((a, b) {
+    final byDay = moneyDayOf(b.date).compareTo(moneyDayOf(a.date));
+    if (byDay != 0) return byDay;
+    final createdA = a.createdAt;
+    final createdB = b.createdAt;
+    // A write that has not round-tripped yet has no server timestamp. It is by
+    // definition the most recent thing that happened, so it goes first.
+    if (createdA == null || createdB == null) {
+      if (createdA == null && createdB == null) return b.id.compareTo(a.id);
+      return createdA == null ? -1 : 1;
+    }
+    final byCreated = createdB.compareTo(createdA);
+    return byCreated != 0 ? byCreated : b.id.compareTo(a.id);
+  });
+  return entries;
+}
