@@ -612,7 +612,9 @@ class _MealPlanSettingsPageState extends State<MealPlanSettingsPage> {
 
 /// One row of the swipe-session participant picker: a member's username on a
 /// selectable card. The starter's own row is shown but locked — leaving
-/// yourself out of a vote you're starting isn't a thing anyone means to do.
+/// yourself out of a vote you're starting isn't a thing anyone means to do. It
+/// is drawn in the selected style like any other checked row, with a padlock in
+/// place of the tick: the row is on, it just can't be turned off.
 ///
 /// Styled to match [DietaryOptionButton] — same filled-card treatment, radius
 /// and selected/disabled colours — so the whole settings screen reads as one
@@ -636,17 +638,14 @@ class _ParticipantTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    final Color cardColor = locked
-        ? colorScheme.surfaceContainerHighest.withValues(alpha: 0.5)
-        : checked
-            ? colorScheme.primary
-            : colorScheme.surfaceContainerHighest;
+    // A locked row is still a *selected* row, so it keeps the selected colours.
+    // Greying it out said "unavailable" when the truth is "already in, and not
+    // yours to change" — the padlock carries that, the palette shouldn't.
+    final Color cardColor =
+        checked ? colorScheme.primary : colorScheme.surfaceContainerHighest;
 
-    final Color contentColor = locked
-        ? colorScheme.onSurface.withValues(alpha: 0.38)
-        : checked
-            ? colorScheme.onPrimary
-            : colorScheme.onSurfaceVariant;
+    final Color contentColor =
+        checked ? colorScheme.onPrimary : colorScheme.onSurfaceVariant;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -680,9 +679,15 @@ class _ParticipantTile extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Icon(
-                  checked ? Icons.check_circle : Icons.circle_outlined,
+                  locked
+                      ? Icons.lock_outline
+                      : checked
+                          ? Icons.check_circle
+                          : Icons.circle_outlined,
                   size: 20,
-                  color: contentColor,
+                  // The padlock is a status marker, not the row's point, so it
+                  // sits a step back from the username next to it.
+                  color: locked ? contentColor.withValues(alpha: 0.7) : contentColor,
                 ),
               ],
             ),

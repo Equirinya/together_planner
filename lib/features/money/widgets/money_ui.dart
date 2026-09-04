@@ -285,8 +285,113 @@ class _MoneyAmountFieldState extends State<MoneyAmountField> {
       onChanged: widget.onChanged,
       keyboardType: TextInputType.numberWithOptions(decimal: _freeform),
       inputFormatters: _freeform
-          ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))]
+          ? [
+              SingleSeparatorFormatter(
+                separator: widget.format.decimalSeparator,
+                decimals: widget.format.decimals,
+              )
+            ]
           : [MinorUnitsFormatter(widget.format)],
+    );
+  }
+}
+
+/// Keeps a freely edited number field to a single decimal separator.
+///
+/// A plain "allow digits and separators" filter lets "1,2,3" through, which
+/// then parses to something the user never intended. The rule here is the one
+/// that matches how people actually type: **the separator you just typed is
+/// the decimal point**, and any earlier one disappears. Typing a comma at the
+/// end of "12,50" gives "1250," rather than a second comma, so a mistyped
+/// decimal point is corrected by simply typing the right one.
+///
+/// It also folds both separators onto the currency's own, so the field never
+/// shows "5.00" where the rest of the app writes "5,00", and trims the
+/// fraction to the currency's precision, so what is on screen is exactly what
+/// gets parsed and saved.
+class SingleSeparatorFormatter extends TextInputFormatter {
+  const SingleSeparatorFormatter({
+    required this.separator,
+    required this.decimals,
+  });
+
+  /// The one separator character the field may contain.
+  final String separator;
+
+  /// How many digits may follow it. Zero forbids a separator outright.
+  final int decimals;
+
+  static bool _isDigit(String ch) {
+    final code = ch.codeUnitAt(0);
+    return code >= 0x30 && code <= 0x39;
+  }
+
+  static bool _isSeparator(String ch) => ch == '.' || ch == ',';
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    var caret = newValue.selection.baseOffset;
+    if (caret < 0 || caret > newValue.text.length) caret = newValue.text.length;
+
+    // 1. Keep digits, fold every separator onto this currency's one, and drop
+    //    everything else, moving the caret left for each character removed
+    //    ahead of it.
+    final kept = StringBuffer();
+    var cursor = caret;
+    for (var i = 0; i < newValue.text.length; i++) {
+      final ch = newValue.text[i];
+      if (_isDigit(ch)) {
+        kept.write(ch);
+      } else if (_isSeparator(ch) && decimals > 0) {
+        kept.write(separator);
+      } else if (i < caret) {
+        cursor--;
+      }
+    }
+    var text = kept.toString();
+
+    // 2. One separator only: the one just typed, which is the character the
+    //    caret now sits behind. A paste with several has no "just typed" one,
+    //    so the last wins.
+    final positions = <int>[];
+    for (var i = 0; i < text.length; i++) {
+      if (text[i] == separator) positions.add(i);
+    }
+    if (positions.length > 1) {
+      var keep = positions.last;
+      if (cursor > 0 && cursor <= text.length && text[cursor - 1] == separator) {
+        keep = cursor - 1;
+      }
+      final trimmed = StringBuffer();
+      var adjusted = cursor;
+      for (var i = 0; i < text.length; i++) {
+        if (text[i] == separator && i != keep) {
+          if (i < cursor) adjusted--;
+          continue;
+        }
+        trimmed.write(text[i]);
+      }
+      text = trimmed.toString();
+      cursor = adjusted;
+    }
+
+    // 3. No more precision than the currency has, so the field cannot show
+    //    digits that saving would silently discard.
+    final at = text.indexOf(separator);
+    if (at != -1 && text.length - at - 1 > decimals) {
+      final cut = at + 1 + decimals;
+      text = text.substring(0, cut);
+      if (cursor > cut) cursor = cut;
+    }
+
+    if (cursor < 0) cursor = 0;
+    if (cursor > text.length) cursor = text.length;
+    return TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: cursor),
     );
   }
 }

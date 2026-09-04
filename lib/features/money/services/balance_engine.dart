@@ -209,3 +209,30 @@ bool entryInvolves(
   }
   return false;
 }
+
+/// What one identity put in and what they consumed, across expenses only.
+///
+/// Settlements are deliberately left out: paying somebody back moves money
+/// that was already spent, so counting it would inflate both figures and make
+/// "what did I spend" grow every time the group squares up.
+///
+/// The difference between the two is exactly that identity's balance, so the
+/// pair explains the number the rest of the screen is built around.
+({int paid, int share}) expenseTotalsFor(
+  List<MoneyEntry> entries,
+  String identity,
+  String Function(String personId) resolve,
+) {
+  var paid = 0;
+  var share = 0;
+  for (final entry in entries) {
+    if (entry.type != MoneyEntryType.expense || !entry.isValid) continue;
+    entry.paidBy.forEach((person, amount) {
+      if (resolve(person) == identity) paid += amount;
+    });
+    entry.owes.forEach((person, amount) {
+      if (resolve(person) == identity) share += amount;
+    });
+  }
+  return (paid: paid, share: share);
+}

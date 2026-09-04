@@ -361,7 +361,7 @@ class _MoneyPageState extends State<MoneyPage> {
     // month (and the year, once it is not this one), so a month header on top
     // of it would say the same thing twice. Naming the day here is also what
     // lets every row drop the date from its subtitle.
-    final widgets = <Widget>[const MoneyListHeader('ACTIVITY')];
+    final widgets = <Widget>[];
     DateTime? lastDay;
     for (final entry in ctx.entries) {
       final day = DateTime(entry.date.year, entry.date.month, entry.date.day);
@@ -442,7 +442,10 @@ class _MoneyPageState extends State<MoneyPage> {
       subtitle: Text(subtitle),
       trailing: Text(
         ctx.format.format(entry.amount),
-        style: const TextStyle(fontWeight: FontWeight.w600),
+        style: Theme.of(context)
+            .textTheme
+            .titleMedium
+            ?.copyWith(fontWeight: FontWeight.w600),
       ),
       onTap: () => _open(EntryDetailPage(ctx: ctx, entry: entry)),
       ),

@@ -351,21 +351,30 @@ class _AddExpensePageState extends State<AddExpensePage> {
   Future<void> _showImageSourceSheet() async {
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('Take a photo'),
-              onTap: () => Navigator.of(context).pop(ImageSource.camera),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose from gallery'),
-              onTap: () => Navigator.of(context).pop(ImageSource.gallery),
-            ),
-          ],
+      // A bottom sheet is laid out against the bottom of the screen, not above
+      // the keyboard, so one opened from a focused field lands underneath it.
+      // Padding by the keyboard inset lifts it clear instead of racing the
+      // keyboard's dismissal, and the padding collapses on its own if the
+      // keyboard does go away while the sheet is open.
+      isScrollControlled: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take a photo'),
+                onTap: () => Navigator.of(context).pop(ImageSource.camera),
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from gallery'),
+                onTap: () => Navigator.of(context).pop(ImageSource.gallery),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -768,10 +777,16 @@ class _AddExpensePageState extends State<AddExpensePage> {
                   signed: _mode == SplitMode.adjustment,
                 ),
                 inputFormatters: [
-                  FilteringTextInputFormatter.allow(
-                    _mode == SplitMode.adjustment
-                        ? RegExp(r'[0-9.,-]')
-                        : RegExp(r'[0-9.,]'),
+                  if (_mode == SplitMode.adjustment)
+                    // Signed, so the minus has to survive the filter; the
+                    // separator rule is applied after it.
+                    FilteringTextInputFormatter.allow(RegExp(r'[0-9.,-]')),
+                  SingleSeparatorFormatter(
+                    separator: ctx.format.decimalSeparator,
+                    // A share is a multiplier carried in thousandths, a
+                    // percentage in hundredths; neither is money, so neither
+                    // takes the currency's precision.
+                    decimals: _mode == SplitMode.shares ? 3 : 2,
                   ),
                 ],
                 decoration: decoration,

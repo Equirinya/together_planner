@@ -11,6 +11,8 @@ import 'package:couple_planner/core/widgets/storage_image.dart';
 import 'package:couple_planner/core/widgets/undo_snackbar.dart';
 import 'package:couple_planner/core/language.dart';
 import 'package:couple_planner/features/recipes/pages/recipe_detail.dart';
+import 'package:couple_planner/features/recipes/services/recipe_localization.dart';
+import 'package:couple_planner/features/shopping_list/widgets/empty_shopping_list.dart';
 import 'package:couple_planner/features/shopping_list/manual_contributions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -460,7 +462,7 @@ class _ShoppingListPageState extends State<ShoppingListPage>
       children: [
         Positioned.fill(
           child: display.isEmpty
-              ? const Center(child: Text('Your shopping list is empty.'))
+              ? const EmptyShoppingList()
               : ListView(
             padding: const EdgeInsets.only(bottom: 88),
             children: [
@@ -982,7 +984,10 @@ class _RecipeSourcesDialog extends StatelessWidget {
     await Future.wait(byRecipe.entries.map((e) async {
       final snap = await group.collection('recipes').doc(e.key).get();
       if (!snap.exists) return;
-      final rd = snap.data()!;
+      // Same convention as everywhere else recipes are displayed: the doc
+      // stores an English base plus a `translations` map, so swap in the
+      // user's language before showing the title (see localizeRecipeData).
+      final rd = localizeRecipeData(snap.data()!, lang);
       final imgs = List<String>.from(rd['images'] ?? const []);
       sources.add(_RecipeSource(
         recipeId: e.key,

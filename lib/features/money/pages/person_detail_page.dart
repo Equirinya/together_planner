@@ -4,7 +4,6 @@ import 'package:couple_planner/features/money/money_context.dart';
 import 'package:couple_planner/features/money/models/money_category.dart';
 import 'package:couple_planner/features/money/models/money_entry.dart';
 import 'package:couple_planner/features/money/pages/entry_detail_page.dart';
-import 'package:couple_planner/features/money/pages/settle_up_page.dart';
 
 /// One person's balance and every entry they appear in.
 class PersonDetailPage extends StatelessWidget {
@@ -52,24 +51,9 @@ class PersonDetailPage extends StatelessWidget {
                           fontWeight: FontWeight.w600,
                         ),
                   ),
-                  if (net != 0) ...[
-                    const SizedBox(height: 12),
-                    FilledButton.icon(
-                      // This page is normally reached FROM settle-up, so go
-                      // back to it rather than stacking a second copy.
-                      onPressed: () {
-                        final navigator = Navigator.of(context);
-                        if (navigator.canPop()) {
-                          navigator.pop();
-                        } else {
-                          navigator.push(MaterialPageRoute(
-                              builder: (_) => SettleUpPage(ctx: ctx)));
-                        }
-                      },
-                      icon: const Icon(Icons.handshake_outlined),
-                      label: const Text('Settle up'),
-                    ),
-                  ],
+                  // No "Settle up" action here: settle-up is the only way to
+                  // reach this page, so the button could never do more than
+                  // go back, under a label that promised something else.
                 ],
               ),
             ),

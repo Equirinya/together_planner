@@ -49,7 +49,10 @@ class MoneyFormat {
 
   bool get _suffix => _suffixStyle.contains(currency);
 
-  String get _decimalSeparator => _suffix ? ',' : '.';
+  /// The character between the whole part and the minor units, by the
+  /// convention of this currency. Public because the input formatters need to
+  /// agree with what [format] and [toInput] produce.
+  String get decimalSeparator => _suffix ? ',' : '.';
 
   String get _groupSeparator => _suffix ? '.' : ',';
 
@@ -79,7 +82,7 @@ class MoneyFormat {
     final unit = _pow10(d);
     final whole = value ~/ unit;
     final fraction = (value % unit).toString().padLeft(d, '0');
-    return '${_group(whole.toString())}$_decimalSeparator$fraction';
+    return '${_group(whole.toString())}$decimalSeparator$fraction';
   }
 
   String _group(String whole) {
@@ -162,7 +165,7 @@ class MoneyFormat {
     if (d == 0) return minorUnits.abs().toString();
     final unit = _pow10(d);
     final value = minorUnits.abs();
-    return '${value ~/ unit}$_decimalSeparator'
+    return '${value ~/ unit}$decimalSeparator'
         '${(value % unit).toString().padLeft(d, '0')}';
   }
 }

@@ -120,6 +120,7 @@ class _SettleUpPageState extends State<SettleUpPage> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
+          _myTotals(),
           ..._balances(),
           if (plan.isEmpty)
             const Padding(
@@ -161,6 +162,51 @@ class _SettleUpPageState extends State<SettleUpPage> {
             onTap: _busy ? null : _recordManual,
           ),
         ],
+      ),
+    );
+  }
+
+  /// What this expense list has actually cost the person reading it.
+  ///
+  /// The balance answers "am I owed or do I owe", which is not the same
+  /// question as "what have I spent". Both sit here because the difference
+  /// between them IS the balance underneath.
+  Widget _myTotals() {
+    final totals = expenseTotalsFor(ctx.entries, ctx.myUid, ctx.resolve);
+    if (totals.paid == 0 && totals.share == 0) return const SizedBox.shrink();
+
+    final scheme = Theme.of(context).colorScheme;
+
+    Widget figure(String label, int amount) => Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(fontSize: 12, color: scheme.outline),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                ctx.format.format(amount),
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        );
+
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            figure('You paid', totals.paid),
+            figure('Your share', totals.share),
+          ],
+        ),
       ),
     );
   }
